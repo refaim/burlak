@@ -367,7 +367,7 @@ void WINAPI GetGlobalInfoW(struct GlobalInfo* gi)
     gi->Guid = PluginGuid;
     gi->Title = L"Burlak";
     gi->Description = L"Drag files out of the panel into any drop target";
-    gi->Author = L"Roma Kharitonov";
+    gi->Author = L"Roman Kharitonov";
 }
 
 void WINAPI SetStartupInfoW(const struct PluginStartupInfo* psi)
