@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ x64, x86 ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      # The same script developers run locally; msvc-dev-cmd has already put
+      # the toolchain on PATH, so vcvars must not be replayed on top of it.
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1 -Arch ${{ matrix.arch }} -SkipVcvars
+
+      - name: Check the plugin exports what Far looks for
+        shell: pwsh
+        run: |
+          $exports = & dumpbin /nologo /exports build/${{ matrix.arch }}/Burlak.dll
+          $required = @('GetGlobalInfoW','SetStartupInfoW','GetPluginInfoW','OpenW','ProcessConsoleInputW','ExitFARW')
+          $missing = $required | Where-Object { $exports -notmatch "\b$_\b" }
+          if ($missing) { throw "missing exports: $($missing -join ', ')" }
+          Write-Host "all $($required.Count) exports present"
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "stage/Burlak"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item build/${{ matrix.arch }}/Burlak.dll $stage
+          Copy-Item README.md, LICENSE $stage
+          Compress-Archive -Path stage/Burlak -DestinationPath "Burlak-${{ matrix.arch }}.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Burlak-${{ matrix.arch }}
+          path: Burlak-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts
+
+      # The tag is the source of truth for a release, but src/version.h is the
+      # source of truth for the binary. Refuse to publish if they disagree.
+      - name: Tag must match src/version.h
+        run: |
+          major=$(grep -oP 'BURLAK_VERSION_MAJOR\s+\K\d+' src/version.h)
+          minor=$(grep -oP 'BURLAK_VERSION_MINOR\s+\K\d+' src/version.h)
+          patch=$(grep -oP 'BURLAK_VERSION_PATCH\s+\K\d+' src/version.h)
+          header="$major.$minor.$patch"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "header=$header tag=$tag"
+          if [ "$header" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match src/version.h ($header)"
+            exit 1
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Burlak ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*.zip

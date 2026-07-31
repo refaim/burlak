@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+*.ps1   text eol=crlf
+*.rc    text eol=crlf
+*.def   text eol=crlf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+
+*.dll   binary
+*.zip   binary
+
+# Vendored verbatim from Far's PluginSDK -- keep them byte-identical upstream.
+sdk/** -text

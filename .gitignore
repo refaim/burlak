@@ -1,0 +1,12 @@
+build/
+stage/
+*.zip
+
+# MSVC leftovers
+*.obj
+*.res
+*.exp
+*.lib
+*.pdb
+*.ilk
+.vs/
