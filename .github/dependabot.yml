@@ -1,0 +1,14 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # One pull request for the lot, rather than one per action.
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ci
