@@ -17,7 +17,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [ x64, x86 ]
+        # arm64 is cross-compiled from the x64 runner; the windows-2022 image
+        # ships Microsoft.VisualStudio.Component.VC.Tools.ARM64.
+        arch: [ x64, x86, arm64 ]
 
     steps:
       - uses: actions/checkout@v4
@@ -36,25 +38,38 @@ jobs:
       - name: Check the plugin exports what Far looks for
         shell: pwsh
         run: |
-          $exports = & dumpbin /nologo /exports build/${{ matrix.arch }}/Burlak.dll
+          # -join matters: with an array on the left, -notmatch filters instead
+          # of returning a boolean, and every name would look missing.
+          $exports = (& dumpbin /nologo /exports build/${{ matrix.arch }}/Burlak.dll) -join "`n"
           $required = @('GetGlobalInfoW','SetStartupInfoW','GetPluginInfoW','OpenW','ProcessConsoleInputW','ExitFARW')
           $missing = $required | Where-Object { $exports -notmatch "\b$_\b" }
           if ($missing) { throw "missing exports: $($missing -join ', ')" }
           Write-Host "all $($required.Count) exports present"
 
+      # The archive holds a ready-to-drop Burlak\ folder, so it unpacks straight
+      # into Far's Plugins directory. Version comes from the header, not the
+      # tag, so untagged builds are still identifiable.
       - name: Package
         shell: pwsh
         run: |
+          $h = Get-Content src/version.h -Raw
+          $major = [regex]::Match($h, 'BURLAK_VERSION_MAJOR\s+(\d+)').Groups[1].Value
+          $minor = [regex]::Match($h, 'BURLAK_VERSION_MINOR\s+(\d+)').Groups[1].Value
+          $patch = [regex]::Match($h, 'BURLAK_VERSION_PATCH\s+(\d+)').Groups[1].Value
+          $name = "Burlak-$major.$minor.$patch-${{ matrix.arch }}"
+
           $stage = "stage/Burlak"
           New-Item -ItemType Directory -Force $stage | Out-Null
           Copy-Item build/${{ matrix.arch }}/Burlak.dll $stage
           Copy-Item README.md, LICENSE $stage
-          Compress-Archive -Path stage/Burlak -DestinationPath "Burlak-${{ matrix.arch }}.zip" -Force
+          Compress-Archive -Path stage/Burlak -DestinationPath "$name.zip" -Force
+
+          "PACKAGE_NAME=$name" >> $env:GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Burlak-${{ matrix.arch }}
-          path: Burlak-${{ matrix.arch }}.zip
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}.zip
           if-no-files-found: error
 
   release:

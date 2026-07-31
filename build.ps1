@@ -14,7 +14,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('x64', 'x86')]
+    [ValidateSet('x64', 'x86', 'arm64')]
     [string] $Arch = 'x64',
 
     [switch] $SkipVcvars,
@@ -33,18 +33,33 @@ $out = Join-Path $root "build\$Arch"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 if (-not $SkipVcvars) {
-    $vcvars = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars$(if ($Arch -eq 'x64') { '64' } else { '32' }).bat"
-    if (-not (Test-Path $vcvars)) {
-        # Fall back to any edition the machine happens to have.
-        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-        if (Test-Path $vswhere) {
-            $install = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if ($install) {
-                $vcvars = Join-Path $install "VC\Auxiliary\Build\vcvars$(if ($Arch -eq 'x64') { '64' } else { '32' }).bat"
-            }
-        }
+    # arm64 is a cross build: an x64 host producing arm64 output.
+    $vcvarsName = switch ($Arch) {
+        'x64'   { 'vcvars64.bat' }
+        'x86'   { 'vcvars32.bat' }
+        'arm64' { 'vcvarsamd64_arm64.bat' }
     }
-    if (-not (Test-Path $vcvars)) { throw "vcvars not found; install the VS Build Tools C++ workload" }
+
+    $roots = @("${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools")
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere) {
+        $roots += @(& $vswhere -latest -products * -property installationPath)
+    }
+
+    $vcvars = $roots |
+        Where-Object { $_ } |
+        ForEach-Object { Join-Path $_ "VC\Auxiliary\Build\$vcvarsName" } |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+
+    if (-not $vcvars) {
+        $hint = if ($Arch -eq 'arm64') {
+            "install the 'MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools' component"
+        } else {
+            "install the VS Build Tools C++ workload"
+        }
+        throw "$vcvarsName not found; $hint"
+    }
 
     # Replay the toolchain environment into this session.
     cmd /c "`"$vcvars`" >nul 2>&1 && set" | ForEach-Object {

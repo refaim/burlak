@@ -64,9 +64,14 @@ headers are vendored in `sdk/`, so nothing else has to be installed.
 ```powershell
 pwsh -File build.ps1                # x64 -> build/x64/Burlak.dll
 pwsh -File build.ps1 -Arch x86
+pwsh -File build.ps1 -Arch arm64    # cross-compiled from an x64 host
 ```
 
-CI runs the very same script, so local and released builds cannot drift apart.
+arm64 needs the `MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools` component; the other two
+need only the x64/x86 compilers.
+
+CI runs the very same script for all three architectures, so local and released builds cannot
+drift apart.
 
 ## Releasing
 
@@ -77,8 +82,14 @@ version, the DLL resource and the release check.
 2. Commit.
 3. Tag `vMAJOR.MINOR.PATCH` and push the tag.
 
-CI builds both architectures, refuses to publish if the tag and the header disagree, and
-attaches the archives to a GitHub release.
+Pushing a `v*` tag builds all three architectures, refuses to publish if the tag and the header
+disagree, and attaches the archives to a GitHub release:
+
+```
+Burlak-1.0.0-x64.zip      Burlak/Burlak.dll, README.md, LICENSE
+Burlak-1.0.0-x86.zip
+Burlak-1.0.0-arm64.zip
+```
 
 ## Known edges
 
