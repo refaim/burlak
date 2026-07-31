@@ -13,6 +13,9 @@ permissions:
 
 jobs:
   build:
+    # Without this the job name lists every matrix value, giving the likes of
+    # "build (arm64, amd64_arm64)".
+    name: build (${{ matrix.arch }})
     runs-on: windows-2022
     strategy:
       fail-fast: false
