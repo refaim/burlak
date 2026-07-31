@@ -1,32 +1,3 @@
-// Burlak -- drag files out of Far Manager's panel into any Windows drop target.
-//
-// Named after the barge haulers who dragged boats along the riverbank: this
-// plugin does the dragging, and the name says nothing about direction, so it
-// still fits if dropping *into* Far is ever added.
-//
-// The awkward part is that Far is a console application: measured from inside,
-// with WH_GETMESSAGE and WH_CALLWNDPROC both installed on Far's own thread,
-// mouse messages arrive exactly zero times while the console input path
-// delivers thousands. Mouse input goes to the console input buffer and never
-// reaches the window layer, and the console window refuses to be subclassed
-// (SetWindowLongPtr fails with ERROR_ACCESS_DENIED). So DoDragDrop, which
-// lives on a modal message loop, cannot run on Far's main thread.
-//
-// The way through -- taken from karbazol/far-drag-n-drop-plugin, which solved
-// this years ago -- is to re-found the gesture on a thread that *can* own it:
-//
-//   1. Far's main thread spots the drag in ProcessConsoleInputW.
-//   2. It synthesises a button release, ending the console's idea of the
-//      gesture.
-//   3. A tool window, owned by a thread of our own with a normal message pump,
-//      is raised over Far and takes the capture.
-//   4. A button press is synthesised. It lands on the tool window, so that
-//      thread now legitimately owns the mouse.
-//   5. That thread runs the drag and pumps its own messages.
-//
-// The tool window is layered at alpha 1: present for hit-testing, invisible in
-// practice, so nothing flashes over the panel.
-
 #include <windows.h>
 #include <shlobj.h>
 #include <shobjidl.h>
@@ -39,12 +10,8 @@
 
 static struct PluginStartupInfo Info;
 
-// {6F3D1A54-7C2E-4B8A-9E31-0A5C4D2F8B17}
 static const GUID PluginGuid =
-    { 0x6f3d1a54, 0x7c2e, 0x4b8a, { 0x9e, 0x31, 0x0a, 0x5c, 0x4d, 0x2f, 0x8b, 0x17 } };
-// {C21B5E90-4A76-4D53-8F0C-6B93E7A14D22}
-static const GUID MenuGuid =
-    { 0xc21b5e90, 0x4a76, 0x4d53, { 0x8f, 0x0c, 0x6b, 0x93, 0xe7, 0xa1, 0x4d, 0x22 } };
+    { 0x130a60a7, 0x8d79, 0x483c, { 0x93, 0xf0, 0x8d, 0xca, 0xb2, 0x70, 0x22, 0xc9 } };
 
 namespace {
 
@@ -52,10 +19,6 @@ constexpr UINT WM_PREPARE_DRAG = WM_USER + 0x101;
 constexpr int  DRAG_THRESHOLD_CELLS = 3;
 constexpr wchar_t TOOL_CLASS[] = L"BurlakToolWindow";
 
-// ---------------------------------------------------------------- shared ---
-
-// Filled by the main thread, read by the window thread while the main thread
-// blocks inside SendMessage -- so no lock is needed.
 std::vector<std::wstring> g_paths;
 
 IDataObject* g_data = nullptr;
@@ -69,11 +32,6 @@ bool LeftButtonDown()
     return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
 }
 
-// ------------------------------------------------------------ data object ---
-
-// Let the shell build the data object: the target then sees the full set of
-// shell formats, exactly as if the files had come from Explorer, rather than a
-// bare CF_HDROP we assembled by hand.
 IDataObject* MakeDataObject(const std::vector<std::wstring>& paths)
 {
     std::vector<PIDLIST_ABSOLUTE> pidls;
@@ -102,15 +60,12 @@ IDataObject* MakeDataObject(const std::vector<std::wstring>& paths)
     return data;
 }
 
-// ------------------------------------------------------------ tool window ---
-
 void HideTool()
 {
     if (g_tool)
         ShowWindow(g_tool, SW_HIDE);
 }
 
-// Cover Far's window so the synthesised press cannot miss us.
 bool ShowTool()
 {
     const HWND far_wnd = GetConsoleWindow();
@@ -132,8 +87,6 @@ void RunDrag()
 
     g_dragActive = true;
 
-    // A null IDropSource asks the shell for its default one (Vista+), which is
-    // also what gives us the standard drag image for free.
     DWORD effect = 0;
     SHDoDragDrop(g_tool, g_data, nullptr,
                  DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &effect);
@@ -168,8 +121,6 @@ LRESULT CALLBACK ToolProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         SetCapture(hwnd);
 
-        // Re-press on our own window: this is what hands mouse ownership to
-        // this thread. Far's main thread has already released the real one.
         if (!LeftButtonDown())
             mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
 
@@ -177,8 +128,6 @@ LRESULT CALLBACK ToolProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_LBUTTONDOWN:
-        // Arrives from the synthesised press above; the drag runs here, on the
-        // thread that owns both the window and the capture.
         RunDrag();
         return 0;
 
@@ -206,10 +155,8 @@ DWORD WINAPI ToolThread(LPVOID)
     g_tool = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                              TOOL_CLASS, nullptr, WS_POPUP,
                              0, 0, 1, 1, nullptr, nullptr, wc.hInstance, nullptr);
-    if (g_tool) {
-        // Present for hit-testing, invisible to the eye.
+    if (g_tool)
         SetLayeredWindowAttributes(g_tool, 0, 1, LWA_ALPHA);
-    }
 
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -245,15 +192,11 @@ void StopThread()
     }
 }
 
-// ------------------------------------------------------- gesture, panel ----
-
 struct Gesture {
     bool armed = false;
     int anchorX = 0;
     int anchorY = 0;
 
-    // Returns true once, when the pointer has travelled far enough with the
-    // button held. Everything else leaves Far's own handling alone.
     bool feed(const MOUSE_EVENT_RECORD& m)
     {
         const bool left = (m.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
@@ -297,8 +240,6 @@ std::wstring PanelDirectory()
     return dir->Name ? dir->Name : L"";
 }
 
-// Selected items, or the one under the cursor when nothing is marked -- which
-// is what FCTL_GETSELECTEDPANELITEM already returns.
 std::vector<std::wstring> SelectedPaths()
 {
     std::vector<std::wstring> paths;
@@ -308,7 +249,6 @@ std::vector<std::wstring> SelectedPaths()
     if (!Info.PanelControl(PANEL_ACTIVE, FCTL_GETPANELINFO, 0, &pi))
         return paths;
 
-    // Plugin panels (archives, FTP) have no path the shell could resolve.
     if (!(pi.Flags & PFLAGS_REALNAMES))
         return paths;
 
@@ -348,16 +288,13 @@ bool BeginDrag()
     if (!g_tool)
         return false;
 
-    // End the console's gesture before the tool window re-founds it.
     if (LeftButtonDown())
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
 
-    // Runs on the tool thread; returns as soon as the window is up and armed,
-    // so Far's main thread is not held for the duration of the drag.
     return SendMessageW(g_tool, WM_PREPARE_DRAG, 0, 0) != 0;
 }
 
-} // namespace
+}
 
 void WINAPI GetGlobalInfoW(struct GlobalInfo* gi)
 {
@@ -379,26 +316,6 @@ void WINAPI GetPluginInfoW(struct PluginInfo* pi)
 {
     pi->StructSize = sizeof(*pi);
     pi->Flags = PF_NONE;
-
-    static const wchar_t* names[] = { L"Burlak" };
-    static const GUID guids[] = { MenuGuid };
-    pi->PluginMenu.Guids = guids;
-    pi->PluginMenu.Strings = names;
-    pi->PluginMenu.Count = ARRAYSIZE(names);
-}
-
-HANDLE WINAPI OpenW(const struct OpenInfo*)
-{
-    // FMSG_ALLINONE takes ONE newline-separated string cast to
-    // const wchar_t* const*; the trailing lines are the buttons.
-    static const wchar_t text[] =
-        L"Burlak " BURLAK_VERSION_STRING L"\n"
-        L"Hold the left button on a panel item and\n"
-        L"move a few cells to drag it out of Far.\n"
-        L"OK";
-    Info.Message(&PluginGuid, &MenuGuid, FMSG_LEFTALIGN | FMSG_ALLINONE, nullptr,
-                 reinterpret_cast<const wchar_t* const*>(text), 0, 1);
-    return nullptr;
 }
 
 intptr_t WINAPI ProcessConsoleInputW(struct ProcessConsoleInputInfo* info)
@@ -412,7 +329,7 @@ intptr_t WINAPI ProcessConsoleInputW(struct ProcessConsoleInputInfo* info)
     if (!BeginDrag())
         return 0;
 
-    return 1;  // swallow it, or Far starts its own internal drag as well
+    return 1;
 }
 
 void WINAPI ExitFARW(const struct ExitInfo*)

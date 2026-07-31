@@ -41,7 +41,7 @@ jobs:
           # -join matters: with an array on the left, -notmatch filters instead
           # of returning a boolean, and every name would look missing.
           $exports = (& dumpbin /nologo /exports build/${{ matrix.arch }}/Burlak.dll) -join "`n"
-          $required = @('GetGlobalInfoW','SetStartupInfoW','GetPluginInfoW','OpenW','ProcessConsoleInputW','ExitFARW')
+          $required = @('GetGlobalInfoW','SetStartupInfoW','GetPluginInfoW','ProcessConsoleInputW','ExitFARW')
           $missing = $required | Where-Object { $exports -notmatch "\b$_\b" }
           if ($missing) { throw "missing exports: $($missing -join ', ')" }
           Write-Host "all $($required.Count) exports present"
