@@ -17,9 +17,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # arm64 is cross-compiled from the x64 runner; the windows-2022 image
-        # ships Microsoft.VisualStudio.Component.VC.Tools.ARM64.
-        arch: [ x64, x86, arm64 ]
+        # The runner is x64, so arm64 has to be a cross build: amd64_arm64 is
+        # host x64 -> target arm64. Plain "arm64" would select an arm64-hosted
+        # toolchain that cannot run here.
+        include:
+          - arch: x64
+            msvc: x64
+          - arch: x86
+            msvc: x86
+          - arch: arm64
+            msvc: amd64_arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +34,7 @@ jobs:
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.arch }}
+          arch: ${{ matrix.msvc }}
 
       # The same script developers run locally; msvc-dev-cmd has already put
       # the toolchain on PATH, so vcvars must not be replayed on top of it.
