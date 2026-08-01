@@ -299,7 +299,7 @@ bool BeginDrag()
 void WINAPI GetGlobalInfoW(struct GlobalInfo* gi)
 {
     gi->StructSize = sizeof(*gi);
-    gi->MinFarVersion = FARMANAGERVERSION;
+    gi->MinFarVersion = MAKEFARVERSION(3, 0, 0, 2843, VS_RELEASE);
     gi->Version = MAKEFARVERSION(BURLAK_VERSION_MAJOR, BURLAK_VERSION_MINOR, BURLAK_VERSION_PATCH, 0, VS_RELEASE);
     gi->Guid = PluginGuid;
     gi->Title = L"Burlak";
