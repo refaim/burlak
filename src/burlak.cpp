@@ -16,6 +16,10 @@ static const GUID PluginGuid =
 namespace {
 
 constexpr UINT WM_PREPARE_DRAG = WM_USER + 0x101;
+constexpr UINT WM_START_DRAG = WM_USER + 0x102;
+constexpr UINT WM_ABORT_DRAG = WM_USER + 0x103;
+constexpr UINT_PTR ARM_TIMER = 1;
+constexpr UINT ARM_TIMEOUT_MS = 1000;
 constexpr int  DRAG_THRESHOLD_CELLS = 3;
 constexpr wchar_t TOOL_CLASS[] = L"BurlakToolWindow";
 
@@ -66,17 +70,62 @@ void HideTool()
         ShowWindow(g_tool, SW_HIDE);
 }
 
-bool ShowTool()
+void DropData()
 {
-    const HWND far_wnd = GetConsoleWindow();
-    RECT r{};
-    if (far_wnd && GetWindowRect(far_wnd, &r)) {
-        SetWindowPos(g_tool, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    } else {
-        SetWindowPos(g_tool, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN),
-                     GetSystemMetrics(SM_CYSCREEN), SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if (g_data) {
+        g_data->Release();
+        g_data = nullptr;
     }
+}
+
+bool Covers(HWND wnd, POINT pt, RECT* r)
+{
+    return wnd && IsWindowVisible(wnd) && GetWindowRect(wnd, r) && PtInRect(r, pt);
+}
+
+// The window Far is drawn in, which the tool window has to cover.
+//
+// A window on a background thread only gets mouse input while the cursor is
+// over a visible part of it, so the tool window must be under the cursor when
+// the synthetic click lands. Covering the terminal for the whole drag also
+// stops it from taking a drop of its own files.
+//
+// A real console (conhost, OpenConsole in its own window) is a visible window
+// with a proper rect. Under a ConPTY host (Windows Terminal, VS Code's
+// terminal) GetConsoleWindow() is a PseudoConsoleWindow that reports itself
+// visible but 0x0, so the cursor can't be in it; ConEmu keeps a real console
+// window and hides it, so it fails the visibility test instead. Then the
+// terminal is the foreground window: it has focus, or Far wouldn't be seeing
+// these mouse events.
+HWND HostWindow(RECT* r)
+{
+    POINT pt{};
+    if (!GetCursorPos(&pt))
+        return nullptr;
+
+    const HWND console = GetConsoleWindow();
+    if (Covers(console, pt, r))
+        return console;
+
+    const HWND foreground = GetForegroundWindow();
+    if (Covers(foreground, pt, r))
+        return foreground;
+
+    return nullptr;
+}
+
+bool ShowTool(HWND host, const RECT& r)
+{
+    // Directly above the host: in the topmost band only when the terminal is
+    // there itself (Windows Terminal's alwaysOnTop), so the tool window never
+    // shadows a pinned window a drop may be aimed at. HWND_NOTOPMOST only
+    // demotes a window, it does not raise one, hence the separate step.
+    const bool topmost = (GetWindowLongPtrW(host, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    if (!topmost && (GetWindowLongPtrW(g_tool, GWL_EXSTYLE) & WS_EX_TOPMOST))
+        SetWindowPos(g_tool, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_tool, topmost ? HWND_TOPMOST : HWND_TOP, r.left, r.top,
+                 r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     return IsWindowVisible(g_tool) != 0;
 }
 
@@ -94,41 +143,62 @@ void RunDrag()
     g_dragActive = false;
     ReleaseCapture();
     HideTool();
+    DropData();
+}
 
-    if (g_data) {
-        g_data->Release();
-        g_data = nullptr;
-    }
+// The synthetic click never arrived. Without this the tool window would stay
+// up over the terminal, holding capture and the stale paths, until the user's
+// next click in it started a drag nobody asked for.
+void Disarm(HWND hwnd)
+{
+    KillTimer(hwnd, ARM_TIMER);
+    if (g_dragActive)
+        return;
+    ReleaseCapture();
+    HideTool();
+    DropData();
 }
 
 LRESULT CALLBACK ToolProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
-    case WM_PREPARE_DRAG: {
-        if (g_data) {
-            g_data->Release();
-            g_data = nullptr;
-        }
+    case WM_PREPARE_DRAG:
+        DropData();
         g_data = MakeDataObject(g_paths);
-        if (!g_data)
-            return 0;
+        return g_data != nullptr;
 
-        if (!ShowTool()) {
-            g_data->Release();
-            g_data = nullptr;
+    case WM_START_DRAG: {
+        // Measured here, on the thread that positions the tool window and
+        // right before the click is injected: the user is mid-drag, and the
+        // cursor may have moved on since BeginDrag looked.
+        RECT r{};
+        const HWND host = HostWindow(&r);
+        if (!g_data || !host || !ShowTool(host, r)) {
+            DropData();
             return 0;
         }
-
         SetCapture(hwnd);
-
-        if (!LeftButtonDown())
-            mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
-
+        SetTimer(hwnd, ARM_TIMER, ARM_TIMEOUT_MS, nullptr);
+        // BeginDrag has just released the button; press it again, now over the
+        // tool window. Input is serialised, so this lands after that release
+        // even if GetAsyncKeyState hasn't caught up with it yet.
+        mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
         return 1;
     }
 
+    case WM_ABORT_DRAG:
+        DropData();
+        return 0;
+
     case WM_LBUTTONDOWN:
+        KillTimer(hwnd, ARM_TIMER);
         RunDrag();
+        return 0;
+
+    case WM_TIMER:
+        if (wp != ARM_TIMER)
+            break;
+        Disarm(hwnd);
         return 0;
 
     case WM_DESTROY:
@@ -164,6 +234,7 @@ DWORD WINAPI ToolThread(LPVOID)
         DispatchMessageW(&msg);
     }
 
+    DropData();
     if (g_tool) {
         DestroyWindow(g_tool);
         g_tool = nullptr;
@@ -288,10 +359,27 @@ bool BeginDrag()
     if (!g_tool)
         return false;
 
-    if (LeftButtonDown())
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    // The data object is the slow part (a shell lookup per path), so it is
+    // built before the gate below: nothing may take time between the last
+    // look at the cursor and the button being touched.
+    if (!LeftButtonDown() || !SendMessageW(g_tool, WM_PREPARE_DRAG, 0, 0))
+        return false;
 
-    return SendMessageW(g_tool, WM_PREPARE_DRAG, 0, 0) != 0;
+    // The button is only touched once the drag is sure to start, so a gesture
+    // that can't become one stays an ordinary click as far as Far and the
+    // user are concerned. A button that is already up means the gesture is
+    // over: pressing it again would leave the system believing it is held.
+    RECT r{};
+    if (!HostWindow(&r) || !LeftButtonDown()) {
+        SendMessageW(g_tool, WM_ABORT_DRAG, 0, 0);
+        return false;
+    }
+
+    // Release the button the user is holding, so the press synthesised over
+    // the tool window is a fresh click there rather than a continuation of
+    // the one the terminal saw.
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    return SendMessageW(g_tool, WM_START_DRAG, 0, 0) != 0;
 }
 
 }

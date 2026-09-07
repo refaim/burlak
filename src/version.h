@@ -6,8 +6,8 @@
 #pragma once
 
 #define BURLAK_VERSION_MAJOR 1
-#define BURLAK_VERSION_MINOR 0
-#define BURLAK_VERSION_PATCH 1
+#define BURLAK_VERSION_MINOR 1
+#define BURLAK_VERSION_PATCH 0
 
 #define BURLAK_STR2(x) #x
 #define BURLAK_STR(x) BURLAK_STR2(x)

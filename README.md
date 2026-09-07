@@ -6,6 +6,8 @@ browser upload box, Explorer, a chat window.
 Hold the left mouse button on a panel item, move a few cells, drop it wherever you like.
 Ordinary clicks keep working as before.
 
+Works in the standard console (cmd.exe / conhost), in OpenConsole and in Windows Terminal.
+
 ## Install
 
 Take the archive for your Far build from [Releases](../../releases) and unpack the `Burlak`
