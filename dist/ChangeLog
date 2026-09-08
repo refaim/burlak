@@ -1,0 +1,35 @@
+Burlak 1.2.0 09-09-2026
+-----------------------
+ + drag with the right mouse button; a target that honours it, such as
+   Explorer, offers its copy / move / shortcut menu on the drop
+ * sweeping over several files with the right button held starts a drag
+   now instead of selecting them; a right click still selects a file
+ * the item dragged is the one the button went down on: the panel cursor no
+   longer walks after the mouse while the gesture is pending, so the drag no
+   longer picks up a file two or three rows below
+ * the gesture is confined to the panels; the editor, viewer, dialogs and
+   the command line get every mouse event as before
+ * a drag that crosses the panel divider no longer sets off Far's own
+   panel-to-panel copy
+ * updates through Renewal work: it recognises a plugin DLL by an OpenW
+   export, which the DLL now has
+ + ChangeLog, readme_en.txt and readme_ru.txt in the archive
+
+Burlak 1.1.0 08-09-2026
+-----------------------
+ + works under Windows Terminal and other ConPTY hosts, such as the VS Code
+   terminal
+ * a gesture that cannot become a drag stays an ordinary click
+ * the overlay that catches the drag comes down after a second if the drag
+   never starts, instead of staying over the terminal
+ * the overlay goes topmost only when the terminal itself is, so it never
+   shadows a pinned window a drop may be aimed at
+
+Burlak 1.0.1 01-08-2026
+-----------------------
+ * loads on Far 3.0.0.2843 and later instead of demanding 3.0.0.6699
+
+Burlak 1.0.0 31-07-2026
+-----------------------
+ + first release: drag files out of the panel into any Windows drop target
+   with the left mouse button; x64, x86 and arm64 builds

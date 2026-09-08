@@ -14,3 +14,7 @@
 
 # Vendored verbatim from Far's PluginSDK -- keep them byte-identical upstream.
 sdk/** -text
+
+# Shipped in the archive as plain text files for Windows users, so CRLF; the
+# catch-all above would turn them into LF on the CI runner.
+dist/*  text eol=crlf

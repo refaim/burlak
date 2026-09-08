@@ -3,5 +3,7 @@ EXPORTS
     GetGlobalInfoW
     SetStartupInfoW
     GetPluginInfoW
+    OpenW
     ProcessConsoleInputW
+    ProcessSynchroEventW
     ExitFARW
