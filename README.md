@@ -6,6 +6,11 @@ browser upload box, Explorer, a chat window.
 Hold the left mouse button on a panel item, move a few cells, drop it wherever you like.
 Ordinary clicks keep working as before.
 
+Drag with the right button instead and it is up to the target what happens on the drop:
+Explorer offers its copy / move / shortcut menu, Telegram just takes the files. A right click
+still selects a file as before; sweeping over several files with the right button held now
+starts a drag instead of selecting them.
+
 Works in the standard console (cmd.exe / conhost), in OpenConsole and in Windows Terminal.
 
 ## Install
@@ -25,6 +30,7 @@ Restart Far — plugins are read at startup.
 pwsh -File build.ps1                # x64
 pwsh -File build.ps1 -Arch x86
 pwsh -File build.ps1 -Arch arm64
+pwsh -File package.ps1 -Arch x64    # Burlak-<version>-x64.zip, as on Releases
 ```
 
 Needs the Visual Studio 2022 Build Tools with the C++ workload; arm64 also needs the

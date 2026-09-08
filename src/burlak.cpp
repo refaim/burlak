@@ -30,10 +30,11 @@ HWND g_tool = nullptr;
 HANDLE g_thread = nullptr;
 DWORD g_threadId = 0;
 bool g_dragActive = false;
+int g_button = VK_LBUTTON;  // the mouse button the drag rides on
 
-bool LeftButtonDown()
+bool ButtonDown(int vk)
 {
-    return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
 IDataObject* MakeDataObject(const std::vector<std::wstring>& paths)
@@ -182,7 +183,8 @@ LRESULT CALLBACK ToolProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // BeginDrag has just released the button; press it again, now over the
         // tool window. Input is serialised, so this lands after that release
         // even if GetAsyncKeyState hasn't caught up with it yet.
-        mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_MOVE | (g_button == VK_LBUTTON ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_RIGHTDOWN),
+                    0, 0, 0, 0);
         return 1;
     }
 
@@ -191,6 +193,7 @@ LRESULT CALLBACK ToolProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
         KillTimer(hwnd, ARM_TIMER);
         RunDrag();
         return 0;
@@ -263,34 +266,164 @@ void StopThread()
     }
 }
 
+// Whether the point is on the panel's item rows.
+//
+// PanelRect is the whole panel. Its first two rows (frame, column titles)
+// and last three (status line, frame) are where Far, for as long as any
+// button is held, scrolls the cursor in a loop of its own that reads the
+// console directly, so nothing the gesture does reaches the panel from
+// there; the right frame column holds the scrollbar, which Far drags the
+// same way, and the left one goes with it for the simpler rule.
+// With column titles or the status line turned off an item row or two falls
+// into the trim as well, and a drag can't start from those; that is all.
+//
+// A panel without real names, an archive or an FTP one, has nothing to
+// drag and is left to Far entirely, so Far's own panel-to-panel mouse drag
+// keeps working there.
+bool InsidePanel(HANDLE panel, COORD pt)
+{
+    PanelInfo pi{};
+    pi.StructSize = sizeof(pi);
+    if (!Info.PanelControl(panel, FCTL_GETPANELINFO, 0, &pi))
+        return false;
+    if (!(pi.Flags & PFLAGS_VISIBLE) || !(pi.Flags & PFLAGS_REALNAMES))
+        return false;
+    const RECT& r = pi.PanelRect;
+    return pt.X > r.left && pt.X < r.right && pt.Y >= r.top + 2 && pt.Y <= r.bottom - 3;
+}
+
+// Whether a press here lands on a panel's items, the only place the gesture
+// means anything: Far puts the cursor on the item under the mouse, and that item,
+// or the selection around it, is what BeginDrag reads back. In the editor,
+// a dialog or the command line a held button is a selection or a window
+// being dragged, and Far must keep seeing every move. Both panels count,
+// as a press on the passive one makes it active before the drag starts.
+bool OnPanel(COORD pt)
+{
+    WindowInfo wi{};
+    wi.StructSize = sizeof(wi);
+    wi.Pos = -1;
+    if (!Info.AdvControl(&PluginGuid, ACTL_GETWINDOWINFO, 0, &wi) || wi.Type != WTYPE_PANELS)
+        return false;
+    return InsidePanel(PANEL_ACTIVE, pt) || InsidePanel(PANEL_PASSIVE, pt);
+}
+
+bool BeginDrag(int button);
+
+// What becomes of a mouse event: Far gets it, Far never sees it, or Far gets
+// the record it has been rewritten into.
+enum class Verdict { Pass, Hold, Replace };
+
+// The left gesture leaves the press to Far, which puts the panel cursor on
+// the item under the mouse, and holds back the moves that follow: Far walks
+// the cursor after a held button, and a drag that started a few cells later
+// would take whatever the cursor is on by then, not what was pressed.
+//
+// The right gesture can't leave the press to Far, which reads a right press
+// on an item as "toggle its selection", or with RightClickSelect off as
+// "context menu when the button comes up": one changes what gets dragged,
+// the other pops a menu under the drag. So the press is held back as well.
+// Released short of the threshold it was a click, and Far gets the press
+// then, unchanged, just later.
+//
+// Crossing the threshold, the move is rewritten into the one record that
+// leaves the panel ready for the drag, and the drag starts on the synchro
+// event: Far delivers that before it reads any more input, so by then the
+// record has been dealt with.
 struct Gesture {
-    bool armed = false;
-    int anchorX = 0;
-    int anchorY = 0;
+    enum class Phase { Idle, Armed, Starting, Spent };
 
-    bool feed(const MOUSE_EVENT_RECORD& m)
+    Phase phase = Phase::Idle;
+    int button = VK_LBUTTON;
+    MOUSE_EVENT_RECORD press{};
+
+    Verdict feed(MOUSE_EVENT_RECORD& m)
     {
+        if (m.dwEventFlags & (MOUSE_WHEELED | MOUSE_HWHEELED))
+            return Verdict::Pass;
+
+        const bool moved = (m.dwEventFlags & MOUSE_MOVED) != 0;
         const bool left = (m.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
-        if (!left) {
-            armed = false;
-            return false;
-        }
-        if (!(m.dwEventFlags & MOUSE_MOVED)) {
-            armed = true;
-            anchorX = m.dwMousePosition.X;
-            anchorY = m.dwMousePosition.Y;
-            return false;
-        }
-        if (!armed)
-            return false;
+        const bool right = (m.dwButtonState & RIGHTMOST_BUTTON_PRESSED) != 0;
 
-        const int dx = abs(m.dwMousePosition.X - anchorX);
-        const int dy = abs(m.dwMousePosition.Y - anchorY);
+        if (phase == Phase::Idle) {
+            if (moved || !(left || right))
+                return Verdict::Pass;
+            return arm(left ? VK_LBUTTON : VK_RBUTTON, m);
+        }
+
+        if (!(button == VK_LBUTTON ? left : right)) {
+            // The button is up. A right press held back this far was a click;
+            // anything else starts over as if nothing had been in progress.
+            const bool click = phase == Phase::Armed && button == VK_RBUTTON;
+            phase = Phase::Idle;
+            if (!click)
+                return feed(m);
+            m = press;
+            return Verdict::Replace;
+        }
+
+        if (!moved)
+            return button == VK_LBUTTON ? arm(VK_LBUTTON, m) : Verdict::Hold;
+
+        if (phase != Phase::Armed)
+            return Verdict::Hold;
+
+        const int dx = abs(m.dwMousePosition.X - press.dwMousePosition.X);
+        const int dy = abs(m.dwMousePosition.Y - press.dwMousePosition.Y);
         if (dx < DRAG_THRESHOLD_CELLS && dy < DRAG_THRESHOLD_CELLS)
-            return false;
+            return Verdict::Hold;
 
-        armed = false;
-        return true;
+        m = press;
+        if (button == VK_LBUTTON) {
+            // Far took the press as the start of its own panel-to-panel drag.
+            // A release here, in the pressed panel, ends that quietly; the
+            // release the drag really starts with lands wherever the mouse is
+            // by then, and inside the other panel Far would take it for a
+            // drop and start copying.
+            m.dwButtonState = 0;
+            m.dwEventFlags = 0;
+        } else {
+            // Far never saw the press. A move with the left button held puts
+            // the cursor on the item and nothing more: no selection toggle,
+            // no drag of Far's own, and none of the scrollbar and disk-menu
+            // paths, which only a button event enters.
+            m.dwButtonState = FROM_LEFT_1ST_BUTTON_PRESSED;
+            m.dwEventFlags = MOUSE_MOVED;
+        }
+        phase = Phase::Starting;
+        Info.AdvControl(&PluginGuid, ACTL_SYNCHRO, 0, nullptr);
+        return Verdict::Replace;
+    }
+
+    // Far has dealt with the rewritten record: the cursor is on the pressed
+    // item and nothing of Far's is in flight, so the drag can start.
+    void synchro()
+    {
+        if (phase != Phase::Starting)
+            return;
+        phase = Phase::Spent;
+        BeginDrag(button);
+    }
+
+    // The drag took over; the terminal sees nothing more of the gesture, not
+    // even its release, so it must not wait for one.
+    void reset()
+    {
+        phase = Phase::Idle;
+    }
+
+private:
+    Verdict arm(int vk, const MOUSE_EVENT_RECORD& m)
+    {
+        if (!OnPanel(m.dwMousePosition)) {
+            phase = Phase::Idle;
+            return Verdict::Pass;
+        }
+        phase = Phase::Armed;
+        button = vk;
+        press = m;
+        return vk == VK_LBUTTON ? Verdict::Pass : Verdict::Hold;
     }
 };
 
@@ -349,7 +482,7 @@ std::vector<std::wstring> SelectedPaths()
     return paths;
 }
 
-bool BeginDrag()
+bool BeginDrag(int button)
 {
     g_paths = SelectedPaths();
     if (g_paths.empty())
@@ -359,10 +492,12 @@ bool BeginDrag()
     if (!g_tool)
         return false;
 
+    g_button = button;
+
     // The data object is the slow part (a shell lookup per path), so it is
     // built before the gate below: nothing may take time between the last
     // look at the cursor and the button being touched.
-    if (!LeftButtonDown() || !SendMessageW(g_tool, WM_PREPARE_DRAG, 0, 0))
+    if (!ButtonDown(button) || !SendMessageW(g_tool, WM_PREPARE_DRAG, 0, 0))
         return false;
 
     // The button is only touched once the drag is sure to start, so a gesture
@@ -370,7 +505,7 @@ bool BeginDrag()
     // user are concerned. A button that is already up means the gesture is
     // over: pressing it again would leave the system believing it is held.
     RECT r{};
-    if (!HostWindow(&r) || !LeftButtonDown()) {
+    if (!HostWindow(&r) || !ButtonDown(button)) {
         SendMessageW(g_tool, WM_ABORT_DRAG, 0, 0);
         return false;
     }
@@ -378,7 +513,7 @@ bool BeginDrag()
     // Release the button the user is holding, so the press synthesised over
     // the tool window is a fresh click there rather than a continuation of
     // the one the terminal saw.
-    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+    mouse_event(button == VK_LBUTTON ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
     return SendMessageW(g_tool, WM_START_DRAG, 0, 0) != 0;
 }
 
@@ -406,18 +541,41 @@ void WINAPI GetPluginInfoW(struct PluginInfo* pi)
     pi->Flags = PF_NONE;
 }
 
+// Nothing to open: the plugin has no menu item or prefix, and a macro's
+// Plugin.Call gets nothing back. The export exists for Renewal, the
+// autoupdate plugin, which takes a DLL for a Far plugin only if it exports
+// OpenW (OpenPlugin for Far 1.x); without it the update it has downloaded is
+// discarded as "unable to determine new source path".
+HANDLE WINAPI OpenW(const struct OpenInfo*)
+{
+    return nullptr;
+}
+
 intptr_t WINAPI ProcessConsoleInputW(struct ProcessConsoleInputInfo* info)
 {
-    if (!info || info->Rec.EventType != MOUSE_EVENT || g_dragActive)
+    if (!info || info->Rec.EventType != MOUSE_EVENT)
         return 0;
-
-    if (!g_gesture.feed(info->Rec.Event.MouseEvent))
+    if (g_dragActive) {
+        g_gesture.reset();
         return 0;
+    }
 
-    if (!BeginDrag())
-        return 0;
+    switch (g_gesture.feed(info->Rec.Event.MouseEvent)) {
+    case Verdict::Hold:
+        return 1;
+    case Verdict::Replace:
+        return 2;
+    case Verdict::Pass:
+        break;
+    }
+    return 0;
+}
 
-    return 1;
+intptr_t WINAPI ProcessSynchroEventW(const struct ProcessSynchroEventInfo* info)
+{
+    if (info && info->Event == SE_COMMONSYNCHRO)
+        g_gesture.synchro();
+    return 0;
 }
 
 void WINAPI ExitFARW(const struct ExitInfo*)
