@@ -1,30 +1,27 @@
-Plug-in "Burlak" for Far Manager 3.0
-************************************
+Burlak for Far Manager 3
+************************
 
-Drag files out of the panel into any Windows drop target: Telegram, a browser
-upload box, Explorer, a chat window.
+Drag files out of Far straight into other programs: drop them into Telegram,
+into a browser's upload box, into Explorer, into a chat.
 
-Usage:
-  Hold the left mouse button on a panel item, move a few cells, drop it
-  wherever you like. Ordinary clicks keep working as before.
+How to use:
+  Press the left mouse button on a file, move the mouse a little and drop
+  the file where you want it. Clicks work as usual.
 
-  Drag with the right button instead and it is up to the target what happens
-  on the drop: Explorer offers its copy / move / shortcut menu, Telegram just
-  takes the files. A right click still selects a file as before; sweeping
-  over several files with the right button held now starts a drag instead of
-  selecting them.
+  Drag with the right button if you want the target to ask what to do:
+  Explorer will offer to copy, move or make a shortcut. Telegram and the
+  like don't ask, they just take the files. A right click still selects a
+  file, but sweeping over files with the right button held now drags them
+  instead of selecting them.
 
-  Works in the standard console (cmd.exe / conhost), in OpenConsole and in
-  Windows Terminal.
+  Works in the plain console, in OpenConsole and in Windows Terminal.
 
 Install:
-  Unpack the archive to the Far plugins directory (...Far\Plugins) and
-  restart Far.
+  Unpack the archive into Far's Plugins folder and restart Far.
 
-Licence:
-  MIT. Far Manager's plugin headers are used under their own BSD-3-clause
-  licence, (c) 1996 Eugene Roshal, (c) 2000 Far Group.
+Licence: MIT. Far's plugin headers are used under their own BSD-3-clause
+licence, (c) 1996 Eugene Roshal, (c) 2000 Far Group.
 
 Roman Kharitonov
-               https://github.com/refaim/burlak
-               https://plugring.farmanager.com/plugin.php?pid=989
+  https://github.com/refaim/burlak
+  https://plugring.farmanager.com/plugin.php?pid=989
