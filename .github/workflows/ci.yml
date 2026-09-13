@@ -97,6 +97,10 @@ jobs:
         shell: pwsh
         run: |
           choco install cppcheck --no-progress -y
+          $cppcheckTools = Join-Path $env:ProgramFiles 'Cppcheck'
+          if (-not (Test-Path -LiteralPath (Join-Path $cppcheckTools 'cppcheck.exe') -PathType Leaf)) {
+            throw 'cppcheck.exe was not found in the Chocolatey installation directory'
+          }
           $binskimVersion = '4.4.9.11'
           $binskimPackage = Join-Path $env:RUNNER_TEMP "Microsoft.CodeAnalysis.BinSkim.$binskimVersion.nupkg"
           $binskimArchive = [IO.Path]::ChangeExtension($binskimPackage, '.zip')
@@ -111,6 +115,7 @@ jobs:
             throw 'BinSkim.exe was not found in the pinned NuGet package'
           }
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          $cppcheckTools >> $env:GITHUB_PATH
           $binskimTools >> $env:GITHUB_PATH
 
       - name: Find Visual Studio LLVM

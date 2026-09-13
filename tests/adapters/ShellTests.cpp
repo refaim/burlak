@@ -106,7 +106,8 @@ namespace burlak::adapters::shell
         TEST_CASE("a real shell data object carries the requested file")
         {
             REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
-            const auto root = std::filesystem::temp_directory_path() / L"burlak-shell-data";
+            const auto root = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
+                              L"burlak-shell-data";
             std::filesystem::create_directories(root);
             const auto file = root / L"one.txt";
             {
@@ -123,7 +124,7 @@ namespace burlak::adapters::shell
             REQUIRE(drop != nullptr);
             wchar_t path[MAX_PATH]{};
             CHECK(DragQueryFileW(drop, 0, path, MAX_PATH) > 0);
-            CHECK(std::filesystem::path{path} == file);
+            CHECK(std::filesystem::canonical(std::filesystem::path{path}) == std::filesystem::canonical(file));
 
             TestDropSource source;
             auto calls = systemShellCalls();
