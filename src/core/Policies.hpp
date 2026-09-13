@@ -30,17 +30,11 @@ namespace burlak::core
         [[nodiscard]] Effect feedback(bool move, bool copy) const override;
     };
 
-    class IDropPolicy
+    class DropPolicy final
     {
       public:
-        virtual ~IDropPolicy() = default;
-        [[nodiscard]] virtual Effect effect(bool move, bool copy) const = 0;
-    };
-
-    class DropPolicy final : public IDropPolicy
-    {
-      public:
-        [[nodiscard]] Effect effect(bool move, bool copy) const override;
+        [[nodiscard]] Effect effect(const DropContext &context, Point point, bool shift) const;
+        [[nodiscard]] DropDecision drop(const DropContext &context, Point point, bool shift) const;
     };
 
     [[nodiscard]] WindowPlacement placement(bool hostTopmost);

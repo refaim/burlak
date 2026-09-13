@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/Policies.hpp"
+#include "core/Interfaces.hpp"
 
 #include <oleidl.h>
 #include <windows.h>
@@ -11,7 +11,7 @@ namespace burlak::drag
     class DropTarget final : public IDropTarget
     {
       public:
-        explicit DropTarget(core::IDropPolicy &policy);
+        explicit DropTarget(core::IDropSession &session);
 
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID interfaceId, void **object) override;
         ULONG STDMETHODCALLTYPE AddRef() override;
@@ -22,9 +22,9 @@ namespace burlak::drag
         HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD keyState, POINTL point, DWORD *effect) override;
 
       private:
-        [[nodiscard]] HRESULT apply(DWORD *effect) const;
+        [[nodiscard]] HRESULT apply(DWORD keyState, POINTL point, DWORD *effect, bool dropping);
 
-        core::IDropPolicy &policy_;
+        core::IDropSession &session_;
         ULONG references_{1};
     };
 

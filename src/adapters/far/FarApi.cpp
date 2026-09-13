@@ -43,6 +43,7 @@ namespace burlak::adapters::far_api
             .visible = (info.Flags & PFLAGS_VISIBLE) != 0,
             .realNames = (info.Flags & PFLAGS_REALNAMES) != 0,
             .plugin = (info.Flags & PFLAGS_PLUGIN) != 0,
+            .filePanel = info.PanelType == PTYPE_FILEPANEL,
             .rect = {info.PanelRect.left, info.PanelRect.top, info.PanelRect.right, info.PanelRect.bottom},
             .handle = reinterpret_cast<core::PanelHandle>(info.PluginHandle),
             .owner = owner,

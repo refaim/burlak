@@ -98,6 +98,34 @@ namespace burlak::drag
             }
         };
 
+        class DropSession final : public core::IDropSession
+        {
+          public:
+            std::optional<core::DropContext> context;
+
+            void prepare(core::DropContext prepared) override
+            {
+                context = prepared;
+            }
+            [[nodiscard]] core::Effect effect(core::Point, bool) const override
+            {
+                return core::Effect::None;
+            }
+            [[nodiscard]] core::Effect drop(core::Point, bool) override
+            {
+                return core::Effect::None;
+            }
+        };
+
+        core::DropContext dropContext()
+        {
+            return {.press = {5, 5},
+                    .source = core::PanelSide::Active,
+                    .panels = {},
+                    .host = std::nullopt,
+                    .geometry = std::nullopt};
+        }
+
         LRESULT CALLBACK hostProc(HWND window, UINT message, WPARAM word, LPARAM number)
         {
             return DefWindowProcW(window, message, word, number);
@@ -146,14 +174,16 @@ namespace burlak::drag
             screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, false};
             Input input;
             Shell shell;
-            ToolWindow tool{screen, input, shell};
+            DropSession dropSession;
+            ToolWindow tool{screen, input, shell, dropSession};
 
             CHECK(tool.start());
             CHECK(tool.start());
             REQUIRE(tool.nativeWindow() != 0);
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            CHECK(tool.prepare(paths, core::Button::Left));
+            CHECK(tool.prepare(paths, core::Button::Left, dropContext()));
             CHECK(tool.hasData());
+            CHECK(dropSession.context->press == core::Cell{5, 5});
             CHECK(tool.showAndArm());
             CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) != FALSE);
             REQUIRE(input.presses.size() == 1);
@@ -176,7 +206,8 @@ namespace burlak::drag
             Screen screen;
             Input input;
             Shell shell;
-            ToolWindow tool{screen, input, shell};
+            DropSession dropSession;
+            ToolWindow tool{screen, input, shell, dropSession};
             REQUIRE(tool.start());
             CHECK_FALSE(tool.showAndArm());
             SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_LBUTTONDOWN, 0, 0);
@@ -184,15 +215,15 @@ namespace burlak::drag
 
             shell.prepares = false;
             const std::vector<std::wstring> invalid{L"Z:\\definitely-missing\\file.txt"};
-            CHECK_FALSE(tool.prepare(invalid, core::Button::Right));
+            CHECK_FALSE(tool.prepare(invalid, core::Button::Right, dropContext()));
             shell.prepares = true;
             const std::vector<std::wstring> valid{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(valid, core::Button::Right));
+            REQUIRE(tool.prepare(valid, core::Button::Right, dropContext()));
             CHECK_FALSE(tool.showAndArm());
             CHECK_FALSE(tool.hasData());
             CHECK(input.presses.empty());
 
-            REQUIRE(tool.prepare(valid, core::Button::Right));
+            REQUIRE(tool.prepare(valid, core::Button::Right, dropContext()));
             tool.abort();
             CHECK_FALSE(tool.hasData());
             tool.stop();
@@ -206,10 +237,11 @@ namespace burlak::drag
             screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, true};
             Input input;
             Shell shell;
-            ToolWindow tool{screen, input, shell};
+            DropSession dropSession;
+            ToolWindow tool{screen, input, shell, dropSession};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Right));
+            REQUIRE(tool.prepare(paths, core::Button::Right, dropContext()));
             REQUIRE(tool.showAndArm());
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
             shell.duringDrag = [&tool](core::NativeWindow owner) {
@@ -225,7 +257,7 @@ namespace burlak::drag
             CHECK(IsWindowVisible(window) == FALSE);
 
             screen.host->topmost = false;
-            REQUIRE(tool.prepare(paths, core::Button::Left));
+            REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
             REQUIRE(tool.showAndArm());
             shell.duringDrag = [&tool](core::NativeWindow owner) {
                 CHECK(tool.active());
@@ -243,16 +275,17 @@ namespace burlak::drag
             Screen screen;
             Input input;
             Shell shell;
+            DropSession dropSession;
 
             auto calls = systemToolWindowCalls();
             calls.createThread = failCreateThread;
-            ToolWindow noThread{screen, input, shell, calls};
+            ToolWindow noThread{screen, input, shell, dropSession, calls};
             CHECK_FALSE(noThread.start());
 
             calls = systemToolWindowCalls();
             calls.createWindow = failCreateWindow;
             calls.sleep = shortSleep;
-            ToolWindow noWindow{screen, input, shell, calls};
+            ToolWindow noWindow{screen, input, shell, dropSession, calls};
             CHECK_FALSE(noWindow.start());
             noWindow.stop();
         }
@@ -265,12 +298,13 @@ namespace burlak::drag
             screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, false};
             Input input;
             Shell shell;
+            DropSession dropSession;
             auto calls = systemToolWindowCalls();
             calls.isWindowVisible = reportInvisible;
-            ToolWindow tool{screen, input, shell, calls};
+            ToolWindow tool{screen, input, shell, dropSession, calls};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left));
+            REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
             CHECK_FALSE(tool.showAndArm());
             CHECK_FALSE(tool.hasData());
 

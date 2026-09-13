@@ -155,10 +155,20 @@ process lifetime. `version.h` stays the single source of the version.
 Two threads, as today. Far's main thread runs the exports, the gesture, every Far API call and
 (feature 1) the extraction. The tool thread owns the tool window, `OleInitialize`, the drag loop
 and the COM objects. Rules: a Far API call from the tool thread is a bug (the guard test cannot
-see it, the reviewer must); the tool thread asks for main-thread work with `postSynchro` and waits
-on an event with a timeout; the main thread asks the tool thread for work with `SendMessage` /
-`PostMessage` to the tool window. `Session` state that both threads read is guarded by a mutex or
-handed over by value in the messages; document which.
+see it, the reviewer must); the tool thread asks for main-thread work with `postSynchro` and,
+when it needs a result, waits on an event with a timeout; the main thread asks the tool thread for
+work with `SendMessage` / `PostMessage` to the tool window. `Session` state that both threads
+read is guarded by a mutex or handed over by value in the messages; document which. For a
+same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool thread
+for cosmetic hover feedback. On `Drop`, that thread puts a by-value
+`PendingDrop { point, effect }` behind the session mutex, posts synchro, and returns the effect to
+OLE; it neither calls Far nor reads later main-thread state. Far's synchro handler re-reads both
+panels, the host and cell geometry, and replays only if the active source still has the original
+handle and rectangle and both sides are file panels. Otherwise it cancels with a one-line Far
+message. OLE owns ordinary keyboard input during the drag, but a macro, timer, panel swap or
+console resize can still make the hover snapshot stale. Replay also runs on Far's thread; an
+incomplete write is reported, and a one-record partial write is followed by a buttonless release
+at the press cell so Far's panel-drag state is not left armed.
 
 ## 3. Testing
 

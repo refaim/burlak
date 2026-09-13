@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdio>
 #include <vector>
 
@@ -128,19 +129,34 @@ namespace burlak::adapters::win
             HWND value_{};
         };
 
-        bool ownsClickPoint(HWND window, POINT requested)
+        [[nodiscard]] bool clicksComplete()
         {
-            POINT positioned{};
-            return SetCursorPos(requested.x, requested.y) != FALSE && GetCursorPos(&positioned) != FALSE &&
-                   WindowFromPoint(positioned) == window && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 &&
-                   (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0;
+            return clicks.leftDown > 0 && clicks.leftUp > 0 && clicks.rightDown > 0 && clicks.rightUp > 0;
         }
 
-        void pumpUntilFourClicks()
+        bool establishClickPoint(HWND window, POINT requested)
         {
-            for (int attempt = 0;
-                 attempt < 20 && (clicks.leftDown + clicks.leftUp + clicks.rightDown + clicks.rightUp) < 4; ++attempt) {
-                static_cast<void>(MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT));
+            if (SetCursorPos(requested.x, requested.y) == FALSE) {
+                return false;
+            }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+            do {
+                POINT positioned{};
+                if (GetCursorPos(&positioned) != FALSE && positioned.x == requested.x && positioned.y == requested.y &&
+                    WindowFromPoint(positioned) == window && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 &&
+                    (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0) {
+                    return true;
+                }
+                static_cast<void>(MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT));
+            } while (std::chrono::steady_clock::now() < deadline);
+            return false;
+        }
+
+        void pumpUntilClicksComplete()
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+            while (!clicksComplete() && std::chrono::steady_clock::now() < deadline) {
+                static_cast<void>(MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT));
                 MSG message{};
                 while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                     static_cast<void>(TranslateMessage(&message));
@@ -225,7 +241,7 @@ namespace burlak::adapters::win
                 return;
             }
             WindowGuard window{cursor.position()};
-            if (window.get() == nullptr || !ownsClickPoint(window.get(), cursor.position())) {
+            if (window.get() == nullptr || !establishClickPoint(window.get(), cursor.position())) {
                 std::fputs("SKIP: injected-click integration lacks an owned cursor point with both buttons up\n",
                            stderr);
                 return;
@@ -237,7 +253,7 @@ namespace burlak::adapters::win
             adapter.release(core::Button::Left);
             adapter.press(core::Button::Right);
             adapter.release(core::Button::Right);
-            pumpUntilFourClicks();
+            pumpUntilClicksComplete();
 
             CHECK(clicks.leftDown == 1);
             CHECK(clicks.leftUp == 1);

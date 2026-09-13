@@ -5,6 +5,7 @@
 
 #include <plugin.hpp>
 
+#include <cstring>
 #include <stdexcept>
 
 namespace
@@ -62,7 +63,7 @@ namespace
 
 TEST_SUITE("plugin exports")
 {
-    TEST_CASE("global and plugin metadata remain 1.2.0")
+    TEST_CASE("global and plugin metadata report 1.3.0")
     {
         GlobalInfo global{};
         GetGlobalInfoW(&global);
@@ -72,7 +73,7 @@ TEST_SUITE("plugin exports")
         CHECK(global.MinFarVersion.Revision == 0);
         CHECK(global.MinFarVersion.Build == 2843);
         CHECK(global.Version.Major == 1);
-        CHECK(global.Version.Minor == 2);
+        CHECK(global.Version.Minor == 3);
         CHECK(global.Version.Revision == 0);
         CHECK(std::wstring_view{global.Title} == L"Burlak");
         CHECK(std::wstring_view{global.Author} == L"Roman Kharitonov");
@@ -147,6 +148,24 @@ TEST_SUITE("plugin exports")
         CHECK(release.Rec.Event.MouseEvent.dwButtonState == original.dwButtonState);
         CHECK(release.Rec.Event.MouseEvent.dwControlKeyState == original.dwControlKeyState);
         CHECK(release.Rec.Event.MouseEvent.dwEventFlags == original.dwEventFlags);
+    }
+
+    TEST_CASE("Far's replayed panel press and release both pass through unchanged")
+    {
+        auto startupInfo = startup();
+        SetStartupInfoW(&startupInfo);
+
+        auto press = inputInfo({5, 5}, FROM_LEFT_1ST_BUTTON_PRESSED);
+        press.Rec.Event.MouseEvent.dwControlKeyState = SHIFT_PRESSED;
+        const auto originalPress = press.Rec.Event.MouseEvent;
+        CHECK(ProcessConsoleInputW(&press) == 0);
+        CHECK(std::memcmp(&press.Rec.Event.MouseEvent, &originalPress, sizeof(originalPress)) == 0);
+
+        auto release = inputInfo({45, 5}, 0);
+        release.Rec.Event.MouseEvent.dwControlKeyState = SHIFT_PRESSED;
+        const auto originalRelease = release.Rec.Event.MouseEvent;
+        CHECK(ProcessConsoleInputW(&release) == 0);
+        CHECK(std::memcmp(&release.Rec.Event.MouseEvent, &originalRelease, sizeof(originalRelease)) == 0);
     }
 
     TEST_CASE("non-mouse input, null input, null startup, and Far exceptions stay behind the firewall")

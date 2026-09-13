@@ -1,7 +1,29 @@
 #include "core/Policies.hpp"
 
+#include "core/Geometry.hpp"
+
 namespace burlak::core
 {
+
+    namespace
+    {
+
+        [[nodiscard]] std::size_t index(PanelSide side)
+        {
+            return side == PanelSide::Active ? 0U : 1U;
+        }
+
+        [[nodiscard]] PanelSide other(PanelSide side)
+        {
+            return side == PanelSide::Active ? PanelSide::Passive : PanelSide::Active;
+        }
+
+        [[nodiscard]] bool contains(PixelRect rect, Point point)
+        {
+            return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
+        }
+
+    } // namespace
 
     DragAction ReleasePolicy::query(Button button, bool escapePressed, bool leftDown, bool rightDown) const
     {
@@ -20,10 +42,35 @@ namespace burlak::core
         return copy ? Effect::Copy : Effect::None;
     }
 
-    Effect DropPolicy::effect(bool, bool) const
+    Effect DropPolicy::effect(const DropContext &context, Point point, bool shift) const
     {
-        // Burlak 1.2.0 owns this target only to give OLE a window; it never accepts a drop itself.
-        return Effect::None;
+        if (!context.host || !context.geometry || !contains(context.host->rect, point)) {
+            return Effect::None;
+        }
+        const auto &source = context.panels[index(context.source)];
+        const auto &target = context.panels[index(other(context.source))];
+        // Only FileList::ProcessMouse reaches Panel::ProcessMouseDrag, so neither a non-file source
+        // nor destination can participate (Far source: far/filelist.cpp, FileList::ProcessMouse).
+        if (!source || !source->filePanel || !target || !target->filePanel ||
+            !isItemCell(*target, toCell(point, *context.geometry))) {
+            return Effect::None;
+        }
+        return shift ? Effect::Move : Effect::Copy;
+    }
+
+    DropDecision DropPolicy::drop(const DropContext &context, Point point, bool shift) const
+    {
+        const auto chosen = effect(context, point, shift);
+        if (chosen == Effect::None) {
+            return {};
+        }
+        const Modifiers modifiers{.shift = chosen == Effect::Move};
+        // Far arms its panel drag from the press and completes it on a buttonless event offered to
+        // the other panel (Far sources: far/panel.cpp, Panel::ProcessMouseDrag; far/filepanels.cpp,
+        // FilePanels::ProcessMouse; far/filelist.cpp, FileList::ProcessCopyKeys).
+        return {.effect = chosen,
+                .events = {MouseEvent{.at = context.press, .left = true, .mods = modifiers},
+                           MouseEvent{.at = toCell(point, *context.geometry), .mods = modifiers}}};
     }
 
     WindowPlacement placement(bool hostTopmost)

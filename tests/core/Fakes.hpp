@@ -53,14 +53,16 @@ namespace burlak::tests
     {
       public:
         int synchros{};
+        std::vector<std::vector<std::wstring>> messages;
 
         void postSynchro() override
         {
             ++synchros;
         }
 
-        void message(std::wstring_view, std::span<const std::wstring>) override
+        void message(std::wstring_view, std::span<const std::wstring> lines) override
         {
+            messages.emplace_back(lines.begin(), lines.end());
         }
 
         [[nodiscard]] std::optional<core::PluginModule> pluginModule(const core::Guid &) override
@@ -77,7 +79,7 @@ namespace burlak::tests
 
     inline core::PanelInfo visiblePanel(core::CellRect rect)
     {
-        return {.visible = true, .realNames = true, .plugin = false, .rect = rect};
+        return {.visible = true, .realNames = true, .plugin = false, .filePanel = true, .rect = rect};
     }
 
     inline core::MouseEvent mouse(core::Cell at, bool left, bool right, bool moved = false, bool wheel = false)

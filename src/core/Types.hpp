@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -96,6 +97,14 @@ namespace burlak::core
         Passive
     };
 
+    struct DragStart
+    {
+        Button button{Button::Left};
+        Cell press{};
+
+        auto operator<=>(const DragStart &) const = default;
+    };
+
     using PanelHandle = std::uintptr_t;
     using NativeWindow = std::uintptr_t;
     using PluginInstance = std::uintptr_t;
@@ -114,6 +123,7 @@ namespace burlak::core
         bool visible{};
         bool realNames{};
         bool plugin{};
+        bool filePanel{};
         CellRect rect{};
         PanelHandle handle{};
         Guid owner{};
@@ -142,6 +152,21 @@ namespace burlak::core
         NativeWindow handle{};
         PixelRect rect{};
         bool topmost{};
+    };
+
+    struct DropContext
+    {
+        Cell press{};
+        PanelSide source{PanelSide::Active};
+        std::array<std::optional<PanelInfo>, 2> panels{};
+        std::optional<HostWindow> host;
+        std::optional<CellGeometry> geometry;
+    };
+
+    struct DropDecision
+    {
+        Effect effect{Effect::None};
+        std::array<MouseEvent, 2> events{};
     };
 
     struct WindowPlacement

@@ -21,6 +21,7 @@ namespace burlak::adapters::far_api
         bool advFailure{};
         std::wstring directoryName{L"C:\\panel"};
         std::wstring selectedName{L"selected.txt"};
+        PANELINFOTYPE panelType{PTYPE_FILEPANEL};
         UUID ownerGuid{0x12345678, 0x1111, 0x2222, {1, 2, 3, 4, 5, 6, 7, 8}};
         GlobalInfo pluginGlobal{};
         PluginInfo pluginInfo{};
@@ -59,6 +60,7 @@ namespace burlak::adapters::far_api
                     return 0;
                 }
                 auto &info = *static_cast<PanelInfo *>(param2);
+                info.PanelType = panelType;
                 info.Flags = PFLAGS_VISIBLE | PFLAGS_REALNAMES | (panel == PANEL_PASSIVE ? PFLAGS_PLUGIN : PFLAGS_NONE);
                 info.PanelRect = panel == PANEL_ACTIVE ? RECT{0, 0, 39, 24} : RECT{40, 0, 79, 24};
                 info.PluginHandle = reinterpret_cast<HANDLE>(17);
@@ -179,6 +181,7 @@ namespace burlak::adapters::far_api
             CHECK(active->visible);
             CHECK(active->realNames);
             CHECK_FALSE(active->plugin);
+            CHECK(active->filePanel);
             CHECK(active->rect == core::CellRect{0, 0, 39, 24});
             CHECK(active->handle == 17);
             CHECK(active->selectedItems == 1);
@@ -186,6 +189,11 @@ namespace burlak::adapters::far_api
             const auto passive = panels.panel(core::PanelSide::Passive);
             REQUIRE(passive.has_value());
             CHECK(passive->plugin);
+            panelType = PTYPE_TREEPANEL;
+            const auto tree = panels.panel(core::PanelSide::Passive);
+            REQUIRE(tree.has_value());
+            CHECK_FALSE(tree->filePanel);
+            panelType = PTYPE_FILEPANEL;
             CHECK(passive->rect == core::CellRect{40, 0, 79, 24});
 
             CHECK(panels.directory(core::PanelSide::Active) == directoryName);

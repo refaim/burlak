@@ -7,6 +7,8 @@ into a browser's upload box, into Explorer, into a chat.
 How to use:
   Press the left mouse button on a file, move the mouse a little and drop
   the file where you want it. Clicks work as usual.
+  Drop onto Far's other panel to copy there; hold Shift to move instead,
+  including to or from plugin panels.
 
   Drag with the right button if you want the target to ask what to do:
   Explorer will offer to copy, move or make a shortcut. Telegram and the

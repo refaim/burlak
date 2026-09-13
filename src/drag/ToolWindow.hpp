@@ -20,12 +20,14 @@ namespace burlak::drag
     class ToolWindow final : public core::IDragTool
     {
       public:
-        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell);
-        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, const ToolWindowCalls &calls);
+        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession);
+        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
+                   const ToolWindowCalls &calls);
         ~ToolWindow();
 
         [[nodiscard]] bool start() override;
-        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button) override;
+        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button,
+                                   core::DropContext context) override;
         [[nodiscard]] bool showAndArm() override;
         void abort() override;
         [[nodiscard]] bool active() const override;

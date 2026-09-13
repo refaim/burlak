@@ -90,13 +90,13 @@ namespace burlak::core
         return {.action = VerdictAction::Replace, .replacement = replacement};
     }
 
-    std::optional<Button> Gesture::synchro()
+    std::optional<DragStart> Gesture::synchro()
     {
         if (phase_ != Phase::Starting) {
             return std::nullopt;
         }
         phase_ = Phase::Spent;
-        return button_;
+        return DragStart{button_, press_.at};
     }
 
     void Gesture::reset()
@@ -127,7 +127,8 @@ namespace burlak::core
         }
         const auto active = panels_.panel(PanelSide::Active);
         const auto passive = panels_.panel(PanelSide::Passive);
-        return (active && isItemCell(*active, cell)) || (passive && isItemCell(*passive, cell));
+        return (active && active->realNames && isItemCell(*active, cell)) ||
+               (passive && passive->realNames && isItemCell(*passive, cell));
     }
 
 } // namespace burlak::core

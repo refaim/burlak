@@ -62,6 +62,7 @@ namespace burlak::drag
         {
             std::span<const std::wstring> paths;
             core::Button button{core::Button::Left};
+            core::DropContext context;
         };
 
     } // namespace
@@ -69,8 +70,10 @@ namespace burlak::drag
     class ToolWindow::State
     {
       public:
-        State(core::IScreen &screen, core::IInput &input, core::IShell &shell, const ToolWindowCalls &calls)
-            : screen_{screen}, input_{input}, shell_{shell}, calls_{calls}
+        State(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
+              const ToolWindowCalls &calls)
+            : screen_{screen}, input_{input}, shell_{shell}, dropSession_{dropSession}, calls_{calls},
+              dropTarget_{dropSession_}
         {
         }
 
@@ -101,11 +104,11 @@ namespace burlak::drag
             threadId_ = 0;
         }
 
-        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button)
+        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button, core::DropContext context)
         {
-            // SendMessage is synchronous across these threads, so this immutable view remains alive until
-            // the tool thread has consumed it and returned the result.
-            const PreparePayload payload{paths, button};
+            // SendMessage is synchronous across these threads, so the path view remains alive while the
+            // context value transfers the Far-thread snapshot before any hover or drop can read it.
+            const PreparePayload payload{paths, button, context};
             return SendMessageW(windowHandle(), prepareDragMessage, 0, reinterpret_cast<LPARAM>(&payload)) != 0;
         }
 
@@ -207,6 +210,7 @@ namespace burlak::drag
                     return 0;
                 }
                 button_ = payload.button;
+                dropSession_.prepare(payload.context);
                 data_ = std::move(*prepared);
                 return 1;
             }
@@ -294,6 +298,7 @@ namespace burlak::drag
         core::IScreen &screen_;
         core::IInput &input_;
         core::IShell &shell_;
+        core::IDropSession &dropSession_;
         const ToolWindowCalls &calls_;
         UniqueHandle thread_;
         DWORD threadId_{};
@@ -302,18 +307,18 @@ namespace burlak::drag
         core::Button button_{core::Button::Left};
         std::unique_ptr<core::IShell::DragData> data_;
         core::ReleasePolicy releasePolicy_;
-        core::DropPolicy dropPolicy_;
-        DropTarget dropTarget_{dropPolicy_};
+        DropTarget dropTarget_;
     };
 
-    ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell)
-        : state_{std::make_unique<State>(screen, input, shell, systemCalls)}
+    ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
+                           core::IDropSession &dropSession)
+        : state_{std::make_unique<State>(screen, input, shell, dropSession, systemCalls)}
     {
     }
 
     ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           const ToolWindowCalls &calls)
-        : state_{std::make_unique<State>(screen, input, shell, calls)}
+                           core::IDropSession &dropSession, const ToolWindowCalls &calls)
+        : state_{std::make_unique<State>(screen, input, shell, dropSession, calls)}
     {
     }
 
@@ -327,9 +332,9 @@ namespace burlak::drag
         return state_->start();
     }
 
-    bool ToolWindow::prepare(std::span<const std::wstring> paths, core::Button button)
+    bool ToolWindow::prepare(std::span<const std::wstring> paths, core::Button button, core::DropContext context)
     {
-        return state_->prepare(paths, button);
+        return state_->prepare(paths, button, context);
     }
 
     bool ToolWindow::showAndArm()

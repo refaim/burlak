@@ -29,7 +29,7 @@ namespace burlak::core
             release.rewrite = MouseEvent::Rewrite::ButtonlessRelease;
             CHECK(verdict.replacement == release);
             CHECK(host.synchros == 1);
-            CHECK(gesture.synchro() == Button::Left);
+            CHECK(gesture.synchro() == DragStart{Button::Left, {5, 5}});
             CHECK_FALSE(gesture.synchro().has_value());
         }
 
@@ -54,7 +54,7 @@ namespace burlak::core
             auto leftMove = mouse({5, 5}, true, false, true);
             leftMove.rewrite = MouseEvent::Rewrite::LeftHeldMove;
             CHECK(drag.replacement == leftMove);
-            CHECK(gesture.synchro() == Button::Right);
+            CHECK(gesture.synchro() == DragStart{Button::Right, {5, 5}});
         }
 
         TEST_CASE("right double click stays held and a second left press rearms at its new cell")
@@ -97,6 +97,17 @@ namespace burlak::core
             panels.panelsWindow = true;
             panels.panels[1]->realNames = false;
             CHECK(gesture.feed(active).action == VerdictAction::Pass);
+
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[1].reset();
+            auto virtualActive = mouse({5, 5}, true, false);
+            CHECK(gesture.feed(virtualActive).action == VerdictAction::Pass);
+
+            panels.panels[0].reset();
+            panels.panels[1] = tests::visiblePanel({40, 0, 79, 24});
+            auto passiveFrame = mouse({40, 5}, true, false);
+            CHECK(gesture.feed(passiveFrame).action == VerdictAction::Pass);
         }
 
         TEST_CASE("edge rows do not arm and idle moves and releases pass")
@@ -150,6 +161,20 @@ namespace burlak::core
             CHECK(gesture.feed(event, true).action == VerdictAction::Pass);
             auto freshRight = mouse({5, 5}, false, true);
             CHECK(gesture.feed(freshRight).action == VerdictAction::Hold);
+        }
+
+        TEST_CASE("Far's replayed press arms and its release disarms without being swallowed")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            tests::Host host;
+            Gesture gesture{panels, host};
+
+            const auto press = mouse({5, 5}, true, false);
+            const auto release = mouse({45, 5}, false, false);
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(release).action == VerdictAction::Pass);
+            CHECK_FALSE(gesture.synchro().has_value());
         }
     }
 

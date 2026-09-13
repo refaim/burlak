@@ -26,7 +26,7 @@ namespace burlak::core
         Gesture(IPanels &panels, IFarHost &host);
 
         [[nodiscard]] Verdict feed(const MouseEvent &event, bool dragActive = false);
-        [[nodiscard]] std::optional<Button> synchro();
+        [[nodiscard]] std::optional<DragStart> synchro();
         void reset();
 
       private:

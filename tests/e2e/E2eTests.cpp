@@ -327,6 +327,7 @@ TEST_SUITE("e2e")
         GlobalInfo globalInfo{};
         global(&globalInfo);
         CHECK(globalInfo.Version.Major == 1);
+        CHECK(globalInfo.Version.Minor == 3);
         PluginStartupInfo startupInfo{};
         startupInfo.StructSize = sizeof(startupInfo);
         startupInfo.PanelControl = panelControl;

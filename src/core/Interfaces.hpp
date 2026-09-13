@@ -90,11 +90,19 @@ namespace burlak::core
     {
       public:
         [[nodiscard]] virtual bool start() = 0;
-        [[nodiscard]] virtual bool prepare(std::span<const std::wstring> paths, Button button) = 0;
+        [[nodiscard]] virtual bool prepare(std::span<const std::wstring> paths, Button button, DropContext context) = 0;
         [[nodiscard]] virtual bool showAndArm() = 0;
         virtual void abort() = 0;
         [[nodiscard]] virtual bool active() const = 0;
         virtual void stop() = 0;
+    };
+
+    class IDropSession
+    {
+      public:
+        virtual void prepare(DropContext context) = 0;
+        [[nodiscard]] virtual Effect effect(Point point, bool shift) const = 0;
+        [[nodiscard]] virtual Effect drop(Point point, bool shift) = 0;
     };
 
 } // namespace burlak::core

@@ -16,8 +16,8 @@ namespace burlak::plugin
     {
       public:
         explicit Runtime(const PluginStartupInfo &startupInfo)
-            : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_}, tool_{screen_, input_, shell_},
-              gesture_{panels_, host_}, session_{panels_, screen_, input_, tool_}
+            : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_}, gesture_{panels_, host_},
+              session_{panels_, host_, screen_, input_}, tool_{screen_, input_, shell_, session_}
         {
         }
 
@@ -28,10 +28,11 @@ namespace burlak::plugin
 
         void synchro()
         {
-            const auto button = gesture_.synchro();
-            if (button) {
-                static_cast<void>(session_.begin(*button));
+            const auto start = gesture_.synchro();
+            if (start) {
+                static_cast<void>(session_.begin(tool_, *start));
             }
+            session_.synchro();
         }
 
         void stop()
@@ -46,9 +47,9 @@ namespace burlak::plugin
         adapters::win::Screen screen_;
         adapters::win::Input input_;
         adapters::shell::Shell shell_;
-        drag::ToolWindow tool_;
         core::Gesture gesture_;
         core::Session session_;
+        drag::ToolWindow tool_;
     };
 
     Composition::Composition() = default;
