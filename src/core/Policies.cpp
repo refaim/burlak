@@ -23,14 +23,17 @@ namespace burlak::core
             return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
         }
 
+        // View-mode or column-layout changes that preserve this identity are intentionally below the feature's
+        // plausibility bar.
         [[nodiscard]] bool samePanel(const std::optional<PanelInfo> &before, const std::optional<PanelInfo> &current)
         {
             if (!before || !current) {
                 return false;
             }
-            return current->visible && current->filePanel && before->rect == current->rect &&
-                   before->handle == current->handle && before->currentItem == current->currentItem &&
-                   before->topItem == current->topItem;
+            return current->visible && current->filePanel && before->plugin == current->plugin &&
+                   before->filePanel == current->filePanel && before->rect == current->rect &&
+                   before->handle == current->handle && before->owner == current->owner &&
+                   before->currentItem == current->currentItem && before->topItem == current->topItem;
         }
 
         [[nodiscard]] bool sameHost(const std::optional<HostWindow> &before, const std::optional<HostWindow> &current)

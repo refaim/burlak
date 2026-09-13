@@ -170,6 +170,10 @@ namespace burlak::core
             {
                 current.panels[0]->filePanel = false;
             }
+            SUBCASE("original source was not a file panel")
+            {
+                snapshot.panels[0]->filePanel = false;
+            }
             SUBCASE("destination is not a file panel")
             {
                 current.panels[1]->filePanel = false;
@@ -181,6 +185,14 @@ namespace burlak::core
             SUBCASE("destination handle changed")
             {
                 current.panels[1]->handle = 99;
+            }
+            SUBCASE("source owner changed while its handle stayed the same")
+            {
+                current.panels[0]->owner[0] = std::byte{1};
+            }
+            SUBCASE("source changed between ordinary and plugin panel")
+            {
+                current.panels[0]->plugin = true;
             }
             SUBCASE("source rectangle changed")
             {
