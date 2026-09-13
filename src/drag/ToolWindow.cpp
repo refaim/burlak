@@ -24,11 +24,13 @@ namespace burlak::drag
         constexpr UINT hasDataMessage = WM_USER + 0x104;
         constexpr UINT_PTR armTimer = 1;
         constexpr UINT armTimeoutMilliseconds = 1000;
+        constexpr int startupPollAttempts = 200;
+        constexpr DWORD startupPollMilliseconds = 5;
         constexpr wchar_t toolClass[] = L"BurlakToolWindow";
 
-        const ToolWindowCalls systemCalls{
-            CreateThread,   Sleep,    CreateWindowExW, IsWindowVisible,         SetWindowPos, ShowWindow, SetCapture,
-            ReleaseCapture, SetTimer, KillTimer,       CoWaitForMultipleHandles};
+        const ToolWindowCalls systemCalls{CreateThread,    Sleep,        CreateEventW, CreateWindowExW,
+                                          IsWindowVisible, SetWindowPos, ShowWindow,   SetCapture,
+                                          ReleaseCapture,  SetTimer,     KillTimer,    CoWaitForMultipleHandles};
 
         struct HandleCloser
         {
@@ -85,18 +87,42 @@ namespace burlak::drag
             if (thread_.get() != nullptr) {
                 return window_.load() != 0;
             }
-            thread_.reset(calls_.createThread(nullptr, 0, threadEntry, this, 0, &threadId_));
-            if (thread_.get() == nullptr) {
+            readiness_.reset(calls_.createEvent(nullptr, TRUE, FALSE, nullptr));
+            if (readiness_.get() == nullptr) {
                 return false;
             }
-            for (int attempt = 0; attempt < 200 && window_.load() == 0; ++attempt) {
-                calls_.sleep(5);
+            stopRequested_.store(false);
+            threadId_ = 0;
+            thread_.reset(calls_.createThread(nullptr, 0, threadEntry, this, 0, &threadId_));
+            if (thread_.get() == nullptr) {
+                readiness_.reset();
+                return false;
             }
-            return window_.load() != 0;
+            bool ready{};
+            for (int attempt = 0; attempt < startupPollAttempts; ++attempt) {
+                if (WaitForSingleObject(readiness_.get(), 0) == WAIT_OBJECT_0) {
+                    ready = true;
+                    break;
+                }
+                calls_.sleep(startupPollMilliseconds);
+            }
+            if (!ready) {
+                stop();
+                return false;
+            }
+            for (int attempt = 0; attempt < startupPollAttempts && window_.load() == 0; ++attempt) {
+                calls_.sleep(startupPollMilliseconds);
+            }
+            if (window_.load() == 0) {
+                stop();
+                return false;
+            }
+            return true;
         }
 
         void stop()
         {
+            stopRequested_.store(true);
             if (threadId_ != 0) {
                 static_cast<void>(PostThreadMessageW(threadId_, WM_QUIT, 0, 0));
             }
@@ -113,6 +139,7 @@ namespace burlak::drag
                 }
                 thread_.reset();
             }
+            readiness_.reset();
             threadId_ = 0;
         }
 
@@ -163,7 +190,15 @@ namespace burlak::drag
 
         [[nodiscard]] DWORD threadMain()
         {
+            MSG message{};
+            // PeekMessage creates the queue before the main thread can rely on PostThreadMessage for shutdown.
+            static_cast<void>(PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE));
+            static_cast<void>(SetEvent(readiness_.get()));
             static_cast<void>(OleInitialize(nullptr));
+            if (stopRequested_.load()) {
+                OleUninitialize();
+                return 0;
+            }
 
             WNDCLASSEXW windowClass{};
             windowClass.cbSize = sizeof(windowClass);
@@ -184,7 +219,6 @@ namespace burlak::drag
                 registration.reset(window);
             }
 
-            MSG message{};
             while (GetMessageW(&message, nullptr, 0, 0) > 0) {
                 static_cast<void>(TranslateMessage(&message));
                 static_cast<void>(DispatchMessageW(&message));
@@ -330,9 +364,11 @@ namespace burlak::drag
         core::IExtraction &extraction_;
         const ToolWindowCalls &calls_;
         UniqueHandle thread_;
+        UniqueHandle readiness_;
         DWORD threadId_{};
         std::atomic<core::NativeWindow> window_{};
         std::atomic<bool> active_{};
+        std::atomic<bool> stopRequested_{};
         core::Button button_{core::Button::Left};
         bool needsExtraction_{};
         std::unique_ptr<core::IShell::DragData> data_;

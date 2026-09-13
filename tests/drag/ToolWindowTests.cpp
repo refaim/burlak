@@ -190,6 +190,11 @@ namespace burlak::drag
             return nullptr;
         }
 
+        HANDLE WINAPI failCreateEvent(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCWSTR)
+        {
+            return nullptr;
+        }
+
         void WINAPI shortSleep(DWORD)
         {
             Sleep(1);
@@ -221,6 +226,67 @@ namespace burlak::drag
         DWORD joinWaitFlags{};
         DWORD joinWaitTimeout{};
         int joinWaitCalls{};
+
+        struct DelayedThreadState
+        {
+            HANDLE gate{};
+            LPTHREAD_START_ROUTINE entry{};
+            LPVOID parameter{};
+            DWORD id{};
+            int sleeps{};
+            int entries{};
+            int joins{};
+            int windows{};
+        } delayedThread;
+
+        DWORD WINAPI enterDelayedThread(LPVOID)
+        {
+            static_cast<void>(WaitForSingleObject(delayedThread.gate, INFINITE));
+            ++delayedThread.entries;
+            return delayedThread.entry(delayedThread.parameter);
+        }
+
+        HANDLE WINAPI createDelayedThread(LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE entry, LPVOID parameter,
+                                          DWORD, LPDWORD id)
+        {
+            delayedThread.entry = entry;
+            delayedThread.parameter = parameter;
+            const HANDLE thread = CreateThread(nullptr, 0, enterDelayedThread, nullptr, 0, id);
+            delayedThread.id = *id;
+            return thread;
+        }
+
+        void WINAPI countSleep(DWORD)
+        {
+            ++delayedThread.sleeps;
+        }
+
+        HWND WINAPI countFailedWindow(DWORD, LPCWSTR, LPCWSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE,
+                                      LPVOID)
+        {
+            ++delayedThread.windows;
+            return nullptr;
+        }
+
+        HRESULT WINAPI releaseDelayedThread(DWORD, DWORD, ULONG count, LPHANDLE handles, LPDWORD index)
+        {
+            ++delayedThread.joins;
+            if (count != 1 || SetEvent(delayedThread.gate) == FALSE) {
+                return E_FAIL;
+            }
+            for (int attempt = 0; attempt < 200; ++attempt) {
+                if (PostThreadMessageW(delayedThread.id, WM_QUIT, 0, 0) != FALSE ||
+                    WaitForSingleObject(handles[0], 0) == WAIT_OBJECT_0) {
+                    break;
+                }
+                Sleep(1);
+            }
+            if (WaitForSingleObject(handles[0], 5000) != WAIT_OBJECT_0) {
+                return E_FAIL;
+            }
+            *index = 0;
+            return S_OK;
+        }
 
         HRESULT WINAPI joinThread(DWORD flags, DWORD timeout, ULONG count, LPHANDLE handles, LPDWORD index)
         {
@@ -375,6 +441,34 @@ namespace burlak::drag
             CHECK(joinWaitTimeout == INFINITE);
         }
 
+        TEST_CASE("a startup readiness timeout stops and joins a worker before returning")
+        {
+            delayedThread = {};
+            delayedThread.gate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            REQUIRE(delayedThread.gate != nullptr);
+            {
+                Screen screen;
+                Input input;
+                Shell shell;
+                DropSession dropSession;
+                Extraction extraction;
+                auto calls = systemToolWindowCalls();
+                calls.createThread = createDelayedThread;
+                calls.sleep = countSleep;
+                calls.createWindow = countFailedWindow;
+                calls.coWait = releaseDelayedThread;
+                ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+
+                CHECK_FALSE(tool.start());
+                CHECK(delayedThread.sleeps == 200);
+                CHECK(delayedThread.joins == 1);
+                CHECK(delayedThread.entries == 1);
+                CHECK(delayedThread.windows == 0);
+                CHECK(tool.nativeWindow() == 0);
+            }
+            CloseHandle(delayedThread.gate);
+        }
+
         TEST_CASE("system placement can show the real tool window" *
                   doctest::skip(!burlak::tests::desktopAvailable(
                       "SKIP: tool-window integration requires a visible window station with cursor access\n")))
@@ -501,6 +595,11 @@ namespace burlak::drag
             Extraction extraction;
 
             auto calls = systemToolWindowCalls();
+            calls.createEvent = failCreateEvent;
+            ToolWindow noReadinessEvent{screen, input, shell, dropSession, extraction, calls};
+            CHECK_FALSE(noReadinessEvent.start());
+
+            calls = systemToolWindowCalls();
             calls.createThread = failCreateThread;
             ToolWindow noThread{screen, input, shell, dropSession, extraction, calls};
             CHECK_FALSE(noThread.start());
