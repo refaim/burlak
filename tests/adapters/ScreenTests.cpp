@@ -1,5 +1,7 @@
 #include "adapters/win/Screen.hpp"
 
+#include "../Desktop.hpp"
+
 #include <doctest/doctest.h>
 
 #include <windows.h>
@@ -134,7 +136,9 @@ namespace burlak::adapters::win
 
     TEST_SUITE("screen adapter")
     {
-        TEST_CASE("a visible window covering the point is returned with its geometry and topmost state")
+        TEST_CASE("a visible window covering the point is returned with its geometry and topmost state" *
+                  doctest::skip(!burlak::tests::desktopAvailable(
+                      "SKIP: screen integration requires a visible window station with cursor access\n")))
         {
             const HWND window = testWindow();
             REQUIRE(window != nullptr);
@@ -152,7 +156,9 @@ namespace burlak::adapters::win
             DestroyWindow(window);
         }
 
-        TEST_CASE("the foreground candidate is used when the console candidate does not cover the cursor")
+        TEST_CASE("the foreground candidate is used when the console candidate does not cover the cursor" *
+                  doctest::skip(!burlak::tests::desktopAvailable(
+                      "SKIP: screen integration requires a visible window station with cursor access\n")))
         {
             const HWND window = testWindow();
             REQUIRE(window != nullptr);
@@ -171,13 +177,12 @@ namespace burlak::adapters::win
             const auto geometry = screen.cellGeometry();
             const bool expectedGeometry = geometry.has_value() || geometry.error() == core::Error::Unavailable;
             CHECK(expectedGeometry);
-            if (before) {
-                static_cast<void>(SetCursorPos(before->x, before->y));
-            }
+            static_cast<void>(before);
         }
 
         TEST_CASE("the injected adapter maps screen queries without relying on the desktop")
         {
+            CHECK_FALSE(hostWindowAt({0, 0}, 0, 0).has_value());
             resetFakeScreen();
             Screen screen{fakeCalls};
             CHECK(screen.cursor() == std::optional{core::Point{50, 50}});

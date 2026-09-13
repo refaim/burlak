@@ -15,6 +15,12 @@ namespace burlak::drag
         decltype(&Sleep) sleep;
         decltype(&CreateWindowExW) createWindow;
         decltype(&IsWindowVisible) isWindowVisible;
+        decltype(&SetWindowPos) setWindowPos;
+        decltype(&ShowWindow) showWindow;
+        decltype(&SetCapture) setCapture;
+        decltype(&ReleaseCapture) releaseCapture;
+        decltype(&SetTimer) setTimer;
+        decltype(&KillTimer) killTimer;
     };
 
     class ToolWindow final : public core::IDragTool

@@ -26,7 +26,8 @@ namespace burlak::drag
         constexpr UINT armTimeoutMilliseconds = 1000;
         constexpr wchar_t toolClass[] = L"BurlakToolWindow";
 
-        const ToolWindowCalls systemCalls{CreateThread, Sleep, CreateWindowExW, IsWindowVisible};
+        const ToolWindowCalls systemCalls{CreateThread, Sleep,      CreateWindowExW, IsWindowVisible, SetWindowPos,
+                                          ShowWindow,   SetCapture, ReleaseCapture,  SetTimer,        KillTimer};
 
         struct HandleCloser
         {
@@ -108,7 +109,7 @@ namespace burlak::drag
         {
             // SendMessage is synchronous across these threads, so the path view remains alive while the
             // context value transfers the Far-thread snapshot before any hover or drop can read it.
-            const PreparePayload payload{paths, button, context};
+            const PreparePayload payload{paths, button, std::move(context)};
             return SendMessageW(windowHandle(), prepareDragMessage, 0, reinterpret_cast<LPARAM>(&payload)) != 0;
         }
 
@@ -223,7 +224,7 @@ namespace burlak::drag
                 return data_ ? 1 : 0;
             case WM_LBUTTONDOWN:
             case WM_RBUTTONDOWN:
-                KillTimer(window, armTimer);
+                calls_.killTimer(window, armTimer);
                 runDrag(window);
                 return 0;
             case WM_TIMER:
@@ -233,7 +234,7 @@ namespace burlak::drag
                 }
                 break;
             case WM_DESTROY:
-                ShowWindow(window, SW_HIDE);
+                calls_.showWindow(window, SW_HIDE);
                 return 0;
             default:
                 break;
@@ -253,17 +254,17 @@ namespace burlak::drag
             // coverage depend on whether this process currently has foreground rights.
             const auto choice = core::placement(host->topmost);
             if (choice.demoteFirst) {
-                SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                calls_.setWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
-            SetWindowPos(window, choice.topmost ? HWND_TOPMOST : HWND_TOP, host->rect.left, host->rect.top,
-                         host->rect.right - host->rect.left, host->rect.bottom - host->rect.top,
-                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            calls_.setWindowPos(window, choice.topmost ? HWND_TOPMOST : HWND_TOP, host->rect.left, host->rect.top,
+                                host->rect.right - host->rect.left, host->rect.bottom - host->rect.top,
+                                SWP_NOACTIVATE | SWP_SHOWWINDOW);
             if (!calls_.isWindowVisible(window)) {
                 data_.reset();
                 return 0;
             }
-            SetCapture(window);
-            SetTimer(window, armTimer, armTimeoutMilliseconds, nullptr);
+            calls_.setCapture(window);
+            calls_.setTimer(window, armTimer, armTimeoutMilliseconds, nullptr);
             // Session has just released the physical button; the queued synthetic press is therefore a
             // new click on the tool window, not a continuation of Far's panel gesture.
             input_.press(button_);
@@ -279,19 +280,19 @@ namespace burlak::drag
             static_cast<void>(shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
                                              reinterpret_cast<std::uintptr_t>(&source)));
             active_.store(false);
-            ReleaseCapture();
-            ShowWindow(window, SW_HIDE);
+            calls_.releaseCapture();
+            calls_.showWindow(window, SW_HIDE);
             data_.reset();
         }
 
         void disarm(HWND window)
         {
-            KillTimer(window, armTimer);
+            calls_.killTimer(window, armTimer);
             if (active_.load()) {
                 return;
             }
-            ReleaseCapture();
-            ShowWindow(window, SW_HIDE);
+            calls_.releaseCapture();
+            calls_.showWindow(window, SW_HIDE);
             data_.reset();
         }
 

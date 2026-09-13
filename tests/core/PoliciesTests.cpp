@@ -34,7 +34,10 @@ namespace burlak::core
                 .panels = {PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
                            PanelInfo{.visible = true, .plugin = true, .filePanel = true, .rect = {40, 0, 79, 24}}},
                 .host = HostWindow{1, {100, 50, 740, 450}, false},
-                .geometry = CellGeometry{{100, 50}, 8, 16}};
+                .geometry = CellGeometry{{100, 50}, 8, 16},
+                .panelsWindow = false,
+                .sourcePaths = {},
+                .destinationDirectory = std::nullopt};
 
             CHECK(policy.effect(context, {435, 401}, false) == Effect::Copy); // cell (41, 21), last item row
             CHECK(policy.effect(context, {435, 402}, true) == Effect::None);  // cell (41, 22), first frame row
@@ -66,7 +69,10 @@ namespace burlak::core
                 .panels = {PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
                            PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {40, 0, 79, 24}}},
                 .host = HostWindow{1, {100, 50, 740, 450}, false},
-                .geometry = CellGeometry{{100, 50}, 8, 16}};
+                .geometry = CellGeometry{{100, 50}, 8, 16},
+                .panelsWindow = false,
+                .sourcePaths = {},
+                .destinationDirectory = std::nullopt};
 
             CHECK(policy.effect(context, {99, 130}, false) == Effect::None);
             CHECK(policy.effect(context, {740, 130}, false) == Effect::None);
@@ -91,7 +97,10 @@ namespace burlak::core
                 .panels = {PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
                            PanelInfo{.visible = true, .plugin = true, .filePanel = true, .rect = {40, 0, 79, 24}}},
                 .host = HostWindow{1, {100, 50, 740, 450}, false},
-                .geometry = CellGeometry{{100, 50}, 8, 16}};
+                .geometry = CellGeometry{{100, 50}, 8, 16},
+                .panelsWindow = false,
+                .sourcePaths = {},
+                .destinationDirectory = std::nullopt};
             DropPolicy policy;
 
             const auto copy = policy.drop(context, {460, 146}, false);
@@ -106,6 +115,99 @@ namespace burlak::core
 
             const auto rejected = policy.drop(context, {140, 130}, false);
             CHECK(rejected.effect == Effect::None);
+        }
+
+        TEST_CASE("drop replay identity rejects every stale panel input")
+        {
+            const DropContext before{
+                .press = {},
+                .source = PanelSide::Active,
+                .panels = {PanelInfo{.visible = true, .filePanel = true, .rect = {0, 0, 39, 24}, .handle = 11},
+                           PanelInfo{.visible = true, .filePanel = true, .rect = {40, 0, 79, 24}, .handle = 22}},
+                .host = std::nullopt,
+                .geometry = std::nullopt,
+                .panelsWindow = true,
+                .sourcePaths = {L"C:\\source\\one.txt", L"C:\\source\\two.txt"},
+                .destinationDirectory = L"D:\\target"};
+            DropPolicy policy;
+            CHECK(policy.sameIdentity(before, before));
+
+            auto snapshot = before;
+            auto current = before;
+            SUBCASE("another Far window type")
+            {
+                current.panelsWindow = false;
+            }
+            SUBCASE("source side changed")
+            {
+                current.source = PanelSide::Passive;
+            }
+            SUBCASE("source snapshot missing")
+            {
+                current.panels[0].reset();
+            }
+            SUBCASE("original source snapshot missing")
+            {
+                snapshot.panels[0].reset();
+            }
+            SUBCASE("destination snapshot missing")
+            {
+                current.panels[1].reset();
+            }
+            SUBCASE("original destination snapshot missing")
+            {
+                snapshot.panels[1].reset();
+            }
+            SUBCASE("source hidden")
+            {
+                current.panels[0]->visible = false;
+            }
+            SUBCASE("destination hidden")
+            {
+                current.panels[1]->visible = false;
+            }
+            SUBCASE("source is not a file panel")
+            {
+                current.panels[0]->filePanel = false;
+            }
+            SUBCASE("destination is not a file panel")
+            {
+                current.panels[1]->filePanel = false;
+            }
+            SUBCASE("source handle changed")
+            {
+                current.panels[0]->handle = 99;
+            }
+            SUBCASE("destination handle changed")
+            {
+                current.panels[1]->handle = 99;
+            }
+            SUBCASE("source rectangle changed")
+            {
+                current.panels[0]->rect.right = 38;
+            }
+            SUBCASE("destination rectangle changed")
+            {
+                current.panels[1]->rect.left = 41;
+            }
+            SUBCASE("selected source paths changed")
+            {
+                current.sourcePaths = {L"C:\\source\\other.txt"};
+            }
+            SUBCASE("destination directory changed")
+            {
+                current.destinationDirectory = L"E:\\other";
+            }
+            SUBCASE("original destination directory was unavailable")
+            {
+                snapshot.destinationDirectory.reset();
+            }
+            SUBCASE("current destination directory was unavailable")
+            {
+                current.destinationDirectory.reset();
+            }
+
+            CHECK_FALSE(policy.sameIdentity(snapshot, current));
         }
 
         TEST_CASE("window placement follows the host and always demotes before ordinary placement")

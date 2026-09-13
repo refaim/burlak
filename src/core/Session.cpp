@@ -11,17 +11,6 @@ namespace burlak::core
     namespace
     {
 
-        [[nodiscard]] bool sameSource(const DropContext &context, const std::array<std::optional<PanelInfo>, 2> &panels)
-        {
-            const auto &now = panels[0];
-            if (!now) {
-                return false;
-            }
-            // A queued hover already proved the active source snapshot is a file panel.
-            const auto &before = *context.panels[0];
-            return now->filePanel && before.handle == now->handle && before.rect == now->rect;
-        }
-
         void report(IFarHost &host, std::wstring line)
         {
             const std::array lines{std::move(line)};
@@ -42,6 +31,9 @@ namespace burlak::core
 
     bool Session::begin(IDragTool &tool, DragStart start)
     {
+        if (!panels_.currentWindowIsPanels()) {
+            return false;
+        }
         const auto paths = DragPlan{panels_}.paths();
         if (!paths || !tool.start()) {
             return false;
@@ -52,18 +44,23 @@ namespace burlak::core
         }
         // The panel that handled the press is active by the time Far invokes the input export
         // (Far source: far/filelist.cpp, FileList::ProcessMouse).
+        // Far reports the current item as its one selected item when there is no explicit selection
+        // (Far source: far/filelist.cpp, FileList::GetSelCount and FileList::PluginGetSelectedPanelItem).
         DropContext context{.press = start.press,
                             .source = PanelSide::Active,
                             .panels = {panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)},
                             .host = screen_.hostWindow(),
-                            .geometry = std::nullopt};
+                            .geometry = std::nullopt,
+                            .panelsWindow = true,
+                            .sourcePaths = *paths,
+                            .destinationDirectory = panels_.directory(PanelSide::Passive)};
         if (const auto geometry = screen_.cellGeometry()) {
             context.geometry = *geometry;
         }
         // Namespace lookup is slow, so 1.2.0 checked the physical button before paying that cost and
         // again immediately before synthesizing the release.
-        // The synchronous prepare message copies the press, source side, panel snapshots, and geometry;
-        // the tool thread reads that value only after this Far-thread call and before showAndArm.
+        // The synchronous prepare message copies the complete hover and identity snapshot; the tool
+        // thread reads that value only after this Far-thread call and before showAndArm.
         if (!tool.prepare(*paths, start.button, context)) {
             return false;
         }
@@ -86,7 +83,7 @@ namespace burlak::core
 
     void Session::prepare(DropContext context)
     {
-        hoverContext_ = context;
+        hoverContext_ = std::move(context);
     }
 
     Effect Session::effect(Point point, bool shift) const
@@ -122,13 +119,16 @@ namespace burlak::core
             return;
         }
 
+        const auto panelsWindow = panels_.currentWindowIsPanels();
         const std::array panels{panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)};
+        const auto paths = DragPlan{panels_}.paths();
+        const auto destinationDirectory = panels_.directory(PanelSide::Passive);
         const auto host = screen_.hostWindow();
         const auto geometryResult = screen_.cellGeometry();
 
         // OLE owns ordinary keyboard input during its drag loop, but a Far macro or timer and a console
         // resize can still invalidate the snapshot (Far source: far/filepanels.cpp, FilePanels::SwapPanels).
-        if (!farContext_ || !sameSource(*farContext_, panels)) {
+        if (!farContext_) {
             report(host_, L"Panels changed during the drag; the drop was cancelled.");
             return;
         }
@@ -137,9 +137,19 @@ namespace burlak::core
                           .source = farContext_->source,
                           .panels = panels,
                           .host = host,
-                          .geometry = std::nullopt};
+                          .geometry = std::nullopt,
+                          .panelsWindow = panelsWindow,
+                          .sourcePaths = {},
+                          .destinationDirectory = destinationDirectory};
         if (geometryResult) {
             fresh.geometry = *geometryResult;
+        }
+        if (paths) {
+            fresh.sourcePaths = *paths;
+        }
+        if (!dropPolicy_.sameIdentity(*farContext_, fresh)) {
+            report(host_, L"Panels changed during the drag; the drop was cancelled.");
+            return;
         }
         const auto decision = dropPolicy_.drop(fresh, pending->point, pending->effect == Effect::Move);
         if (decision.effect != pending->effect) {

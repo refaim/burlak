@@ -163,12 +163,14 @@ same-Far drag, the prepare message copies an immutable panel/geometry snapshot t
 for cosmetic hover feedback. On `Drop`, that thread puts a by-value
 `PendingDrop { point, effect }` behind the session mutex, posts synchro, and returns the effect to
 OLE; it neither calls Far nor reads later main-thread state. Far's synchro handler re-reads both
-panels, the host and cell geometry, and replays only if the active source still has the original
-handle and rectangle and both sides are file panels. Otherwise it cancels with a one-line Far
-message. OLE owns ordinary keyboard input during the drag, but a macro, timer, panel swap or
-console resize can still make the hover snapshot stale. Replay also runs on Far's thread; an
-incomplete write is reported, and a one-record partial write is followed by a buttonless release
-at the press cell so Far's panel-drag state is not left armed.
+panels, their directories, the source selection, the current window, the host and cell geometry.
+It replays only while a panels window is current, both panels remain visible file panels with the
+same identity, the source paths are exactly those advertised to OLE, and the destination directory
+is unchanged. Otherwise it cancels with a one-line Far message. OLE owns ordinary keyboard input
+during the drag, but a macro, timer, panel swap or console resize can still make the hover snapshot
+stale. Replay also runs on Far's thread; an incomplete write is reported, and a one-record partial
+write is followed by a buttonless release at the press cell so Far's panel-drag state is not left
+armed.
 
 ## 3. Testing
 
@@ -193,7 +195,8 @@ doctest, one executable per layer group plus e2e:
   no button held — OLE's first `QueryContinueDrag` sees no button and drops at once — and assert
   the target received the paths. The same trick covers `IInput::press/release`: with the cursor
   parked over the test's own window, an injected click lands on it and nothing else. Restore
-  the cursor afterwards.
+  the cursor afterwards. `BURLAK_NO_DESKTOP=1` skips these desktop-owning integration checks while
+  the injected boundaries keep production coverage complete.
 - `tests/guard/`: the source scan for the dependency rule and the ownership rules.
 
 Coverage: `scripts/coverage.ps1` builds the `coverage` preset (clang-cl, `-fprofile-instr-generate

@@ -35,6 +35,7 @@ namespace burlak::core
       public:
         [[nodiscard]] Effect effect(const DropContext &context, Point point, bool shift) const;
         [[nodiscard]] DropDecision drop(const DropContext &context, Point point, bool shift) const;
+        [[nodiscard]] bool sameIdentity(const DropContext &before, const DropContext &current) const;
     };
 
     [[nodiscard]] WindowPlacement placement(bool hostTopmost);

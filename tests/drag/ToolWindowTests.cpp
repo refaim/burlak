@@ -1,5 +1,7 @@
 #include "drag/ToolWindow.hpp"
 
+#include "../Desktop.hpp"
+
 #include <doctest/doctest.h>
 
 #include <windows.h>
@@ -123,7 +125,10 @@ namespace burlak::drag
                     .source = core::PanelSide::Active,
                     .panels = {},
                     .host = std::nullopt,
-                    .geometry = std::nullopt};
+                    .geometry = std::nullopt,
+                    .panelsWindow = false,
+                    .sourcePaths = {},
+                    .destinationDirectory = std::nullopt};
         }
 
         LRESULT CALLBACK hostProc(HWND window, UINT message, WPARAM word, LPARAM number)
@@ -162,20 +167,86 @@ namespace burlak::drag
             return FALSE;
         }
 
+        struct HeadlessWindowState
+        {
+            bool visible{};
+            int placements{};
+        } headlessWindow;
+
+        BOOL WINAPI headlessSetWindowPos(HWND, HWND, int, int, int, int, UINT flags)
+        {
+            ++headlessWindow.placements;
+            if ((flags & SWP_SHOWWINDOW) != 0) {
+                headlessWindow.visible = true;
+            }
+            return TRUE;
+        }
+
+        BOOL WINAPI headlessIsWindowVisible(HWND)
+        {
+            return headlessWindow.visible ? TRUE : FALSE;
+        }
+
+        BOOL WINAPI headlessShowWindow(HWND, int command)
+        {
+            if (command == SW_HIDE) {
+                headlessWindow.visible = false;
+            }
+            return TRUE;
+        }
+
+        HWND WINAPI headlessSetCapture(HWND window)
+        {
+            return window;
+        }
+
+        BOOL WINAPI headlessReleaseCapture()
+        {
+            return TRUE;
+        }
+
+        UINT_PTR WINAPI headlessSetTimer(HWND, UINT_PTR event, UINT, TIMERPROC)
+        {
+            return event;
+        }
+
+        BOOL WINAPI headlessKillTimer(HWND, UINT_PTR)
+        {
+            return TRUE;
+        }
+
+        ToolWindowCalls headlessCalls()
+        {
+            auto calls = systemToolWindowCalls();
+            calls.isWindowVisible = headlessIsWindowVisible;
+            calls.setWindowPos = headlessSetWindowPos;
+            calls.showWindow = headlessShowWindow;
+            calls.setCapture = headlessSetCapture;
+            calls.releaseCapture = headlessReleaseCapture;
+            calls.setTimer = headlessSetTimer;
+            calls.killTimer = headlessKillTimer;
+            return calls;
+        }
+
+        void resetHeadlessWindow()
+        {
+            headlessWindow = {};
+        }
+
     } // namespace
 
     TEST_SUITE("tool window")
     {
-        TEST_CASE("thread, prepare, show, timer disarm, and stop are real")
+        TEST_CASE("thread, prepare, show, timer disarm, and stop use a headless window boundary")
         {
-            const HWND host = hostWindow();
-            REQUIRE(host != nullptr);
+            resetHeadlessWindow();
             Screen screen;
-            screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, false};
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
             Input input;
             Shell shell;
             DropSession dropSession;
-            ToolWindow tool{screen, input, shell, dropSession};
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, calls};
 
             CHECK(tool.start());
             CHECK(tool.start());
@@ -185,19 +256,41 @@ namespace burlak::drag
             CHECK(tool.hasData());
             CHECK(dropSession.context->press == core::Cell{5, 5});
             CHECK(tool.showAndArm());
-            CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) != FALSE);
+            CHECK(headlessWindow.visible);
+            CHECK(headlessWindow.placements == 2);
             REQUIRE(input.presses.size() == 1);
             CHECK(input.presses[0] == core::Button::Left);
 
             SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, armTimerId() + 1, 0);
-            CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) != FALSE);
+            CHECK(headlessWindow.visible);
             SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, armTimerId(), 0);
-            CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) == FALSE);
+            CHECK_FALSE(headlessWindow.visible);
             CHECK_FALSE(tool.hasData());
 
             tool.stop();
             tool.stop();
             CHECK(tool.nativeWindow() == 0);
+        }
+
+        TEST_CASE("system placement can show the real tool window" *
+                  doctest::skip(!burlak::tests::desktopAvailable(
+                      "SKIP: tool-window integration requires a visible window station with cursor access\n")))
+        {
+            const HWND host = hostWindow();
+            REQUIRE(host != nullptr);
+            Screen screen;
+            screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, false};
+            Input input;
+            Shell shell;
+            DropSession dropSession;
+            ToolWindow tool{screen, input, shell, dropSession};
+            REQUIRE(tool.start());
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+            REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
+            REQUIRE(tool.showAndArm());
+            CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) != FALSE);
+            tool.abort();
+            tool.stop();
             DestroyWindow(host);
         }
 
@@ -229,20 +322,21 @@ namespace burlak::drag
             tool.stop();
         }
 
-        TEST_CASE("real placement calls and both button messages run a deterministic shell loop")
+        TEST_CASE("placement decisions and both button messages run a headless shell loop")
         {
-            const HWND host = hostWindow();
-            REQUIRE(host != nullptr);
+            resetHeadlessWindow();
             Screen screen;
-            screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, true};
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, true};
             Input input;
             Shell shell;
             DropSession dropSession;
-            ToolWindow tool{screen, input, shell, dropSession};
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, calls};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
             REQUIRE(tool.prepare(paths, core::Button::Right, dropContext()));
             REQUIRE(tool.showAndArm());
+            CHECK(headlessWindow.placements == 1);
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
             shell.duringDrag = [&tool](core::NativeWindow owner) {
                 CHECK(tool.active());
@@ -254,11 +348,12 @@ namespace burlak::drag
             CHECK(shell.dragCalls == 1);
             CHECK_FALSE(tool.active());
             CHECK_FALSE(tool.hasData());
-            CHECK(IsWindowVisible(window) == FALSE);
+            CHECK_FALSE(headlessWindow.visible);
 
             screen.host->topmost = false;
             REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
             REQUIRE(tool.showAndArm());
+            CHECK(headlessWindow.placements == 3);
             shell.duringDrag = [&tool](core::NativeWindow owner) {
                 CHECK(tool.active());
                 SendMessageW(reinterpret_cast<HWND>(owner), WM_LBUTTONDOWN, 0, 0);
@@ -267,7 +362,6 @@ namespace burlak::drag
             CHECK(shell.dragCalls == 2);
 
             tool.stop();
-            DestroyWindow(host);
         }
 
         TEST_CASE("thread and native-window startup failures remain expected")
@@ -290,16 +384,15 @@ namespace burlak::drag
             noWindow.stop();
         }
 
-        TEST_CASE("a window that cannot be shown drops prepared data")
+        TEST_CASE("a headless window that cannot be shown drops prepared data")
         {
-            const HWND host = hostWindow();
-            REQUIRE(host != nullptr);
+            resetHeadlessWindow();
             Screen screen;
-            screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, false};
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
             Input input;
             Shell shell;
             DropSession dropSession;
-            auto calls = systemToolWindowCalls();
+            auto calls = headlessCalls();
             calls.isWindowVisible = reportInvisible;
             ToolWindow tool{screen, input, shell, dropSession, calls};
             REQUIRE(tool.start());
@@ -314,7 +407,6 @@ namespace burlak::drag
             DestroyWindow(withoutState);
 
             tool.stop();
-            DestroyWindow(host);
         }
     }
 

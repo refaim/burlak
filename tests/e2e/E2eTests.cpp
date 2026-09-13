@@ -1,3 +1,4 @@
+#include "../Desktop.hpp"
 #include "adapters/shell/Shell.hpp"
 #include "core/Policies.hpp"
 #include "drag/DragSource.hpp"
@@ -286,11 +287,11 @@ namespace
 
     bool controlledDragEnvironment()
     {
-        USEROBJECTFLAGS flags{};
-        DWORD needed{};
-        const bool visible =
-            GetUserObjectInformationW(GetProcessWindowStation(), UOI_FLAGS, &flags, sizeof(flags), &needed) != FALSE &&
-            (flags.dwFlags & WSF_VISIBLE) != 0;
+        const bool visible = burlak::tests::desktopAvailable(
+            "SKIP: real OLE drag requires a visible window station with cursor access\n");
+        if (!visible) {
+            return false;
+        }
         CursorGuard cursor;
         WindowGuard window;
         const bool controlled = visible && cursor.captured() && window.get() != nullptr && ownsDragPoint(window.get());

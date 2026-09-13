@@ -237,6 +237,7 @@ namespace burlak::drag
             panels.panels[1] = core::PanelInfo{
                 .visible = true, .plugin = true, .filePanel = true, .rect = {40, 0, 79, 24}, .handle = 22};
             panels.directories[0] = file.root().wstring();
+            panels.directories[1] = L"D:\\target";
             panels.items[0] = {{.name = file.path().filename().wstring()}};
             Screen screen;
             Input input;

@@ -1,5 +1,6 @@
 #include "adapters/win/Input.hpp"
 
+#include "../Desktop.hpp"
 #include "core/Policies.hpp"
 
 #include <doctest/doctest.h>
@@ -39,17 +40,8 @@ namespace burlak::adapters::win
 
         bool visibleWindowStation()
         {
-            USEROBJECTFLAGS flags{};
-            DWORD needed{};
-            POINT cursor{};
-            const bool visible = GetUserObjectInformationW(GetProcessWindowStation(), UOI_FLAGS, &flags, sizeof(flags),
-                                                           &needed) != FALSE &&
-                                 (flags.dwFlags & WSF_VISIBLE) != 0 && GetCursorPos(&cursor) != FALSE;
-            if (!visible) {
-                std::fputs("SKIP: injected-click integration requires a visible window station with cursor access\n",
-                           stderr);
-            }
-            return visible;
+            return burlak::tests::desktopAvailable(
+                "SKIP: injected-click integration requires a visible window station with cursor access\n");
         }
 
         class CursorGuard
@@ -169,6 +161,16 @@ namespace burlak::adapters::win
 
     TEST_SUITE("input adapter")
     {
+        TEST_CASE("BURLAK_NO_DESKTOP disables desktop integration through the shared predicate")
+        {
+            wchar_t previous[16]{};
+            const DWORD previousLength = GetEnvironmentVariableW(L"BURLAK_NO_DESKTOP", previous, 16);
+            REQUIRE(SetEnvironmentVariableW(L"BURLAK_NO_DESKTOP", L"1") != FALSE);
+            CHECK_FALSE(burlak::tests::desktopAvailable("unused\n"));
+            REQUIRE(SetEnvironmentVariableW(L"BURLAK_NO_DESKTOP",
+                                            previousLength > 0 && previousLength < 16 ? previous : nullptr) != FALSE);
+        }
+
         TEST_CASE("console replay writes mapped mouse records to the process console")
         {
             const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);

@@ -161,6 +161,9 @@ namespace burlak::core
         std::array<std::optional<PanelInfo>, 2> panels{};
         std::optional<HostWindow> host;
         std::optional<CellGeometry> geometry;
+        bool panelsWindow{};
+        std::vector<std::wstring> sourcePaths;
+        std::optional<std::wstring> destinationDirectory;
     };
 
     struct DropDecision

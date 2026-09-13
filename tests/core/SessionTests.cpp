@@ -137,6 +137,7 @@ namespace burlak::core
             panels.panels[1] =
                 PanelInfo{.visible = true, .plugin = true, .filePanel = true, .rect = {40, 0, 79, 24}, .handle = 22};
             panels.directories[0] = L"C:\\work";
+            panels.directories[1] = L"D:\\target";
             panels.items[0] = {{.name = L"one.txt"}};
             return panels;
         }
@@ -172,10 +173,26 @@ namespace burlak::core
             CHECK(tool.context->panels[1]->plugin);
             CHECK(tool.context->host->rect == PixelRect{0, 0, 100, 100});
             CHECK(tool.context->geometry == CellGeometry{{0, 0}, 1, 1});
+            CHECK(tool.context->panelsWindow);
+            CHECK(tool.context->sourcePaths == std::vector<std::wstring>{L"C:\\work\\one.txt"});
+            CHECK(tool.context->destinationDirectory == L"D:\\target");
         }
 
         TEST_CASE("every gate fails without touching the button and prepared data is aborted")
         {
+            SUBCASE("panels window")
+            {
+                auto panels = readyPanels();
+                panels.panelsWindow = false;
+                std::vector<std::string> calls;
+                Screen screen{calls};
+                Input input{calls};
+                Tool tool{calls};
+                tests::Host host;
+                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                CHECK(calls.empty());
+            }
+
             SUBCASE("paths")
             {
                 tests::Panels panels;
@@ -316,6 +333,18 @@ namespace burlak::core
             {
                 panels.panels[0]->filePanel = false;
             }
+            SUBCASE("source is hidden")
+            {
+                panels.panels[0]->visible = false;
+            }
+            SUBCASE("source directory changed")
+            {
+                panels.directories[0] = L"C:\\other";
+            }
+            SUBCASE("source selected names changed")
+            {
+                panels.items[0] = {{.name = L"two.txt"}};
+            }
 
             session.synchro();
             CHECK(input.replays.empty());
@@ -343,6 +372,18 @@ namespace burlak::core
             SUBCASE("destination changed type")
             {
                 panels.panels[1]->filePanel = false;
+            }
+            SUBCASE("destination is hidden")
+            {
+                panels.panels[1]->visible = false;
+            }
+            SUBCASE("destination directory changed")
+            {
+                panels.directories[1] = L"E:\\other";
+            }
+            SUBCASE("a panels window is no longer current")
+            {
+                panels.panelsWindow = false;
             }
             SUBCASE("host disappeared")
             {
@@ -413,7 +454,10 @@ namespace burlak::core
                                         .source = PanelSide::Active,
                                         .panels = panels.panels,
                                         .host = HostWindow{1, {0, 0, 100, 100}, false},
-                                        .geometry = CellGeometry{{0, 0}, 1, 1}});
+                                        .geometry = CellGeometry{{0, 0}, 1, 1},
+                                        .panelsWindow = true,
+                                        .sourcePaths = {L"C:\\work\\one.txt"},
+                                        .destinationDirectory = L"D:\\target"});
             REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
             session.synchro();
             CHECK(input.replays.empty());

@@ -23,6 +23,15 @@ namespace burlak::core
             return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
         }
 
+        [[nodiscard]] bool samePanel(const std::optional<PanelInfo> &before, const std::optional<PanelInfo> &current)
+        {
+            if (!before || !current) {
+                return false;
+            }
+            return current->visible && current->filePanel && before->rect == current->rect &&
+                   before->handle == current->handle;
+        }
+
     } // namespace
 
     DragAction ReleasePolicy::query(Button button, bool escapePressed, bool leftDown, bool rightDown) const
@@ -71,6 +80,17 @@ namespace burlak::core
         return {.effect = chosen,
                 .events = {MouseEvent{.at = context.press, .left = true, .mods = modifiers},
                            MouseEvent{.at = toCell(point, *context.geometry), .mods = modifiers}}};
+    }
+
+    bool DropPolicy::sameIdentity(const DropContext &before, const DropContext &current) const
+    {
+        const auto source = index(before.source);
+        const auto destination = index(other(before.source));
+        return current.panelsWindow && current.source == before.source &&
+               samePanel(before.panels[source], current.panels[source]) &&
+               samePanel(before.panels[destination], current.panels[destination]) &&
+               before.sourcePaths == current.sourcePaths && before.destinationDirectory &&
+               current.destinationDirectory && *before.destinationDirectory == *current.destinationDirectory;
     }
 
     WindowPlacement placement(bool hostTopmost)
