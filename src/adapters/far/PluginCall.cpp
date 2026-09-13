@@ -8,6 +8,7 @@
 
 #include <bit>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace burlak::adapters::far_api
@@ -36,11 +37,31 @@ namespace burlak::adapters::far_api
             return EXCEPTION_EXECUTE_HANDLER;
         }
 
-        intptr_t callGuarded(GetFilesFunction function, GetFilesInfo *info, bool &crashed) noexcept
+        intptr_t callGuarded(GetFilesFunction function, GetFilesInfo *info, wchar_t *destinationCopy,
+                             std::size_t destinationCapacity, std::size_t &destinationLength, bool &crashed) noexcept
         {
             intptr_t result{};
             __try {
                 result = function(info);
+                if (result != 0 && info->DestPath != nullptr) {
+                    while (destinationLength < destinationCapacity) {
+                        wchar_t character{};
+                        const auto address = info->DestPath + destinationLength;
+                        if (ReadProcessMemory(GetCurrentProcess(), address, &character, sizeof(character), nullptr) ==
+                            FALSE) {
+                            crashed = true;
+                            break;
+                        }
+                        if (character == L'\0') {
+                            break;
+                        }
+                        destinationCopy[destinationLength] = character;
+                        ++destinationLength;
+                    }
+                    if (destinationLength == destinationCapacity) {
+                        result = 0;
+                    }
+                }
             } __except (markCrash(crashed)) {
             }
             return result;
@@ -93,14 +114,22 @@ namespace burlak::adapters::far_api
         info.Instance = reinterpret_cast<void *>(module.instance);
 
         bool crashed = false;
-        const intptr_t result = callGuarded(function, &info, crashed);
+        // Windows paths cannot exceed 32,767 UTF-16 code units. This caller-owned buffer lets the SEH frame copy
+        // a rewritten plugin pointer before either C++ code or module unload can observe it.
+        constexpr std::size_t maximumDestinationLength = 32768;
+        std::wstring effectiveDestination(maximumDestinationLength, L'\0');
+        std::size_t destinationLength{};
+        const intptr_t result = callGuarded(function, &info, effectiveDestination.data(), effectiveDestination.size(),
+                                            destinationLength, crashed);
         const auto outcome = core::extractionOutcome(crashed, result);
         if (!outcome || info.DestPath == nullptr) {
             return std::unexpected(outcome ? core::Error::ForeignCallFailed : outcome.error());
         }
         // PluginManager::GetFiles copies a plugin-rewritten DestPath back to its caller; copy it before unloading
-        // the plugin module (Far source: far/plugins.cpp, PluginManager::GetFiles).
-        return std::wstring{info.DestPath};
+        // the plugin module, while keeping every plugin-owned dereference under SEH
+        // (Far source: far/plugins.cpp, PluginManager::GetFiles).
+        effectiveDestination.resize(destinationLength);
+        return effectiveDestination;
     }
 
 } // namespace burlak::adapters::far_api

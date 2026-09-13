@@ -85,8 +85,9 @@ namespace burlak::adapters::win
             const auto first = files.runDirectory();
             REQUIRE(first.has_value());
             CHECK(std::filesystem::path{*first}.filename() == L"700-1");
-            CHECK(files.sameName(L"Report.txt", L"REPORT.TXT"));
-            CHECK_FALSE(files.sameName(L"one.txt", L"two.txt"));
+            CHECK_FALSE(files.nameBefore(L"Report.txt", L"REPORT.TXT"));
+            CHECK(files.nameBefore(L"one.txt", L"two.txt"));
+            CHECK_FALSE(files.nameBefore(L"two.txt", L"one.txt"));
 
             const auto file = files.placeholder(L"empty.txt", false);
             REQUIRE(file.has_value());

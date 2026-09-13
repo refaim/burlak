@@ -21,6 +21,7 @@ namespace burlak::drag
         decltype(&ReleaseCapture) releaseCapture;
         decltype(&SetTimer) setTimer;
         decltype(&KillTimer) killTimer;
+        decltype(&CoWaitForMultipleHandles) coWait;
     };
 
     class ToolWindow final : public core::IDragTool

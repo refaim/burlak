@@ -9,6 +9,7 @@ namespace
 {
 
     std::wstring rewrittenDestination;
+    std::wstring overlongDestination;
 
     bool faithful(const GetFilesInfo &info)
     {
@@ -57,6 +58,15 @@ extern "C" intptr_t WINAPI GetFilesW(GetFilesInfo *info)
     }
     if (info->Instance == reinterpret_cast<void *>(46)) {
         info->DestPath = nullptr;
+        return 1;
+    }
+    if (info->Instance == reinterpret_cast<void *>(47)) {
+        info->DestPath = reinterpret_cast<const wchar_t *>(1);
+        return 1;
+    }
+    if (info->Instance == reinterpret_cast<void *>(48)) {
+        overlongDestination.assign(32'768, L'x');
+        info->DestPath = overlongDestination.c_str();
         return 1;
     }
     static_cast<void>(CreateDirectoryW(info->DestPath, nullptr));

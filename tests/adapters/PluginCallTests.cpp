@@ -120,6 +120,14 @@ namespace burlak::adapters::far_api
             const core::PluginModule clearsDestination{.path = GETFILES_SUCCESS_PATH, .instance = 46};
             CHECK(callPluginGetFiles(7, alternateItems, clearsDestination, destination.wstring()).error() ==
                   core::Error::ForeignCallFailed);
+
+            const core::PluginModule invalidDestination{.path = GETFILES_SUCCESS_PATH, .instance = 47};
+            CHECK(callPluginGetFiles(7, alternateItems, invalidDestination, destination.wstring()).error() ==
+                  core::Error::ForeignCallCrashed);
+
+            const core::PluginModule overlongDestination{.path = GETFILES_SUCCESS_PATH, .instance = 48};
+            CHECK(callPluginGetFiles(7, alternateItems, overlongDestination, destination.wstring()).error() ==
+                  core::Error::ForeignCallFailed);
             std::filesystem::remove_all(destination);
         }
 

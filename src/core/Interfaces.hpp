@@ -84,7 +84,7 @@ namespace burlak::core
         [[nodiscard]] virtual std::expected<std::wstring, Error> runDirectory() = 0;
         [[nodiscard]] virtual std::expected<std::wstring, Error> placeholder(std::wstring_view name,
                                                                              bool directory) = 0;
-        [[nodiscard]] virtual bool sameName(std::wstring_view left, std::wstring_view right) const = 0;
+        [[nodiscard]] virtual bool nameBefore(std::wstring_view left, std::wstring_view right) const = 0;
         [[nodiscard]] virtual std::expected<void, Error> removeTree(std::wstring_view path) = 0;
         virtual void sweep() = 0;
     };

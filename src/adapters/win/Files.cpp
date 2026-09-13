@@ -106,10 +106,10 @@ namespace burlak::adapters::win
         return placeholderOutcome(static_cast<bool>(stream), path);
     }
 
-    bool Files::sameName(std::wstring_view left, std::wstring_view right) const
+    bool Files::nameBefore(std::wstring_view left, std::wstring_view right) const
     {
         return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(),
-                                    static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
+                                    static_cast<int>(right.size()), TRUE) == CSTR_LESS_THAN;
     }
 
     std::expected<void, core::Error> Files::removeTree(std::wstring_view path)
@@ -125,22 +125,23 @@ namespace burlak::adapters::win
             return;
         }
         std::error_code error;
-        std::filesystem::directory_iterator entries{root_, error};
+        std::filesystem::directory_iterator entry{root_, error};
         if (error) {
             return;
         }
-        for (const auto &entry : entries) {
-            if (!entry.is_directory(error)) {
+        const std::filesystem::directory_iterator end;
+        for (; entry != end; entry.increment(error)) {
+            if (!entry->is_directory(error)) {
                 error.clear();
                 continue;
             }
-            const auto owner = core::runOwner(entry.path().filename().wstring());
+            const auto owner = core::runOwner(entry->path().filename().wstring());
             if (!owner) {
                 continue;
             }
             const bool alive = *owner == process_ || processProbe_(*owner);
-            if (core::shouldSweepRun(entry.path().filename().wstring(), process_, alive)) {
-                static_cast<void>(std::filesystem::remove_all(entry.path(), error));
+            if (core::shouldSweepRun(entry->path().filename().wstring(), process_, alive)) {
+                static_cast<void>(std::filesystem::remove_all(entry->path(), error));
                 error.clear();
             }
         }

@@ -26,8 +26,9 @@ namespace burlak::drag
         constexpr UINT armTimeoutMilliseconds = 1000;
         constexpr wchar_t toolClass[] = L"BurlakToolWindow";
 
-        const ToolWindowCalls systemCalls{CreateThread, Sleep,      CreateWindowExW, IsWindowVisible, SetWindowPos,
-                                          ShowWindow,   SetCapture, ReleaseCapture,  SetTimer,        KillTimer};
+        const ToolWindowCalls systemCalls{
+            CreateThread,   Sleep,    CreateWindowExW, IsWindowVisible,         SetWindowPos, ShowWindow, SetCapture,
+            ReleaseCapture, SetTimer, KillTimer,       CoWaitForMultipleHandles};
 
         struct HandleCloser
         {
@@ -100,7 +101,16 @@ namespace burlak::drag
                 static_cast<void>(PostThreadMessageW(threadId_, WM_QUIT, 0, 0));
             }
             if (thread_.get() != nullptr) {
-                static_cast<void>(WaitForSingleObject(thread_.get(), 3000));
+                HANDLE handle = thread_.get();
+                DWORD signalled{};
+                constexpr DWORD pumpFlags =
+                    static_cast<DWORD>(COWAIT_DISPATCH_CALLS) | static_cast<DWORD>(COWAIT_DISPATCH_WINDOW_MESSAGES);
+                // OLE can still own cross-apartment target calls after Drop returns. Pumping until the tool thread
+                // has actually exited keeps State and its COM data alive throughout that unwind.
+                const HRESULT status = calls_.coWait(pumpFlags, INFINITE, 1, &handle, &signalled);
+                if (status != S_OK || signalled != 0) {
+                    static_cast<void>(WaitForSingleObject(handle, INFINITE));
+                }
                 thread_.reset();
             }
             threadId_ = 0;

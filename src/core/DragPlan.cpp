@@ -1,6 +1,9 @@
 #include "core/DragPlan.hpp"
 
+#include <algorithm>
 #include <array>
+#include <filesystem>
+#include <set>
 
 namespace burlak::core
 {
@@ -32,11 +35,11 @@ namespace burlak::core
             return std::unexpected(Error::PanelUnavailable);
         }
 
-        if (!panel->realNames) {
-            if (!panel->plugin) {
-                return std::unexpected(Error::NoRealNames);
-            }
-            auto items = panels_.selectedItems(PanelSide::Active);
+        std::vector<Item> items;
+        bool itemsLoaded{};
+        if (panel->plugin) {
+            items = panels_.selectedItems(PanelSide::Active);
+            itemsLoaded = true;
             if (items.size() != panel->selectedItems) {
                 return std::unexpected(Error::Unavailable);
             }
@@ -44,41 +47,64 @@ namespace burlak::core
             if (items.empty()) {
                 return std::unexpected(Error::NoSelection);
             }
-            for (std::size_t index = 0; index < items.size(); ++index) {
-                for (std::size_t previous = 0; previous < index; ++previous) {
-                    if (files_.sameName(items[previous].name, items[index].name)) {
+            const auto absolute = [](const Item &item) { return std::filesystem::path{item.name}.is_absolute(); };
+            const auto absoluteCount = static_cast<std::size_t>(std::ranges::count_if(items, absolute));
+            if (absoluteCount == items.size()) {
+                std::vector<std::wstring> paths;
+                paths.reserve(items.size());
+                for (const auto &item : items) {
+                    paths.push_back(item.name);
+                }
+                return Plan{.paths = std::move(paths), .extraction = std::nullopt};
+            }
+
+            if (!panel->realNames) {
+                if (absoluteCount != 0) {
+                    return std::unexpected(Error::Unavailable);
+                }
+                const auto before = [this](std::wstring_view left, std::wstring_view right) {
+                    return files_.nameBefore(left, right);
+                };
+                std::set<std::wstring_view, decltype(before)> names{before};
+                for (const auto &item : items) {
+                    const auto [existing, inserted] = names.insert(item.name);
+                    if (!inserted) {
                         // Windows cannot advertise two case-insensitively equal paths in one directory, while
                         // GetFilesW must receive the original names, so this selection has no faithful OLE payload.
-                        duplicateMessage(host_, items[previous].name);
+                        duplicateMessage(host_, *existing);
                         return std::unexpected(Error::Unavailable);
                     }
                 }
-            }
-            const auto module = host_.pluginModule(panel->owner);
-            if (!module) {
-                return std::unexpected(Error::Unavailable);
-            }
-            const auto directory = files_.runDirectory();
-            if (!directory) {
-                return std::unexpected(directory.error());
-            }
-
-            std::vector<std::wstring> paths;
-            paths.reserve(items.size());
-            for (const auto &item : items) {
-                const auto path = files_.placeholder(item.name, item.directory);
-                if (!path) {
-                    static_cast<void>(files_.removeTree(*directory));
-                    return std::unexpected(path.error());
+                const auto module = host_.pluginModule(panel->owner);
+                if (!module) {
+                    return std::unexpected(Error::Unavailable);
                 }
-                paths.push_back(*path);
+                const auto directory = files_.runDirectory();
+                if (!directory) {
+                    return std::unexpected(directory.error());
+                }
+
+                std::vector<std::wstring> paths;
+                paths.reserve(items.size());
+                for (const auto &item : items) {
+                    const auto path = files_.placeholder(item.name, item.directory);
+                    if (!path) {
+                        static_cast<void>(files_.removeTree(*directory));
+                        return std::unexpected(path.error());
+                    }
+                    paths.push_back(*path);
+                }
+                return Plan{.paths = std::move(paths),
+                            .extraction = ExtractionRecipe{.panel = panel->handle,
+                                                           .owner = panel->owner,
+                                                           .items = std::move(items),
+                                                           .module = *module,
+                                                           .directory = *directory}};
             }
-            return Plan{.paths = std::move(paths),
-                        .extraction = ExtractionRecipe{.panel = panel->handle,
-                                                       .owner = panel->owner,
-                                                       .items = std::move(items),
-                                                       .module = *module,
-                                                       .directory = *directory}};
+        }
+
+        if (!panel->realNames) {
+            return std::unexpected(Error::NoRealNames);
         }
 
         auto directory = panels_.directory(PanelSide::Active);
@@ -89,15 +115,17 @@ namespace burlak::core
             directory->push_back(L'\\');
         }
 
-        auto items = panels_.selectedItems(PanelSide::Active);
-        std::erase_if(items, [](const Item &item) { return !usable(item); });
-        if (items.empty()) {
-            return std::unexpected(Error::NoSelection);
+        if (!itemsLoaded) {
+            items = panels_.selectedItems(PanelSide::Active);
+            std::erase_if(items, [](const Item &item) { return !usable(item); });
+            if (items.empty()) {
+                return std::unexpected(Error::NoSelection);
+            }
         }
         std::vector<std::wstring> paths;
         paths.reserve(items.size());
         for (const auto &item : items) {
-            paths.push_back(*directory + item.name);
+            paths.push_back(std::filesystem::path{item.name}.is_absolute() ? item.name : *directory + item.name);
         }
         return Plan{.paths = std::move(paths), .extraction = std::nullopt};
     }

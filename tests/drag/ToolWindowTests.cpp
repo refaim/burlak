@@ -6,6 +6,7 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <functional>
 
 namespace burlak::drag
@@ -210,6 +211,32 @@ namespace burlak::drag
             int placements{};
         } headlessWindow;
 
+        enum class JoinWaitResult : std::uint8_t
+        {
+            Success,
+            WrongIndex,
+            Failure,
+        } joinWaitResult{};
+
+        DWORD joinWaitFlags{};
+        DWORD joinWaitTimeout{};
+        int joinWaitCalls{};
+
+        HRESULT WINAPI joinThread(DWORD flags, DWORD timeout, ULONG count, LPHANDLE handles, LPDWORD index)
+        {
+            ++joinWaitCalls;
+            joinWaitFlags = flags;
+            joinWaitTimeout = timeout;
+            if (joinWaitResult == JoinWaitResult::Failure || count != 1) {
+                return E_FAIL;
+            }
+            if (WaitForSingleObject(handles[0], 5000) != WAIT_OBJECT_0) {
+                return E_FAIL;
+            }
+            *index = joinWaitResult == JoinWaitResult::WrongIndex ? 1U : 0U;
+            return S_OK;
+        }
+
         BOOL WINAPI headlessSetWindowPos(HWND, HWND, int, int, int, int, UINT flags)
         {
             ++headlessWindow.placements;
@@ -262,12 +289,17 @@ namespace burlak::drag
             calls.releaseCapture = headlessReleaseCapture;
             calls.setTimer = headlessSetTimer;
             calls.killTimer = headlessKillTimer;
+            calls.coWait = joinThread;
             return calls;
         }
 
         void resetHeadlessWindow()
         {
             headlessWindow = {};
+            joinWaitResult = JoinWaitResult::Success;
+            joinWaitFlags = 0;
+            joinWaitTimeout = 0;
+            joinWaitCalls = 0;
         }
 
     } // namespace
@@ -309,6 +341,38 @@ namespace burlak::drag
             tool.stop();
             tool.stop();
             CHECK(tool.nativeWindow() == 0);
+            CHECK(joinWaitCalls == 1);
+            CHECK(joinWaitTimeout == INFINITE);
+            CHECK((joinWaitFlags & COWAIT_DISPATCH_CALLS) != 0);
+            CHECK((joinWaitFlags & COWAIT_DISPATCH_WINDOW_MESSAGES) != 0);
+        }
+
+        TEST_CASE("shutdown still joins the tool thread when its pumping wait reports an unusable result")
+        {
+            resetHeadlessWindow();
+            SUBCASE("wait failed")
+            {
+                joinWaitResult = JoinWaitResult::Failure;
+            }
+            SUBCASE("wait returned an impossible handle index")
+            {
+                joinWaitResult = JoinWaitResult::WrongIndex;
+            }
+
+            Screen screen;
+            Input input;
+            Shell shell;
+            DropSession dropSession;
+            Extraction extraction;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+            REQUIRE(tool.start());
+
+            tool.stop();
+
+            CHECK(tool.nativeWindow() == 0);
+            CHECK(joinWaitCalls == 1);
+            CHECK(joinWaitTimeout == INFINITE);
         }
 
         TEST_CASE("system placement can show the real tool window" *

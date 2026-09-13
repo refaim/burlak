@@ -167,7 +167,9 @@ which lasts as long as the owning plugin's `GetFilesW` runs (a large archive tak
 the wait pumps COM so the drag loop stays alive). A Far-thread scope guard signals that event with
 failure if an exception reaches the export firewall; the main thread otherwise signals it after
 storing the extraction outcome. Before teardown posts `WM_QUIT` and joins the tool thread, the main
-thread also signals any pending extraction wait with failure. The main thread asks the tool thread for
+thread also signals any pending extraction wait with failure. The join has no timeout and pumps COM and
+window calls: an OLE target apartment can still be involved after `Drop` returns, so destroying the tool
+state before `SHDoDragDrop` has fully unwound is unsafe. The main thread asks the tool thread for
 work with `SendMessage` / `PostMessage` to the tool window. `Session` state that both threads
 read is guarded by a mutex or handed over by value in the messages; document which. For a
 same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool thread

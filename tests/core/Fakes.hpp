@@ -101,6 +101,7 @@ namespace burlak::tests
         std::vector<std::pair<std::wstring, bool>> placeholders;
         std::vector<std::wstring> removed;
         int sweeps{};
+        mutable std::size_t nameComparisons{};
 
         [[nodiscard]] std::expected<std::wstring, core::Error> runDirectory() override
         {
@@ -123,11 +124,12 @@ namespace burlak::tests
             return {};
         }
 
-        [[nodiscard]] bool sameName(std::wstring_view left, std::wstring_view right) const override
+        [[nodiscard]] bool nameBefore(std::wstring_view left, std::wstring_view right) const override
         {
-            return left.size() == right.size() && std::ranges::equal(left, right, [](wchar_t first, wchar_t second) {
-                       return std::towlower(first) == std::towlower(second);
-                   });
+            ++nameComparisons;
+            return std::lexicographical_compare(
+                left.begin(), left.end(), right.begin(), right.end(),
+                [](wchar_t first, wchar_t second) { return std::towlower(first) < std::towlower(second); });
         }
 
         void sweep() override

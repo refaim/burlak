@@ -167,13 +167,14 @@ if(BUILD_TESTING)
   target_link_libraries(e2e_tests PRIVATE burlak_drag burlak_adapters ole32 shell32 user32)
   add_dependencies(e2e_tests Burlak getfiles_success)
   add_test(NAME e2e COMMAND e2e_tests)
+  set(e2e_environment "BURLAK_TRACE_TESTS=1")
   # Adapters and e2e move the cursor, while drag can raise its tool window topmost; they must not
   # compete for the shared desktop when CTest runs in parallel.
   set_tests_properties(adapters drag e2e PROPERTIES RESOURCE_LOCK desktop)
   if(BURLAK_COVERAGE)
-    set_tests_properties(
-      e2e PROPERTIES ENVIRONMENT "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/burlak-e2e-%p-%m.profraw")
+    list(APPEND e2e_environment "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/burlak-e2e-%p-%m.profraw")
   endif()
+  set_tests_properties(e2e PROPERTIES ENVIRONMENT "${e2e_environment}")
 
   add_executable(guard_tests $<TARGET_OBJECTS:burlak_test_main> tests/guard/GuardTests.cpp)
   target_include_directories(guard_tests PRIVATE third_party)
