@@ -86,12 +86,13 @@ namespace burlak::adapters::shell
 
     } // namespace
 
-    std::expected<DataObject, core::Error> makeDataObject(std::span<const std::wstring> paths)
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths)
     {
         return makeDataObject(paths, calls);
     }
 
-    std::expected<DataObject, core::Error> makeDataObject(std::span<const std::wstring> paths, const ShellCalls &api)
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  const ShellCalls &api)
     {
         std::vector<UniquePidl> ownedPidls;
         std::vector<PCIDLIST_ABSOLUTE> pidls;
@@ -116,7 +117,7 @@ namespace burlak::adapters::shell
         if (FAILED(api.bindDataObject(*array.Get(), data.GetAddressOf()))) {
             return std::unexpected(core::Error::Unavailable);
         }
-        return data;
+        return PreparedDataObject{.data = std::move(data), .parsedPaths = pidls.size()};
     }
 
     core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, const ShellCalls &api)
@@ -140,11 +141,11 @@ namespace burlak::adapters::shell
     {
     }
 
-    std::expected<std::unique_ptr<core::IShell::DragData>, core::Error> Shell::makeDataObject(
-        std::span<const std::wstring> paths)
+    std::expected<core::IShell::PreparedDrag, core::Error> Shell::makeDataObject(std::span<const std::wstring> paths)
     {
-        return shell::makeDataObject(paths, calls_).transform([](DataObject prepared) {
-            return std::make_unique<ShellDragData>(std::move(prepared));
+        return shell::makeDataObject(paths, calls_).transform([](PreparedDataObject prepared) {
+            return PreparedDrag{.data = std::make_unique<ShellDragData>(std::move(prepared.data)),
+                                .parsedPaths = prepared.parsedPaths};
         });
     }
 

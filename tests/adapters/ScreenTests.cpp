@@ -195,6 +195,11 @@ namespace burlak::adapters::win
             REQUIRE(host.has_value());
             CHECK(host->handle == reinterpret_cast<core::NativeWindow>(fakeState.console));
             CHECK(host->topmost);
+            const auto pointHost = screen.hostWindowAt({50, 50});
+            REQUIRE(pointHost.has_value());
+            CHECK(pointHost->handle == host->handle);
+            CHECK(pointHost->rect == host->rect);
+            CHECK(pointHost->topmost == host->topmost);
 
             fakeState.rectSucceeds = false;
             CHECK_FALSE(screen.hostWindow().has_value());
@@ -212,6 +217,7 @@ namespace burlak::adapters::win
             fakeState.cursorSucceeds = false;
             CHECK_FALSE(screen.cursor().has_value());
             CHECK_FALSE(screen.hostWindow().has_value());
+            CHECK(screen.hostWindowAt({50, 50}).has_value());
         }
 
         TEST_CASE("font metrics are preferred and the buffer geometry is a checked fallback")
@@ -219,6 +225,7 @@ namespace burlak::adapters::win
             resetFakeScreen();
             Screen screen{fakeCalls};
             CHECK(screen.cellGeometry() == core::CellGeometry{{7, 9}, 10, 20});
+            CHECK(screen.cellGeometryAt({50, 50}) == core::CellGeometry{{7, 9}, 10, 20});
             CHECK(fakeState.clientToScreenWindow == fakeState.console);
 
             resetFakeScreen();
@@ -265,6 +272,10 @@ namespace burlak::adapters::win
 
             resetFakeScreen();
             fakeState.clientToScreenSucceeds = false;
+            CHECK(screen.cellGeometry() == std::unexpected(core::Error::Unavailable));
+
+            resetFakeScreen();
+            fakeState.cursorSucceeds = false;
             CHECK(screen.cellGeometry() == std::unexpected(core::Error::Unavailable));
         }
     }

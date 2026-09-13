@@ -63,14 +63,25 @@ namespace burlak::adapters::win
         if (!point) {
             return std::nullopt;
         }
-        return hostWindowAt(*point, reinterpret_cast<core::NativeWindow>(calls_.getConsoleWindow()),
-                            reinterpret_cast<core::NativeWindow>(calls_.getForegroundWindow()), calls_);
+        return hostWindowAt(*point);
+    }
+
+    std::optional<core::HostWindow> Screen::hostWindowAt(core::Point point)
+    {
+        return win::hostWindowAt(point, reinterpret_cast<core::NativeWindow>(calls_.getConsoleWindow()),
+                                 reinterpret_cast<core::NativeWindow>(calls_.getForegroundWindow()), calls_);
     }
 
     std::expected<core::CellGeometry, core::Error> Screen::cellGeometry()
     {
+        const auto point = cursor();
+        return point ? cellGeometryAt(*point) : std::unexpected(core::Error::Unavailable);
+    }
+
+    std::expected<core::CellGeometry, core::Error> Screen::cellGeometryAt(core::Point point)
+    {
         const auto output = calls_.getStdHandle(STD_OUTPUT_HANDLE);
-        const auto host = hostWindow();
+        const auto host = hostWindowAt(point);
         const auto console = calls_.getConsoleWindow();
         CONSOLE_FONT_INFO font{};
         POINT fontOrigin{};

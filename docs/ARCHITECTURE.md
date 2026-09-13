@@ -161,16 +161,18 @@ work with `SendMessage` / `PostMessage` to the tool window. `Session` state that
 read is guarded by a mutex or handed over by value in the messages; document which. For a
 same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool thread
 for cosmetic hover feedback. On `Drop`, that thread puts a by-value
-`PendingDrop { point, effect }` behind the session mutex, posts synchro, and returns the effect to
+`PendingDrop { point, cell, effect }` behind the session mutex, posts synchro, and returns the effect to
 OLE; it neither calls Far nor reads later main-thread state. Far's synchro handler re-reads both
 panels, their directories, the source selection, the current window, the host and cell geometry.
 It replays only while a panels window is current, both panels remain visible file panels with the
-same identity, the source paths are exactly those advertised to OLE, and the destination directory
-is unchanged. Otherwise it cancels with a one-line Far message. OLE owns ordinary keyboard input
-during the drag, but a macro, timer, panel swap or console resize can still make the hover snapshot
-stale. Replay also runs on Far's thread; an incomplete write is reported, and a one-record partial
-write is followed by a buttonless release at the press cell so Far's panel-drag state is not left
-armed.
+same handle, rectangle, current item and top item, the source paths are exactly those advertised to
+OLE, the destination directory is unchanged, and the recorded pixel still maps to the accepted cell
+through the same host. Shell data-object preparation is all-or-nothing: if any selected path cannot
+be advertised, the drag does not start. Otherwise replay is cancelled with a one-line Far message.
+OLE owns ordinary keyboard input during the drag, but a macro, timer, panel swap or console resize can
+still make the hover snapshot stale. Replay also runs on Far's thread; an incomplete write is reported,
+and a one-record partial write is followed by a buttonless release at the press cell so Far's panel-drag
+state is not left armed.
 
 ## 3. Testing
 

@@ -47,7 +47,11 @@ namespace burlak::adapters::far_api
             .rect = {info.PanelRect.left, info.PanelRect.top, info.PanelRect.right, info.PanelRect.bottom},
             .handle = reinterpret_cast<core::PanelHandle>(info.PluginHandle),
             .owner = owner,
-            .selectedItems = info.SelectedItemsNumber};
+            .selectedItems = info.SelectedItemsNumber,
+            // MoveToMouse interprets a replayed row relative to these two indices (Far source:
+            // far/filelist.cpp, FileList::PluginGetPanelInfo and FileList::MoveToMouse).
+            .currentItem = info.CurrentItem,
+            .topItem = info.TopPanelItem};
     }
 
     std::vector<core::Item> FarPanels::selectedItems(core::PanelSide side)

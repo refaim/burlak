@@ -29,7 +29,13 @@ namespace burlak::core
                 return false;
             }
             return current->visible && current->filePanel && before->rect == current->rect &&
-                   before->handle == current->handle;
+                   before->handle == current->handle && before->currentItem == current->currentItem &&
+                   before->topItem == current->topItem;
+        }
+
+        [[nodiscard]] bool sameHost(const std::optional<HostWindow> &before, const std::optional<HostWindow> &current)
+        {
+            return before && current && before->handle == current->handle && before->rect == current->rect;
         }
 
     } // namespace
@@ -89,8 +95,9 @@ namespace burlak::core
         return current.panelsWindow && current.source == before.source &&
                samePanel(before.panels[source], current.panels[source]) &&
                samePanel(before.panels[destination], current.panels[destination]) &&
-               before.sourcePaths == current.sourcePaths && before.destinationDirectory &&
-               current.destinationDirectory && *before.destinationDirectory == *current.destinationDirectory;
+               sameHost(before.host, current.host) && before.sourcePaths == current.sourcePaths &&
+               before.destinationDirectory && current.destinationDirectory &&
+               *before.destinationDirectory == *current.destinationDirectory;
     }
 
     WindowPlacement placement(bool hostTopmost)
@@ -123,6 +130,11 @@ namespace burlak::core
                                                                  std::unexpected(Error::ForeignCallCrashed)};
         const std::size_t outcome = crashed ? 2U : static_cast<std::size_t>(!succeeded);
         return outcomes[outcome];
+    }
+
+    bool allPathsAdvertised(std::size_t requested, std::size_t parsed)
+    {
+        return requested == parsed;
     }
 
 } // namespace burlak::core

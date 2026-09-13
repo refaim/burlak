@@ -207,12 +207,14 @@ namespace burlak::drag
                 const auto &payload = *reinterpret_cast<const PreparePayload *>(number);
                 data_.reset();
                 auto prepared = shell_.makeDataObject(payload.paths);
-                if (!prepared) {
+                // Far's eventual copy consumes its live selection, so every selected path must also be present in
+                // the OLE payload (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
+                if (!prepared || !core::allPathsAdvertised(payload.paths.size(), prepared->parsedPaths)) {
                     return 0;
                 }
                 button_ = payload.button;
                 dropSession_.prepare(payload.context);
-                data_ = std::move(*prepared);
+                data_ = std::move(prepared->data);
                 return 1;
             }
             case startDragMessage:

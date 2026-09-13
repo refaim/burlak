@@ -96,16 +96,16 @@ namespace burlak::core
         if (!hoverContext_) {
             return Effect::None;
         }
-        const auto chosen = dropPolicy_.effect(*hoverContext_, point, shift);
-        if (chosen == Effect::None) {
+        const auto decision = dropPolicy_.drop(*hoverContext_, point, shift);
+        if (decision.effect == Effect::None) {
             return Effect::None;
         }
         {
             const std::lock_guard lock{pendingMutex_};
-            pendingDrop_ = PendingDrop{point, chosen};
+            pendingDrop_ = PendingDrop{point, decision.events[1].at, decision.effect};
         }
         host_.postSynchro();
-        return chosen;
+        return decision.effect;
     }
 
     void Session::synchro()
@@ -123,11 +123,12 @@ namespace burlak::core
         const std::array panels{panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)};
         const auto paths = DragPlan{panels_}.paths();
         const auto destinationDirectory = panels_.directory(PanelSide::Passive);
-        const auto host = screen_.hostWindow();
-        const auto geometryResult = screen_.cellGeometry();
+        const auto host = screen_.hostWindowAt(pending->point);
+        const auto geometryResult = screen_.cellGeometryAt(pending->point);
 
-        // OLE owns ordinary keyboard input during its drag loop, but a Far macro or timer and a console
-        // resize can still invalidate the snapshot (Far source: far/filepanels.cpp, FilePanels::SwapPanels).
+        // OLE owns ordinary keyboard input during its drag loop, but a macro or timer can navigate and a console
+        // resize can remap rows (Far sources: far/filelist.cpp, FileList::MoveToMouse; far/filepanels.cpp,
+        // FilePanels::SwapPanels).
         if (!farContext_) {
             report(host_, L"Panels changed during the drag; the drop was cancelled.");
             return;
@@ -152,7 +153,9 @@ namespace burlak::core
             return;
         }
         const auto decision = dropPolicy_.drop(fresh, pending->point, pending->effect == Effect::Move);
-        if (decision.effect != pending->effect) {
+        // MoveToMouse consumes the freshly mapped row, so accepting a different cell could change the target
+        // directory (Far source: far/filelist.cpp, FileList::MoveToMouse).
+        if (decision.effect != pending->effect || decision.events[1].at != pending->cell) {
             report(host_, L"Panels changed during the drag; the drop was cancelled.");
             return;
         }

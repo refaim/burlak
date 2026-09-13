@@ -32,7 +32,9 @@ namespace burlak::adapters::win
         [[nodiscard]] std::optional<core::Point> cursor() override;
         [[nodiscard]] bool buttonDown(core::Button button) override;
         [[nodiscard]] std::optional<core::HostWindow> hostWindow() override;
+        [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point point) override;
         [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometry() override;
+        [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometryAt(core::Point point) override;
 
       private:
         const ScreenCalls &calls_;

@@ -43,5 +43,6 @@ namespace burlak::core
     [[nodiscard]] std::expected<void, Error> expectedOutcome(bool succeeded, Error failure);
     [[nodiscard]] std::expected<void, Error> replayOutcome(ReplayOutcome outcome);
     [[nodiscard]] std::expected<void, Error> extractionOutcome(bool crashed, std::intptr_t result);
+    [[nodiscard]] bool allPathsAdvertised(std::size_t requested, std::size_t parsed);
 
 } // namespace burlak::core

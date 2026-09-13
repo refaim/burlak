@@ -62,9 +62,17 @@ namespace burlak::drag
             {
                 return core::HostWindow{1, {0, 0, 80, 25}, false};
             }
+            [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point) override
+            {
+                return hostWindow();
+            }
             [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometry() override
             {
                 return core::CellGeometry{{0, 0}, 1, 1};
+            }
+            [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometryAt(core::Point) override
+            {
+                return cellGeometry();
             }
         };
 
@@ -105,7 +113,7 @@ namespace burlak::drag
                 if (!result) {
                     return false;
                 }
-                data = std::move(*result);
+                data = std::move(result->data);
                 session_.prepare(context);
                 return true;
             }

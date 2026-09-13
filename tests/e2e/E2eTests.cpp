@@ -369,7 +369,7 @@ TEST_SUITE("e2e")
 
         burlak::core::ReleasePolicy policy;
         burlak::drag::DragSource source{policy, burlak::core::Button::Left};
-        const auto dragResult = burlak::adapters::shell::runDrag(window.get(), *data->Get(), source,
+        const auto dragResult = burlak::adapters::shell::runDrag(window.get(), *data->data.Get(), source,
                                                                  burlak::adapters::shell::systemShellCalls());
         REQUIRE(dragResult.status == DRAGDROP_S_DROP);
         CHECK(target.received());

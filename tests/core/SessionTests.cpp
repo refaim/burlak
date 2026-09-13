@@ -21,6 +21,9 @@ namespace burlak::core
             std::vector<bool> buttons{true, true};
             std::optional<HostWindow> window{HostWindow{1, {0, 0, 100, 100}, false}};
             std::expected<CellGeometry, Error> geometry{CellGeometry{{0, 0}, 1, 1}};
+            std::optional<HostWindow> pointWindow{window};
+            std::expected<CellGeometry, Error> pointGeometry{geometry};
+            std::optional<Point> queriedPoint;
 
             [[nodiscard]] std::optional<Point> cursor() override
             {
@@ -45,6 +48,20 @@ namespace burlak::core
             {
                 calls.emplace_back("geometry");
                 return geometry;
+            }
+
+            [[nodiscard]] std::optional<HostWindow> hostWindowAt(Point point) override
+            {
+                calls.emplace_back("point host");
+                queriedPoint = point;
+                return pointWindow;
+            }
+
+            [[nodiscard]] std::expected<CellGeometry, Error> cellGeometryAt(Point point) override
+            {
+                calls.emplace_back("point geometry");
+                queriedPoint = point;
+                return pointGeometry;
             }
         };
 
@@ -294,6 +311,7 @@ namespace burlak::core
 
             session.synchro();
             REQUIRE(input.replays.size() == 1);
+            CHECK(screen.queriedPoint == Point{45, 5});
             CHECK(input.replays[0] ==
                   std::vector<MouseEvent>{MouseEvent{.at = {5, 5}, .left = true, .mods = {.shift = true}},
                                           MouseEvent{.at = {45, 5}, .mods = {.shift = true}}});
@@ -345,6 +363,14 @@ namespace burlak::core
             {
                 panels.items[0] = {{.name = L"two.txt"}};
             }
+            SUBCASE("source current row changed")
+            {
+                panels.panels[0]->currentItem = 1;
+            }
+            SUBCASE("source top row changed")
+            {
+                panels.panels[0]->topItem = 1;
+            }
 
             session.synchro();
             CHECK(input.replays.empty());
@@ -381,22 +407,66 @@ namespace burlak::core
             {
                 panels.directories[1] = L"E:\\other";
             }
+            SUBCASE("destination current row changed")
+            {
+                panels.panels[1]->currentItem = 1;
+            }
+            SUBCASE("destination top row changed")
+            {
+                panels.panels[1]->topItem = 1;
+            }
             SUBCASE("a panels window is no longer current")
             {
                 panels.panelsWindow = false;
             }
             SUBCASE("host disappeared")
             {
-                screen.window = std::nullopt;
+                screen.pointWindow = std::nullopt;
             }
             SUBCASE("geometry disappeared")
             {
-                screen.geometry = std::unexpected(Error::Unavailable);
+                screen.pointGeometry = std::unexpected(Error::Unavailable);
             }
 
             session.synchro();
             CHECK(input.replays.empty());
             CHECK(host.messages.size() == 1);
+        }
+
+        TEST_CASE("Far synchro requires the accepted drop cell under fresh point geometry")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            Session session{panels, host, screen, input};
+            arm(session, tool);
+            REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
+            screen.pointGeometry = CellGeometry{{1, 0}, 1, 1};
+
+            session.synchro();
+            CHECK(input.replays.empty());
+            CHECK(host.messages.size() == 1);
+        }
+
+        TEST_CASE("Far synchro resolves the host from the recorded drop point")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            Session session{panels, host, screen, input};
+            arm(session, tool);
+            REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
+            screen.window = std::nullopt;
+
+            session.synchro();
+            CHECK(input.replays.size() == 1);
+            CHECK(host.messages.empty());
         }
 
         TEST_CASE("Far synchro reports replay failures and releases a partial press")

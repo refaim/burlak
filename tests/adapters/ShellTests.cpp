@@ -19,6 +19,16 @@ namespace burlak::adapters::shell
             return S_OK;
         }
 
+        HRESULT WINAPI parseExceptMissing(PCWSTR path, IBindCtx *context, PIDLIST_ABSOLUTE *parsed, SFGAOF attributes,
+                                          SFGAOF *found)
+        {
+            if (std::wstring_view{path}.find(L"missing") != std::wstring_view::npos) {
+                *parsed = nullptr;
+                return E_FAIL;
+            }
+            return SHParseDisplayName(path, context, parsed, attributes, found);
+        }
+
         HRESULT WINAPI failCreateArray(UINT, PCIDLIST_ABSOLUTE_ARRAY, IShellItemArray **)
         {
             return E_FAIL;
@@ -116,9 +126,10 @@ namespace burlak::adapters::shell
 
             auto data = makeDataObject(paths);
             REQUIRE(data.has_value());
+            CHECK(data->parsedPaths == paths.size());
             FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
             STGMEDIUM medium{};
-            REQUIRE(SUCCEEDED((*data)->GetData(&format, &medium)));
+            REQUIRE(SUCCEEDED(data->data->GetData(&format, &medium)));
             const auto drop = static_cast<HDROP>(GlobalLock(medium.hGlobal));
             REQUIRE(drop != nullptr);
             wchar_t path[MAX_PATH]{};
@@ -130,23 +141,23 @@ namespace burlak::adapters::shell
             calls.doDragDrop = fakeDrag;
             dragResult = DRAGDROP_S_DROP;
             draggedEffect = DROPEFFECT_MOVE;
-            CHECK(runDrag(nullptr, *data.value().Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, calls) ==
                   core::DragLoopOutcome{DRAGDROP_S_DROP, DROPEFFECT_MOVE});
             dragResult = DRAGDROP_S_CANCEL;
-            CHECK(runDrag(nullptr, *data.value().Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, calls) ==
                   core::DragLoopOutcome{DRAGDROP_S_CANCEL, DROPEFFECT_MOVE});
             dragResult = E_FAIL;
-            CHECK(runDrag(nullptr, *data.value().Get(), source, calls) ==
-                  core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
+            CHECK(runDrag(nullptr, *data->data.Get(), source, calls) == core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
 
             Shell shell{calls};
             auto opaque = shell.makeDataObject(paths);
             REQUIRE(opaque.has_value());
+            CHECK(opaque->parsedPaths == paths.size());
             dragResult = DRAGDROP_S_DROP;
-            CHECK(shell.runDrag(0, **opaque, reinterpret_cast<std::uintptr_t>(&source)) ==
+            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source)) ==
                   core::DragLoopOutcome{DRAGDROP_S_DROP, DROPEFFECT_MOVE});
             dragResult = E_FAIL;
-            CHECK(shell.runDrag(0, **opaque, reinterpret_cast<std::uintptr_t>(&source)) ==
+            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source)) ==
                   core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
             GlobalUnlock(medium.hGlobal);
             ReleaseStgMedium(&medium);
@@ -186,6 +197,27 @@ namespace burlak::adapters::shell
             calls = systemShellCalls();
             calls.bindDataObject = failBind;
             CHECK(makeDataObject(paths, calls) == std::unexpected(core::Error::Unavailable));
+
+            std::filesystem::remove_all(root);
+            OleUninitialize();
+        }
+
+        TEST_CASE("data-object construction reports exactly how many paths were advertised")
+        {
+            REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
+            const auto root = std::filesystem::temp_directory_path() / L"burlak-shell-partial";
+            std::filesystem::create_directories(root);
+            const auto file = root / L"one.txt";
+            {
+                std::ofstream stream{file};
+            }
+            const std::vector<std::wstring> paths{file.wstring(), L"missing"};
+            auto calls = systemShellCalls();
+            calls.parseDisplayName = parseExceptMissing;
+
+            const auto data = makeDataObject(paths, calls);
+            REQUIRE(data.has_value());
+            CHECK(data->parsedPaths == 1);
 
             std::filesystem::remove_all(root);
             OleUninitialize();

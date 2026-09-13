@@ -35,7 +35,17 @@ namespace burlak::drag
                 return host;
             }
 
+            [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point) override
+            {
+                return host;
+            }
+
             [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometry() override
+            {
+                return std::unexpected(core::Error::Unavailable);
+            }
+
+            [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometryAt(core::Point) override
             {
                 return std::unexpected(core::Error::Unavailable);
             }
@@ -54,16 +64,17 @@ namespace burlak::drag
             };
 
             bool prepares{true};
+            std::size_t parsedPaths{1};
             int dragCalls{};
             std::function<void(core::NativeWindow)> duringDrag;
 
-            [[nodiscard]] std::expected<std::unique_ptr<DragData>, core::Error> makeDataObject(
+            [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
                 std::span<const std::wstring>) override
             {
                 if (!prepares) {
                     return std::unexpected(core::Error::NoSelection);
                 }
-                return std::make_unique<Data>();
+                return PreparedDrag{.data = std::make_unique<Data>(), .parsedPaths = parsedPaths};
             }
 
             [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &, std::uintptr_t) override
@@ -310,6 +321,7 @@ namespace burlak::drag
             const std::vector<std::wstring> invalid{L"Z:\\definitely-missing\\file.txt"};
             CHECK_FALSE(tool.prepare(invalid, core::Button::Right, dropContext()));
             shell.prepares = true;
+            shell.parsedPaths = 1;
             const std::vector<std::wstring> valid{L"C:\\one.txt"};
             REQUIRE(tool.prepare(valid, core::Button::Right, dropContext()));
             CHECK_FALSE(tool.showAndArm());
@@ -319,6 +331,23 @@ namespace burlak::drag
             REQUIRE(tool.prepare(valid, core::Button::Right, dropContext()));
             tool.abort();
             CHECK_FALSE(tool.hasData());
+            tool.stop();
+        }
+
+        TEST_CASE("prepare rejects a shell payload that omitted any requested path")
+        {
+            Screen screen;
+            Input input;
+            Shell shell;
+            shell.parsedPaths = 1;
+            DropSession dropSession;
+            ToolWindow tool{screen, input, shell, dropSession};
+            REQUIRE(tool.start());
+            const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
+
+            CHECK_FALSE(tool.prepare(paths, core::Button::Left, dropContext()));
+            CHECK_FALSE(tool.hasData());
+            CHECK_FALSE(dropSession.context.has_value());
             tool.stop();
         }
 

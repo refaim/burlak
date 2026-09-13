@@ -66,6 +66,8 @@ namespace burlak::adapters::far_api
                 info.PluginHandle = reinterpret_cast<HANDLE>(17);
                 info.OwnerGuid = ownerGuid;
                 info.SelectedItemsNumber = 1;
+                info.CurrentItem = 7;
+                info.TopPanelItem = 3;
                 return 1;
             }
             if (command == FCTL_GETPANELDIRECTORY) {
@@ -185,6 +187,8 @@ namespace burlak::adapters::far_api
             CHECK(active->rect == core::CellRect{0, 0, 39, 24});
             CHECK(active->handle == 17);
             CHECK(active->selectedItems == 1);
+            CHECK(active->currentItem == 7);
+            CHECK(active->topItem == 3);
 
             const auto passive = panels.panel(core::PanelSide::Passive);
             REQUIRE(passive.has_value());

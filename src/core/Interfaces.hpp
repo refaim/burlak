@@ -40,7 +40,9 @@ namespace burlak::core
         [[nodiscard]] virtual std::optional<Point> cursor() = 0;
         [[nodiscard]] virtual bool buttonDown(Button button) = 0;
         [[nodiscard]] virtual std::optional<HostWindow> hostWindow() = 0;
+        [[nodiscard]] virtual std::optional<HostWindow> hostWindowAt(Point point) = 0;
         [[nodiscard]] virtual std::expected<CellGeometry, Error> cellGeometry() = 0;
+        [[nodiscard]] virtual std::expected<CellGeometry, Error> cellGeometryAt(Point point) = 0;
     };
 
     class IInput
@@ -61,7 +63,13 @@ namespace burlak::core
             [[nodiscard]] virtual std::uintptr_t nativeHandle() const = 0;
         };
 
-        [[nodiscard]] virtual std::expected<std::unique_ptr<DragData>, Error> makeDataObject(
+        struct PreparedDrag
+        {
+            std::unique_ptr<DragData> data;
+            std::size_t parsedPaths{};
+        };
+
+        [[nodiscard]] virtual std::expected<PreparedDrag, Error> makeDataObject(
             std::span<const std::wstring> paths) = 0;
         [[nodiscard]] virtual DragLoopOutcome runDrag(NativeWindow owner, DragData &data, std::uintptr_t source) = 0;
         [[nodiscard]] virtual std::expected<void, Error> copy(std::span<const std::wstring> paths,

@@ -16,6 +16,12 @@ namespace burlak::adapters::shell
 
     using DataObject = Microsoft::WRL::ComPtr<IDataObject>;
 
+    struct PreparedDataObject
+    {
+        DataObject data;
+        std::size_t parsedPaths{};
+    };
+
     struct ShellCalls
     {
         decltype(&SHParseDisplayName) parseDisplayName;
@@ -30,9 +36,9 @@ namespace burlak::adapters::shell
         HRESULT (*getAborted)(IFileOperation &operation, BOOL *aborted);
     };
 
-    [[nodiscard]] std::expected<DataObject, core::Error> makeDataObject(std::span<const std::wstring> paths);
-    [[nodiscard]] std::expected<DataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
-                                                                        const ShellCalls &calls);
+    [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths);
+    [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                                const ShellCalls &calls);
     [[nodiscard]] core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source,
                                                 const ShellCalls &calls);
     [[nodiscard]] const ShellCalls &systemShellCalls();
@@ -43,7 +49,7 @@ namespace burlak::adapters::shell
         Shell();
         explicit Shell(const ShellCalls &calls);
 
-        [[nodiscard]] std::expected<std::unique_ptr<DragData>, core::Error> makeDataObject(
+        [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
             std::span<const std::wstring> paths) override;
         [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &data,
                                                     std::uintptr_t source) override;

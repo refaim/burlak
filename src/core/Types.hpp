@@ -128,6 +128,8 @@ namespace burlak::core
         PanelHandle handle{};
         Guid owner{};
         std::size_t selectedItems{};
+        std::size_t currentItem{};
+        std::size_t topItem{};
     };
 
     struct Item

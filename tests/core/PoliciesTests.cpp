@@ -124,7 +124,7 @@ namespace burlak::core
                 .source = PanelSide::Active,
                 .panels = {PanelInfo{.visible = true, .filePanel = true, .rect = {0, 0, 39, 24}, .handle = 11},
                            PanelInfo{.visible = true, .filePanel = true, .rect = {40, 0, 79, 24}, .handle = 22}},
-                .host = std::nullopt,
+                .host = HostWindow{1, {0, 0, 80, 25}, false},
                 .geometry = std::nullopt,
                 .panelsWindow = true,
                 .sourcePaths = {L"C:\\source\\one.txt", L"C:\\source\\two.txt"},
@@ -190,6 +190,38 @@ namespace burlak::core
             {
                 current.panels[1]->rect.left = 41;
             }
+            SUBCASE("source current row changed")
+            {
+                current.panels[0]->currentItem = 7;
+            }
+            SUBCASE("source top row changed")
+            {
+                current.panels[0]->topItem = 3;
+            }
+            SUBCASE("destination current row changed")
+            {
+                current.panels[1]->currentItem = 8;
+            }
+            SUBCASE("destination top row changed")
+            {
+                current.panels[1]->topItem = 4;
+            }
+            SUBCASE("host handle changed")
+            {
+                current.host->handle = 99;
+            }
+            SUBCASE("host rectangle changed")
+            {
+                current.host->rect.right = 99;
+            }
+            SUBCASE("original host missing")
+            {
+                snapshot.host.reset();
+            }
+            SUBCASE("current host missing")
+            {
+                current.host.reset();
+            }
             SUBCASE("selected source paths changed")
             {
                 current.sourcePaths = {L"C:\\source\\other.txt"};
@@ -208,6 +240,12 @@ namespace burlak::core
             }
 
             CHECK_FALSE(policy.sameIdentity(snapshot, current));
+        }
+
+        TEST_CASE("every requested path must be represented by the shell payload")
+        {
+            CHECK(allPathsAdvertised(2, 2));
+            CHECK_FALSE(allPathsAdvertised(2, 1));
         }
 
         TEST_CASE("window placement follows the host and always demotes before ordinary placement")

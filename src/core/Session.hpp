@@ -23,6 +23,7 @@ namespace burlak::core
         struct PendingDrop
         {
             Point point{};
+            Cell cell{};
             Effect effect{Effect::None};
         };
 
