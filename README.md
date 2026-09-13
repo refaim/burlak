@@ -27,14 +27,29 @@ Restart Far — plugins are read at startup.
 ## Build
 
 ```powershell
-pwsh -File build.ps1                # x64
-pwsh -File build.ps1 -Arch x86
-pwsh -File build.ps1 -Arch arm64
-pwsh -File package.ps1 -Arch x64    # Burlak-<version>-x64.zip, as on Releases
+cmake --preset release-x64
+cmake --build --preset release-x64
+pwsh -File scripts/build.ps1 -Arch x86
+pwsh -File scripts/build.ps1 -Arch arm64
+pwsh -File scripts/package.ps1 -Arch x64  # Burlak-<version>-x64.zip, as on Releases
 ```
 
 Needs the Visual Studio 2022 Build Tools with the C++ workload; arm64 also needs the
 `MSVC v143 - VS 2022 C++ ARM64/ARM64EC build tools` component. Far's headers ship in `sdk/`.
+
+The `debug` and `coverage` presets use clang-cl and Ninja. Run the tests and both local gates with:
+
+```powershell
+cmake --preset debug
+cmake --build --preset debug
+ctest --preset debug --output-on-failure
+powershell -File scripts/coverage.ps1
+powershell -File scripts/lint.ps1 -BuildDir build/debug `
+  -ReleaseDirs build/release-x64,build/release-x86,build/release-arm64
+```
+
+Coverage accepts only 100% line and branch coverage for every executable file under `src/`.
+Lint runs clang-format, clang-tidy, cppcheck, PSScriptAnalyzer and BinSkim.
 
 ## Licence
 

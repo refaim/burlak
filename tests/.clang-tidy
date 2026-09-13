@@ -1,0 +1,8 @@
+# doctest REQUIRE is not understood as a terminating guard, and several tests deliberately use
+# out-of-range enum values to cover adapter defaults; only those two test-only diagnostics differ.
+---
+InheritParentConfig: true
+Checks: >
+  -bugprone-unchecked-optional-access,
+  -clang-analyzer-optin.core.EnumCastOutOfRange
+...

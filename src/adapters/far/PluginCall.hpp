@@ -1,0 +1,17 @@
+#pragma once
+
+#include "core/Types.hpp"
+
+#include <expected>
+#include <span>
+#include <string_view>
+
+namespace burlak::adapters::far_api
+{
+
+    [[nodiscard]] std::expected<void, core::Error> callPluginGetFiles(core::PanelHandle panel,
+                                                                      std::span<const core::Item> items,
+                                                                      const core::PluginModule &module,
+                                                                      std::wstring_view destination);
+
+} // namespace burlak::adapters::far_api

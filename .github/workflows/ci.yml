@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
-    tags: [ 'v*' ]
+    branches: [master]
+    tags: ['v*']
   pull_request:
-    branches: [ master ]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -13,56 +13,42 @@ permissions:
 
 jobs:
   build:
-    # Without this the job name lists every matrix value, giving the likes of
-    # "build (arm64, amd64_arm64)".
+    # These matrix expansions are required checks named build (x64), build (x86), build (arm64).
     name: build (${{ matrix.arch }})
     runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
-        # The runner is x64, so arm64 has to be a cross build: amd64_arm64 is
-        # host x64 -> target arm64. Plain "arm64" would select an arm64-hosted
-        # toolchain that cannot run here.
-        include:
-          - arch: x64
-            msvc: x64
-          - arch: x86
-            msvc: x86
-          - arch: arm64
-            msvc: amd64_arm64
+        arch: [x64, x86, arm64]
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.msvc }}
-
-      # The same script developers run locally; msvc-dev-cmd has already put
-      # the toolchain on PATH, so vcvars must not be replayed on top of it.
       - name: Build
         shell: pwsh
-        run: ./build.ps1 -Arch ${{ matrix.arch }} -SkipVcvars
+        run: ./scripts/build.ps1 -Arch ${{ matrix.arch }}
 
-      # OpenW is for Renewal, not Far: the autoupdater only recognises a DLL as
-      # a plugin by that export, and drops the update otherwise.
-      - name: Check the plugin exports what Far and Renewal look for
+      - name: Check the seven Far and Renewal exports
         shell: pwsh
         run: |
-          # -join matters: with an array on the left, -notmatch filters instead
-          # of returning a boolean, and every name would look missing.
-          $exports = (& dumpbin /nologo /exports build/${{ matrix.arch }}/Burlak.dll) -join "`n"
-          $required = @('GetGlobalInfoW','SetStartupInfoW','GetPluginInfoW','ProcessConsoleInputW','ExitFARW','OpenW','ProcessSynchroEventW')
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $dumpbin = Get-ChildItem -Path (Join-Path $installation 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $dumpbin) { throw 'dumpbin.exe was not found through Visual Studio setup' }
+          $exports = (& $dumpbin /nologo /exports build/release-${{ matrix.arch }}/Burlak.dll) -join "`n"
+          $required = @(
+            'GetGlobalInfoW', 'SetStartupInfoW', 'GetPluginInfoW', 'OpenW',
+            'ProcessConsoleInputW', 'ProcessSynchroEventW', 'ExitFARW'
+          )
           $missing = $required | Where-Object { $exports -notmatch "\b$_\b" }
           if ($missing) { throw "missing exports: $($missing -join ', ')" }
-          Write-Host "all $($required.Count) exports present"
+          Write-Output "all $($required.Count) exports present"
 
-      # The same script developers run locally; it puts the version in the name.
       - name: Package
         shell: pwsh
         run: |
-          $name = ./package.ps1 -Arch ${{ matrix.arch }}
+          $name = ./scripts/package.ps1 -Arch ${{ matrix.arch }}
           "PACKAGE_NAME=$name" >> $env:GITHUB_ENV
 
       - uses: actions/upload-artifact@v7
@@ -71,8 +57,76 @@ jobs:
           path: ${{ env.PACKAGE_NAME }}.zip
           if-no-files-found: error
 
+  test:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Find Visual Studio LLVM
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
+          $llvm = Join-Path $installation 'VC\Tools\Llvm\x64\bin'
+          "LLVM_DIR=$llvm" >> $env:GITHUB_ENV
+
+      - name: Configure coverage
+        shell: pwsh
+        run: |
+          cmake --preset coverage `
+            "-DCMAKE_CXX_COMPILER=$env:LLVM_DIR\clang-cl.exe" `
+            "-DCMAKE_RC_COMPILER=$env:LLVM_DIR\llvm-rc.exe" `
+            "-DCMAKE_LINKER=$env:LLVM_DIR\lld-link.exe"
+
+      - name: Build coverage
+        run: cmake --build --preset coverage
+
+      - name: Test
+        run: ctest --preset coverage --output-on-failure
+
+      - name: Enforce coverage
+        shell: pwsh
+        run: ./scripts/coverage.ps1 -LlvmDir $env:LLVM_DIR
+
+  lint:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install analyzers
+        shell: pwsh
+        run: |
+          choco install cppcheck --no-progress -y
+          dotnet tool install --global Microsoft.CodeAnalysis.BinSkim
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+
+      - name: Find Visual Studio LLVM
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
+          $llvm = Join-Path $installation 'VC\Tools\Llvm\x64\bin'
+          "LLVM_DIR=$llvm" >> $env:GITHUB_ENV
+
+      - name: Build analyzer inputs
+        shell: pwsh
+        run: |
+          cmake --preset debug `
+            "-DCMAKE_CXX_COMPILER=$env:LLVM_DIR\clang-cl.exe" `
+            "-DCMAKE_RC_COMPILER=$env:LLVM_DIR\llvm-rc.exe" `
+            "-DCMAKE_LINKER=$env:LLVM_DIR\lld-link.exe"
+          cmake --build --preset debug
+          foreach ($arch in 'x64', 'x86', 'arm64') {
+            ./scripts/build.ps1 -Arch $arch
+          }
+
+      - name: Lint
+        shell: pwsh
+        run: ./scripts/lint.ps1 -BuildDir build/debug -ReleaseDirs build/release-x64,build/release-x86,build/release-arm64 -LlvmDir $env:LLVM_DIR
+
   release:
-    needs: build
+    needs: [build, test, lint]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
@@ -84,18 +138,16 @@ jobs:
           merge-multiple: true
           path: artifacts
 
-      # The tag is the source of truth for a release, but src/version.h is the
-      # source of truth for the binary. Refuse to publish if they disagree.
-      - name: Tag must match src/version.h
+      - name: Tag must match src/plugin/version.h
         run: |
-          major=$(grep -oP 'BURLAK_VERSION_MAJOR\s+\K\d+' src/version.h)
-          minor=$(grep -oP 'BURLAK_VERSION_MINOR\s+\K\d+' src/version.h)
-          patch=$(grep -oP 'BURLAK_VERSION_PATCH\s+\K\d+' src/version.h)
+          major=$(grep -oP 'BURLAK_VERSION_MAJOR\s+\K\d+' src/plugin/version.h)
+          minor=$(grep -oP 'BURLAK_VERSION_MINOR\s+\K\d+' src/plugin/version.h)
+          patch=$(grep -oP 'BURLAK_VERSION_PATCH\s+\K\d+' src/plugin/version.h)
           header="$major.$minor.$patch"
           tag="${GITHUB_REF_NAME#v}"
           echo "header=$header tag=$tag"
           if [ "$header" != "$tag" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match src/version.h ($header)"
+            echo "::error::tag $GITHUB_REF_NAME does not match src/plugin/version.h ($header)"
             exit 1
           fi
 

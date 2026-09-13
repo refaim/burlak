@@ -12,7 +12,5 @@
 #define BURLAK_STR2(x) #x
 #define BURLAK_STR(x) BURLAK_STR2(x)
 
-#define BURLAK_VERSION_STRING \
-    BURLAK_STR(BURLAK_VERSION_MAJOR) "." \
-    BURLAK_STR(BURLAK_VERSION_MINOR) "." \
-    BURLAK_STR(BURLAK_VERSION_PATCH)
+#define BURLAK_VERSION_STRING                                                                                          \
+    BURLAK_STR(BURLAK_VERSION_MAJOR) "." BURLAK_STR(BURLAK_VERSION_MINOR) "." BURLAK_STR(BURLAK_VERSION_PATCH)
