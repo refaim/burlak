@@ -21,6 +21,7 @@ namespace burlak::adapters::far_api
         bool advFailure{};
         std::wstring directoryName{L"C:\\panel"};
         std::wstring selectedName{L"selected.txt"};
+        bool detailedItem{};
         PLUGINPANELITEMFLAGS selectedFlags{PPIF_SELECTED};
         PANELINFOTYPE panelType{PTYPE_FILEPANEL};
         UUID ownerGuid{0x12345678, 0x1111, 0x2222, {1, 2, 3, 4, 5, 6, 7, 8}};
@@ -52,6 +53,10 @@ namespace burlak::adapters::far_api
 
         PanelFailure panelFailure{PanelFailure::None};
         PluginFailure pluginFailure{PluginFailure::None};
+
+        void WINAPI freePanelItem(void *, const FarPanelItemFreeInfo *)
+        {
+        }
 
         intptr_t WINAPI panelControl(HANDLE panel, FILE_CONTROL_COMMANDS command, intptr_t param1, void *param2)
         {
@@ -86,7 +91,17 @@ namespace burlak::adapters::far_api
                 return static_cast<intptr_t>(bytes);
             }
             if (command == FCTL_GETSELECTEDPANELITEM) {
-                const auto bytes = sizeof(PluginPanelItem) + (selectedName.size() + 1) * sizeof(wchar_t);
+                constexpr std::array extraText{std::wstring_view{L"SELECTED.TXT"}, std::wstring_view{L"description"},
+                                               std::wstring_view{L"owner"}, std::wstring_view{L"column-a"},
+                                               std::wstring_view{L"column-b"}};
+                std::size_t textBytes = (selectedName.size() + 1) * sizeof(wchar_t);
+                if (detailedItem) {
+                    for (const auto text : extraText) {
+                        textBytes += (text.size() + 1) * sizeof(wchar_t);
+                    }
+                }
+                const std::size_t columnBytes = detailedItem ? 3 * sizeof(const wchar_t *) : 0;
+                const auto bytes = sizeof(PluginPanelItem) + columnBytes + textBytes;
                 if (param2 == nullptr) {
                     return panelFailure == PanelFailure::ItemSize ? 0 : static_cast<intptr_t>(bytes);
                 }
@@ -95,14 +110,43 @@ namespace burlak::adapters::far_api
                 }
                 auto &request = *static_cast<FarGetPluginPanelItem *>(param2);
                 *request.Item = {};
-                auto *name =
-                    reinterpret_cast<wchar_t *>(reinterpret_cast<std::byte *>(request.Item) + sizeof(PluginPanelItem));
-                std::memcpy(name, selectedName.c_str(), (selectedName.size() + 1) * sizeof(wchar_t));
+                auto *cursor = reinterpret_cast<std::byte *>(request.Item) + sizeof(PluginPanelItem) + columnBytes;
+                const auto write = [&cursor](std::wstring_view text) {
+                    auto *destination = reinterpret_cast<wchar_t *>(cursor);
+                    std::memcpy(destination, text.data(), text.size() * sizeof(wchar_t));
+                    destination[text.size()] = L'\0';
+                    cursor += (text.size() + 1) * sizeof(wchar_t);
+                    return static_cast<const wchar_t *>(destination);
+                };
+                const auto *name = write(selectedName);
                 request.Item->FileName = panelFailure == PanelFailure::ItemName ? nullptr : name;
                 request.Item->FileSize = 9;
                 request.Item->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
                 request.Item->Flags = selectedFlags;
                 request.Item->UserData.Data = reinterpret_cast<void *>(23);
+                if (detailedItem) {
+                    auto **columns = reinterpret_cast<const wchar_t **>(reinterpret_cast<std::byte *>(request.Item) +
+                                                                        sizeof(PluginPanelItem));
+                    request.Item->CreationTime = {1, 2};
+                    request.Item->LastAccessTime = {3, 4};
+                    request.Item->LastWriteTime = {5, 6};
+                    request.Item->ChangeTime = {7, 8};
+                    request.Item->AllocationSize = 31;
+                    request.Item->AlternateFileName = write(extraText[0]);
+                    request.Item->Description = write(extraText[1]);
+                    request.Item->Owner = write(extraText[2]);
+                    columns[0] = write(extraText[3]);
+                    columns[1] = write(extraText[4]);
+                    columns[2] = nullptr;
+                    request.Item->CustomColumnData = columns;
+                    request.Item->CustomColumnNumber = 3;
+                    request.Item->Flags |= PPIF_PROCESSDESCR;
+                    request.Item->UserData.FreeData = freePanelItem;
+                    request.Item->NumberOfLinks = 5;
+                    request.Item->CRC32 = 0xabcdef;
+                    request.Item->Reserved[0] = 29;
+                    request.Item->Reserved[1] = 31;
+                }
                 return static_cast<intptr_t>(bytes);
             }
             if (command == FCTL_UPDATEPANEL) {
@@ -214,6 +258,19 @@ namespace burlak::adapters::far_api
             CHECK(items[0].directory);
             CHECK(items[0].selected);
             CHECK(items[0].userData.value == 23);
+            CHECK_FALSE(items[0].identity.empty());
+            CHECK(items[0].native.size() >= sizeof(PluginPanelItem));
+            const auto &native = *reinterpret_cast<const PluginPanelItem *>(items[0].native.data());
+            CHECK(native.FileName != nullptr);
+            CHECK(std::wstring_view{native.FileName} == L"selected.txt");
+            detailedItem = true;
+            const auto detailed = panels.selectedItems(core::PanelSide::Active);
+            REQUIRE(detailed.size() == 1);
+            CHECK(detailed[0].identity != items[0].identity);
+            const auto &detailedNative = *reinterpret_cast<const PluginPanelItem *>(detailed[0].native.data());
+            CHECK(detailedNative.CustomColumnNumber == 3);
+            CHECK(detailedNative.CustomColumnData[2] == nullptr);
+            detailedItem = false;
             selectedFlags = PPIF_NONE;
             const auto unflagged = panels.selectedItems(core::PanelSide::Active);
             REQUIRE(unflagged.size() == 1);
@@ -298,12 +355,15 @@ namespace burlak::adapters::far_api
             pluginPath = GETFILES_SUCCESS_PATH;
 
             const core::PluginModule callable{.path = GETFILES_SUCCESS_PATH, .instance = 42};
-            const std::vector<core::Item> items{{.name = L"far-host.txt"}};
+            selectedName = L"far-host.txt";
+            FarPanels panels{info};
+            const auto items = panels.selectedItems(core::PanelSide::Active);
             const auto destination = std::filesystem::temp_directory_path() / L"burlak-far-host";
             std::filesystem::remove_all(destination);
-            CHECK(host.extract(17, items, callable, destination.wstring()).has_value());
+            CHECK(host.extract(17, items, callable, destination.wstring()) == destination.wstring());
             CHECK(std::filesystem::exists(destination / L"far-host.txt"));
             std::filesystem::remove_all(destination);
+            selectedName = L"selected.txt";
 
             PluginStartupInfo emptyInfo{};
             FarHost emptyHost{emptyInfo};

@@ -71,6 +71,7 @@ namespace burlak::drag
             bool prepares{true};
             std::size_t parsedPaths{1};
             int dragCalls{};
+            bool allowedLink{};
             std::function<void(core::NativeWindow)> duringDrag;
 
             [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
@@ -82,9 +83,11 @@ namespace burlak::drag
                 return PreparedDrag{.data = std::make_unique<Data>(), .parsedPaths = parsedPaths};
             }
 
-            [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &, std::uintptr_t) override
+            [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &, std::uintptr_t,
+                                                        bool allowLink) override
             {
                 ++dragCalls;
+                allowedLink = allowLink;
                 if (duringDrag) {
                     duringDrag(owner);
                 }
@@ -404,6 +407,7 @@ namespace burlak::drag
             };
             SendMessageW(window, WM_RBUTTONDOWN, 0, 0);
             CHECK(shell.dragCalls == 1);
+            CHECK_FALSE(shell.allowedLink);
             CHECK_FALSE(tool.active());
             CHECK_FALSE(tool.hasData());
             CHECK_FALSE(headlessWindow.visible);
@@ -419,6 +423,7 @@ namespace burlak::drag
             };
             SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
             CHECK(shell.dragCalls == 2);
+            CHECK(shell.allowedLink);
 
             tool.stop();
         }

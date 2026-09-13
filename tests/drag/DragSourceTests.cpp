@@ -125,6 +125,7 @@ namespace burlak::drag
 
         ExtractionWait *activeWait{};
         bool waitOutcome{};
+        bool scopedOutcome{};
 
         HANDLE WINAPI createEvent(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCWSTR)
         {
@@ -136,6 +137,32 @@ namespace burlak::drag
             *index = 0;
             activeWait->complete(waitOutcome);
             return S_OK;
+        }
+
+        HRESULT WINAPI waitForExceptionalCompletion(DWORD, DWORD, ULONG, LPHANDLE handles, LPDWORD index)
+        {
+            bool caught{};
+            try {
+                ExtractionCompleter completion{*activeWait};
+                throw 1;
+            } catch (...) {
+                caught = true;
+            }
+            if (!caught) {
+                return E_FAIL;
+            }
+            *index = 0;
+            return WaitForSingleObject(handles[0], 0) == WAIT_OBJECT_0 ? S_OK : E_FAIL;
+        }
+
+        HRESULT WINAPI waitForScopedCompletion(DWORD, DWORD, ULONG, LPHANDLE handles, LPDWORD index)
+        {
+            {
+                ExtractionCompleter completion{*activeWait};
+                completion.complete(std::optional{scopedOutcome});
+            }
+            *index = 0;
+            return WaitForSingleObject(handles[0], 0) == WAIT_OBJECT_0 ? S_OK : E_FAIL;
         }
 
     } // namespace
@@ -211,6 +238,18 @@ namespace burlak::drag
             CHECK(policy.escape);
         }
 
+        TEST_CASE("placeholder-backed feedback never accepts a link effect")
+        {
+            Policy policy;
+            Screen screen;
+            Extraction extraction;
+            DragSource source{policy, screen, extraction, core::Button::Left, 7, true};
+            policy.effect = core::Effect::Link;
+
+            CHECK(source.GiveFeedback(DROPEFFECT_LINK) == DRAGDROP_S_USEDEFAULTCURSORS);
+            CHECK_FALSE(policy.escape);
+        }
+
         TEST_CASE("an external plugin-panel release waits for extraction and maps its outcome")
         {
             Policy policy;
@@ -230,6 +269,32 @@ namespace burlak::drag
 
             waitOutcome = false;
             CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+            CHECK(host.requests == 2);
+        }
+
+        TEST_CASE("an exceptional Far-thread exit completes the extraction wait with failure")
+        {
+            ExtractionHost host;
+            const ExtractionWaitCalls calls{createEvent, ResetEvent, SetEvent, CloseHandle,
+                                            waitForExceptionalCompletion};
+            ExtractionWait extraction{host, calls};
+            activeWait = &extraction;
+
+            CHECK_FALSE(extraction.extract());
+            CHECK(host.requests == 1);
+        }
+
+        TEST_CASE("a completed Far-thread scope signals exactly the stored extraction outcome")
+        {
+            ExtractionHost host;
+            const ExtractionWaitCalls calls{createEvent, ResetEvent, SetEvent, CloseHandle, waitForScopedCompletion};
+            ExtractionWait extraction{host, calls};
+            activeWait = &extraction;
+
+            scopedOutcome = true;
+            CHECK(extraction.extract());
+            scopedOutcome = false;
+            CHECK_FALSE(extraction.extract());
             CHECK(host.requests == 2);
         }
 

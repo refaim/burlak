@@ -52,11 +52,16 @@ namespace burlak::adapters::win
             return std::unexpected(core::Error::Unavailable);
         }
 
-        currentDirectory_ = root_ / (std::to_wstring(process_) + L"-" + std::to_wstring(++sequence_));
-        if (!std::filesystem::create_directory(currentDirectory_, error)) {
-            return std::unexpected(core::Error::Unavailable);
+        for (;;) {
+            currentDirectory_ = root_ / (std::to_wstring(process_) + L"-" + std::to_wstring(++sequence_));
+            error.clear();
+            if (std::filesystem::create_directory(currentDirectory_, error)) {
+                return currentDirectory_.wstring();
+            }
+            if (error) {
+                return std::unexpected(core::Error::Unavailable);
+            }
         }
-        return currentDirectory_.wstring();
     }
 
     std::expected<std::wstring, core::Error> Files::placeholder(std::wstring_view name, bool directory)
@@ -75,6 +80,12 @@ namespace burlak::adapters::win
         }
         std::ofstream stream{path, std::ios::binary};
         return placeholderOutcome(static_cast<bool>(stream), path);
+    }
+
+    bool Files::sameName(std::wstring_view left, std::wstring_view right) const
+    {
+        return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(),
+                                    static_cast<int>(right.size()), TRUE) == CSTR_EQUAL;
     }
 
     std::expected<void, core::Error> Files::removeTree(std::wstring_view path)

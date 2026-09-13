@@ -113,6 +113,61 @@ namespace burlak::core
             panels.items[0] = {{.name = L"."}, {.name = L".."}, {.name = L""}};
             CHECK(DragPlan{panels, host, files}.build().error() == Error::NoSelection);
         }
+
+        TEST_CASE("plugin plans reject case-insensitive duplicate placeholder names before creating a run")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {{.name = L"Report.txt"}, {.name = L"REPORT.TXT"}};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::Unavailable);
+            CHECK(files.placeholders.empty());
+            CHECK(files.removed.empty());
+            REQUIRE(host.messages.size() == 1);
+            REQUIRE(host.messages[0].size() == 1);
+            CHECK(host.messages[0][0].find(L"Report.txt") != std::wstring::npos);
+        }
+
+        TEST_CASE("item identity compares every stable field but not its native buffer address")
+        {
+            const Item original{.identity = {std::byte{1}},
+                                .native = {std::byte{2}},
+                                .name = L"one.txt",
+                                .size = 3,
+                                .attributes = 4,
+                                .directory = true,
+                                .selected = true,
+                                .userData = {.value = 5}};
+            auto changed = original;
+            changed.native = {std::byte{9}};
+            CHECK(changed == original);
+            changed.identity = {std::byte{9}};
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.name = L"two.txt";
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.size = 6;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.attributes = 7;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.directory = false;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.selected = false;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.userData.value = 8;
+            CHECK_FALSE(changed == original);
+        }
     }
 
 } // namespace burlak::core

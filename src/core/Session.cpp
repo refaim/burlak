@@ -23,6 +23,54 @@ namespace burlak::core
             return replayOutcome(outcome).has_value() && outcome.written == expected;
         }
 
+        [[nodiscard]] std::wstring pluginName(const PluginModule &module)
+        {
+            const auto separator = module.path.find_last_of(L"\\/");
+            return module.path.substr(separator == std::wstring::npos ? 0 : separator + 1);
+        }
+
+        [[nodiscard]] bool extractionPanelMatches(const std::optional<PanelInfo> &panel, const ExtractionRecipe &recipe)
+        {
+            return panel && panel->visible && panel->plugin && !panel->realNames && panel->filePanel &&
+                   panel->handle == recipe.panel && panel->owner == recipe.owner;
+        }
+
+        [[nodiscard]] bool extractRecipe(IPanels &panels, IFarHost &host, const ExtractionRecipe &recipe,
+                                         std::wstring_view requestedDirectory)
+        {
+            const auto panel = panels.panel(PanelSide::Active);
+            if (!panels.currentWindowIsPanels() || !extractionPanelMatches(panel, recipe)) {
+                report(host, L"Plugin panel changed during the drag; the drop was cancelled.");
+                return false;
+            }
+            auto items = panels.selectedItems(PanelSide::Active);
+            std::erase_if(
+                items, [](const Item &item) { return item.name.empty() || item.name == L"." || item.name == L".."; });
+            if (items != recipe.items) {
+                report(host, L"Plugin panel changed during the drag; the drop was cancelled.");
+                return false;
+            }
+            const auto module = host.pluginModule(recipe.owner);
+            if (!module || *module != recipe.module) {
+                report(host, L"Plugin panel changed during the drag; the drop was cancelled.");
+                return false;
+            }
+
+            const auto destination = host.extract(recipe.panel, recipe.items, recipe.module, requestedDirectory);
+            if (!destination) {
+                report(host, L"Could not extract files with " + pluginName(recipe.module) + L".");
+                return false;
+            }
+            if (*destination != requestedDirectory) {
+                // OLE already advertised paths under the run directory. Following a rewritten DestPath would make
+                // those paths stale, so the safe contract is to cancel instead of attempting a second relocation.
+                report(host, pluginName(recipe.module) + L" extracted files to a different directory; the drop was "
+                                                         L"cancelled.");
+                return false;
+            }
+            return true;
+        }
+
     } // namespace
 
     Session::Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input, IFiles &files)
@@ -157,21 +205,16 @@ namespace burlak::core
             pending = std::exchange(pendingDrop_, std::nullopt);
         }
         if (extraction) {
-            ExtractionRecipe recipe;
-            {
-                const std::lock_guard lock{pendingMutex_};
-                // A pending extraction is published only after begin stored this plugin plan; the fallback keeps
-                // invariant loss inside the export firewall instead of dereferencing an empty optional.
-                recipe =
-                    plan_.and_then([](const Plan &stored) { return stored.extraction; }).value_or(ExtractionRecipe{});
-            }
-            const bool succeeded = host_.extract(recipe.panel, recipe.items, recipe.module, *extraction).has_value();
-            if (!succeeded) {
-                const auto separator = recipe.module.path.find_last_of(L"\\/");
-                const auto name = recipe.module.path.substr(separator == std::wstring::npos ? 0 : separator + 1);
-                report(host_, L"Could not extract files with " + name + L".");
-            }
-            return succeeded;
+            const std::lock_guard lock{pendingMutex_};
+            // The tool thread can publish only the directory value from a stored extraction plan. Keeping this
+            // reference under the mutex leaves the Far-owned native item buffers alive through GetFilesW.
+            return plan_
+                .and_then([&](const Plan &stored) {
+                    return stored.extraction.transform([&](const ExtractionRecipe &recipe) {
+                        return extractRecipe(panels_, host_, recipe, *extraction);
+                    });
+                })
+                .value_or(false);
         }
         if (!pending) {
             return std::nullopt;
@@ -191,18 +234,33 @@ namespace burlak::core
             return std::nullopt;
         }
 
-        Plan originalPlan;
+        bool extractionPlan{};
+        std::vector<std::wstring> originalPaths;
         {
             const std::lock_guard lock{pendingMutex_};
-            originalPlan = *plan_;
+            extractionPlan =
+                plan_.transform([](const Plan &stored) { return stored.extraction.has_value(); }).value_or(false);
+            originalPaths = plan_.transform([](const Plan &stored) { return stored.paths; }).value_or(originalPaths);
         }
         std::vector<std::wstring> freshPaths;
-        if (originalPlan.extraction) {
+        if (extractionPlan) {
             auto items = panels_.selectedItems(PanelSide::Active);
             std::erase_if(
                 items, [](const Item &item) { return item.name.empty() || item.name == L"." || item.name == L".."; });
-            if (items == originalPlan.extraction->items) {
-                freshPaths = originalPlan.paths;
+            bool sameItems{};
+            {
+                const std::lock_guard lock{pendingMutex_};
+                sameItems =
+                    plan_
+                        .transform([&](const Plan &stored) {
+                            return stored.extraction
+                                .transform([&](const ExtractionRecipe &recipe) { return items == recipe.items; })
+                                .value_or(false);
+                        })
+                        .value_or(false);
+            }
+            if (sameItems) {
+                freshPaths = std::move(originalPaths);
             }
         } else if (const auto freshPlan = DragPlan{panels_, host_, files_}.build()) {
             freshPaths = freshPlan->paths;

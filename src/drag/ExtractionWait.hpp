@@ -27,8 +27,8 @@ namespace burlak::drag
 
         [[nodiscard]] bool extract() override;
         void cleanup() override;
-        void complete(bool succeeded);
-        void complete(std::optional<bool> succeeded);
+        void complete(bool succeeded) noexcept;
+        void complete(std::optional<bool> succeeded) noexcept;
 
       private:
         struct EventHandle
@@ -43,6 +43,23 @@ namespace burlak::drag
         const ExtractionWaitCalls &calls_;
         UniqueEvent event_;
         std::atomic<bool> succeeded_{};
+        std::atomic<bool> waiting_{};
+    };
+
+    class ExtractionCompleter final
+    {
+      public:
+        explicit ExtractionCompleter(ExtractionWait &wait) noexcept;
+        ~ExtractionCompleter();
+
+        void complete(std::optional<bool> succeeded) noexcept;
+
+      private:
+        ExtractionCompleter(const ExtractionCompleter &);
+        ExtractionCompleter &operator=(const ExtractionCompleter &);
+
+        ExtractionWait &wait_;
+        bool completed_{};
     };
 
     [[nodiscard]] const ExtractionWaitCalls &systemExtractionWaitCalls();

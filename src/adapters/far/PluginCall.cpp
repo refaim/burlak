@@ -54,8 +54,10 @@ namespace burlak::adapters::far_api
         return loaded && GetProcAddress(loaded.get(), "GetFilesW") != nullptr;
     }
 
-    std::expected<void, core::Error> callPluginGetFiles(core::PanelHandle panel, std::span<const core::Item> items,
-                                                        const core::PluginModule &module, std::wstring_view destination)
+    std::expected<std::wstring, core::Error> callPluginGetFiles(core::PanelHandle panel,
+                                                                std::span<const core::Item> items,
+                                                                const core::PluginModule &module,
+                                                                std::wstring_view destination)
     {
         UniqueModule loaded{LoadLibraryW(module.path.c_str())};
         if (!loaded) {
@@ -67,16 +69,16 @@ namespace burlak::adapters::far_api
             return std::unexpected(core::Error::ForeignCallFailed);
         }
 
-        // Far passes CreatePluginItemList's FileName, FileAttributes, Flags, UserData and FileSize unchanged
-        // through PluginManager::GetFiles (Far sources: far/filelist.cpp, FileList::CreatePluginItemList;
-        // far/plugins.cpp, PluginManager::GetFiles).
+        // Far forwards every CreatePluginItemList record unchanged through PluginManager::GetFiles, including
+        // pointers into each FCTL_GETSELECTEDPANELITEM buffer; the plan owns those buffers for this call
+        // (Far sources: far/filelist.cpp, FileList::CreatePluginItemList; far/plugins.cpp,
+        // PluginManager::GetFiles).
         std::vector<PluginPanelItem> foreignItems(items.size());
         for (std::size_t index = 0; index < items.size(); ++index) {
-            foreignItems[index].FileName = items[index].name.c_str();
-            foreignItems[index].FileSize = items[index].size;
-            foreignItems[index].FileAttributes = items[index].attributes;
-            foreignItems[index].Flags = items[index].selected ? PPIF_SELECTED : PPIF_NONE;
-            foreignItems[index].UserData.Data = reinterpret_cast<void *>(items[index].userData.value);
+            if (items[index].native.size() < sizeof(PluginPanelItem)) {
+                return std::unexpected(core::Error::ForeignCallFailed);
+            }
+            foreignItems[index] = *reinterpret_cast<const PluginPanelItem *>(items[index].native.data());
         }
 
         GetFilesInfo info{};
@@ -92,7 +94,13 @@ namespace burlak::adapters::far_api
 
         bool crashed = false;
         const intptr_t result = callGuarded(function, &info, crashed);
-        return core::extractionOutcome(crashed, result);
+        const auto outcome = core::extractionOutcome(crashed, result);
+        if (!outcome || info.DestPath == nullptr) {
+            return std::unexpected(outcome ? core::Error::ForeignCallFailed : outcome.error());
+        }
+        // PluginManager::GetFiles copies a plugin-rewritten DestPath back to its caller; copy it before unloading
+        // the plugin module (Far source: far/plugins.cpp, PluginManager::GetFiles).
+        return std::wstring{info.DestPath};
     }
 
 } // namespace burlak::adapters::far_api

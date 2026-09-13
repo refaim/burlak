@@ -32,11 +32,14 @@ namespace burlak::plugin
 
         void synchro()
         {
+            // The Far thread owns this scope guard. It signals a pending tool-thread wait with failure if any
+            // permitted exception reaches the export firewall before Session can publish an outcome.
+            drag::ExtractionCompleter completion{extraction_};
             const auto start = gesture_.synchro();
             if (start) {
                 static_cast<void>(session_.begin(tool_, *start));
             }
-            extraction_.complete(session_.synchro());
+            completion.complete(session_.synchro());
         }
 
         void stop()

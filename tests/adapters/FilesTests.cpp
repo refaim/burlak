@@ -67,6 +67,8 @@ namespace burlak::adapters::win
             const auto first = files.runDirectory();
             REQUIRE(first.has_value());
             CHECK(std::filesystem::path{*first}.filename() == L"700-1");
+            CHECK(files.sameName(L"Report.txt", L"REPORT.TXT"));
+            CHECK_FALSE(files.sameName(L"one.txt", L"two.txt"));
 
             const auto file = files.placeholder(L"empty.txt", false);
             REQUIRE(file.has_value());
@@ -89,12 +91,19 @@ namespace burlak::adapters::win
             CHECK(files.removeTree(*first).has_value());
         }
 
-        TEST_CASE("run-directory collisions and locked trees remain expected failures")
+        TEST_CASE("run-directory collisions are skipped and locked trees remain expected failures")
         {
             DirectoryGuard root{testRoot()};
             std::filesystem::create_directories(root.path() / L"700-1");
             Files files{root.path(), 700, fakeProcessAlive};
-            CHECK(files.runDirectory() == std::unexpected(core::Error::Unavailable));
+            const auto directory = files.runDirectory();
+            REQUIRE(directory.has_value());
+            CHECK(std::filesystem::path{*directory}.filename() == L"700-2");
+
+            std::ofstream occupiedFile{root.path() / L"800-1"};
+            occupiedFile.close();
+            Files blockedCandidate{root.path(), 800, fakeProcessAlive};
+            CHECK(blockedCandidate.runDirectory() == std::unexpected(core::Error::Unavailable));
 
             const auto lockedDirectory = root.path() / L"locked";
             std::filesystem::create_directory(lockedDirectory);

@@ -19,6 +19,7 @@ namespace burlak::adapters::win
         [[nodiscard]] std::expected<std::wstring, core::Error> runDirectory() override;
         [[nodiscard]] std::expected<std::wstring, core::Error> placeholder(std::wstring_view name,
                                                                            bool directory) override;
+        [[nodiscard]] bool sameName(std::wstring_view left, std::wstring_view right) const override;
         [[nodiscard]] std::expected<void, core::Error> removeTree(std::wstring_view path) override;
         void sweep() override;
 

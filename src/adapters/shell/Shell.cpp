@@ -120,11 +120,12 @@ namespace burlak::adapters::shell
         return PreparedDataObject{.data = std::move(data), .parsedPaths = pidls.size()};
     }
 
-    core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, const ShellCalls &api)
+    core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, bool allowLink,
+                                  const ShellCalls &api)
     {
         DWORD effect{};
-        const HRESULT result =
-            api.doDragDrop(owner, &data, &source, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &effect);
+        const DWORD allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE | (allowLink ? DROPEFFECT_LINK : 0);
+        const HRESULT result = api.doDragDrop(owner, &data, &source, allowed, &effect);
         return {.status = result, .effect = effect};
     }
 
@@ -149,11 +150,12 @@ namespace burlak::adapters::shell
         });
     }
 
-    core::DragLoopOutcome Shell::runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source)
+    core::DragLoopOutcome Shell::runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source,
+                                         bool allowLink)
     {
         auto &nativeData = *reinterpret_cast<IDataObject *>(data.nativeHandle());
         auto &dropSource = *reinterpret_cast<IDropSource *>(source);
-        return shell::runDrag(reinterpret_cast<HWND>(owner), nativeData, dropSource, calls_);
+        return shell::runDrag(reinterpret_cast<HWND>(owner), nativeData, dropSource, allowLink, calls_);
     }
 
     std::expected<void, core::Error> Shell::copy(std::span<const std::wstring> paths, std::wstring_view destination,

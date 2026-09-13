@@ -41,9 +41,11 @@ namespace burlak::adapters::shell
 
         HRESULT dragResult{DRAGDROP_S_DROP};
         DWORD draggedEffect{DROPEFFECT_COPY};
+        DWORD allowedEffects{};
 
-        HRESULT WINAPI fakeDrag(HWND, IDataObject *, IDropSource *, DWORD, DWORD *effect)
+        HRESULT WINAPI fakeDrag(HWND, IDataObject *, IDropSource *, DWORD effects, DWORD *effect)
         {
+            allowedEffects = effects;
             *effect = draggedEffect;
             return dragResult;
         }
@@ -141,23 +143,26 @@ namespace burlak::adapters::shell
             calls.doDragDrop = fakeDrag;
             dragResult = DRAGDROP_S_DROP;
             draggedEffect = DROPEFFECT_MOVE;
-            CHECK(runDrag(nullptr, *data->data.Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, true, calls) ==
                   core::DragLoopOutcome{DRAGDROP_S_DROP, DROPEFFECT_MOVE});
+            CHECK(allowedEffects == (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK));
             dragResult = DRAGDROP_S_CANCEL;
-            CHECK(runDrag(nullptr, *data->data.Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, false, calls) ==
                   core::DragLoopOutcome{DRAGDROP_S_CANCEL, DROPEFFECT_MOVE});
+            CHECK(allowedEffects == (DROPEFFECT_COPY | DROPEFFECT_MOVE));
             dragResult = E_FAIL;
-            CHECK(runDrag(nullptr, *data->data.Get(), source, calls) == core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
+            CHECK(runDrag(nullptr, *data->data.Get(), source, true, calls) ==
+                  core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
 
             Shell shell{calls};
             auto opaque = shell.makeDataObject(paths);
             REQUIRE(opaque.has_value());
             CHECK(opaque->parsedPaths == paths.size());
             dragResult = DRAGDROP_S_DROP;
-            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source)) ==
+            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source), true) ==
                   core::DragLoopOutcome{DRAGDROP_S_DROP, DROPEFFECT_MOVE});
             dragResult = E_FAIL;
-            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source)) ==
+            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source), false) ==
                   core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
             GlobalUnlock(medium.hGlobal);
             ReleaseStgMedium(&medium);

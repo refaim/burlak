@@ -1,5 +1,7 @@
 #include "core/DragPlan.hpp"
 
+#include <array>
+
 namespace burlak::core
 {
 
@@ -9,6 +11,12 @@ namespace burlak::core
         [[nodiscard]] bool usable(const Item &item)
         {
             return !item.name.empty() && item.name != L"." && item.name != L"..";
+        }
+
+        void duplicateMessage(IFarHost &host, std::wstring_view name)
+        {
+            const std::array lines{L"Duplicate plugin item name: " + std::wstring{name} + L"."};
+            host.message(L"Burlak", lines);
         }
 
     } // namespace
@@ -33,6 +41,16 @@ namespace burlak::core
             if (items.empty()) {
                 return std::unexpected(Error::NoSelection);
             }
+            for (std::size_t index = 0; index < items.size(); ++index) {
+                for (std::size_t previous = 0; previous < index; ++previous) {
+                    if (files_.sameName(items[previous].name, items[index].name)) {
+                        // Windows cannot advertise two case-insensitively equal paths in one directory, while
+                        // GetFilesW must receive the original names, so this selection has no faithful OLE payload.
+                        duplicateMessage(host_, items[previous].name);
+                        return std::unexpected(Error::Unavailable);
+                    }
+                }
+            }
             const auto module = host_.pluginModule(panel->owner);
             if (!module) {
                 return std::unexpected(Error::Unavailable);
@@ -52,10 +70,12 @@ namespace burlak::core
                 }
                 paths.push_back(*path);
             }
-            return Plan{
-                .paths = std::move(paths),
-                .extraction = ExtractionRecipe{
-                    .panel = panel->handle, .items = std::move(items), .module = *module, .directory = *directory}};
+            return Plan{.paths = std::move(paths),
+                        .extraction = ExtractionRecipe{.panel = panel->handle,
+                                                       .owner = panel->owner,
+                                                       .items = std::move(items),
+                                                       .module = *module,
+                                                       .directory = *directory}};
         }
 
         auto directory = panels_.directory(PanelSide::Active);

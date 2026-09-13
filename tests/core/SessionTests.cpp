@@ -597,7 +597,10 @@ namespace burlak::core
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
             panels.items[0] = {
-                {.name = L"one.txt", .size = 19, .attributes = 2, .selected = true, .userData = {.value = 23}}};
+                {.name = L"one.txt", .size = 19, .attributes = 2, .selected = true, .userData = {.value = 23}},
+                {.name = L""},
+                {.name = L"."},
+                {.name = L".."}};
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -619,7 +622,10 @@ namespace burlak::core
             REQUIRE(result.has_value());
             CHECK(*result);
             CHECK(host.extractedPanels == std::vector<PanelHandle>{11});
-            CHECK(host.extractedItems == std::vector<std::vector<Item>>{panels.items[0]});
+            CHECK(
+                host.extractedItems ==
+                std::vector<std::vector<Item>>{
+                    {{.name = L"one.txt", .size = 19, .attributes = 2, .selected = true, .userData = {.value = 23}}}});
             CHECK(host.extractedModules[0].path == L"Archive.dll");
             CHECK(host.extractionDirectories == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
             CHECK(session.synchro() == std::nullopt);
@@ -718,6 +724,102 @@ namespace burlak::core
             REQUIRE(host.messages.size() == 1);
             REQUIRE(host.messages[0].size() == 1);
             CHECK(host.messages[0][0].find(L"NetBox.dll") != std::wstring::npos);
+        }
+
+        TEST_CASE("a plugin destination rewrite cancels the drop because its advertised paths are stale")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            host.module = PluginModule{.path = L"C:\\Plugins\\NetBox.dll", .instance = 42};
+            host.extractionResult = std::wstring{L"C:\\somewhere-else"};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
+
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            REQUIRE(session.requestExtraction());
+            CHECK(session.synchro() == std::optional{false});
+            REQUIRE(host.messages.size() == 1);
+            REQUIRE(host.messages[0].size() == 1);
+            CHECK(host.messages[0][0].find(L"NetBox.dll") != std::wstring::npos);
+        }
+
+        TEST_CASE("plugin extraction revalidates the panel selection owner and module on Far's thread")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {{.name = L"one.txt", .size = 19, .selected = true}};
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            REQUIRE(session.requestExtraction());
+
+            SUBCASE("panel was closed")
+            {
+                panels.panels[0].reset();
+            }
+            SUBCASE("panel handle changed")
+            {
+                panels.panels[0]->handle = 99;
+            }
+            SUBCASE("panel is hidden")
+            {
+                panels.panels[0]->visible = false;
+            }
+            SUBCASE("panel is no longer a plugin")
+            {
+                panels.panels[0]->plugin = false;
+            }
+            SUBCASE("panel is no longer a file panel")
+            {
+                panels.panels[0]->filePanel = false;
+            }
+            SUBCASE("panel owner changed")
+            {
+                panels.panels[0]->owner[1] = std::byte{2};
+            }
+            SUBCASE("panel stopped being a virtual plugin panel")
+            {
+                panels.panels[0]->realNames = true;
+            }
+            SUBCASE("a non-panel window became current")
+            {
+                panels.panelsWindow = false;
+            }
+            SUBCASE("selection changed")
+            {
+                panels.items[0][0].size = 20;
+            }
+            SUBCASE("a pointer-backed selection field changed")
+            {
+                panels.items[0][0].identity = {std::byte{1}};
+            }
+            SUBCASE("owner module disappeared")
+            {
+                host.module.reset();
+            }
+            SUBCASE("owner module instance changed")
+            {
+                host.module->instance = 43;
+            }
+
+            CHECK(session.synchro() == std::optional{false});
+            CHECK(host.extractedPanels.empty());
+            CHECK(host.messages.size() == 1);
         }
 
         TEST_CASE("real-path plans neither request extraction nor ask the tool to clean temporary files")

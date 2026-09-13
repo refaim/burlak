@@ -287,7 +287,7 @@ namespace burlak::drag
             // A target may report Move after taking the extracted placeholders; GetFilesW is always non-moving,
             // so the archive or remote panel remains untouched.
             static_cast<void>(shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
-                                             reinterpret_cast<std::uintptr_t>(&source)));
+                                             reinterpret_cast<std::uintptr_t>(&source), !needsExtraction_));
             active_.store(false);
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);

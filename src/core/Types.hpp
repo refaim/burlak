@@ -135,6 +135,8 @@ namespace burlak::core
 
     struct Item
     {
+        std::vector<std::byte> identity{};
+        std::vector<std::byte> native{};
         std::wstring name;
         std::uint64_t size{};
         std::uintptr_t attributes{};
@@ -142,7 +144,12 @@ namespace burlak::core
         bool selected{};
         UserData userData{};
 
-        auto operator<=>(const Item &) const = default;
+        [[nodiscard]] bool operator==(const Item &other) const
+        {
+            return identity == other.identity && name == other.name && size == other.size &&
+                   attributes == other.attributes && directory == other.directory && selected == other.selected &&
+                   userData == other.userData;
+        }
     };
 
     struct CellGeometry
@@ -208,6 +215,8 @@ namespace burlak::core
     {
         std::wstring path;
         PluginInstance instance{};
+
+        bool operator==(const PluginModule &) const = default;
     };
 
     struct Peer

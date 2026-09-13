@@ -29,9 +29,9 @@ namespace burlak::core
         virtual void postSynchro() = 0;
         virtual void message(std::wstring_view title, std::span<const std::wstring> lines) = 0;
         [[nodiscard]] virtual std::optional<PluginModule> pluginModule(const Guid &guid) = 0;
-        [[nodiscard]] virtual std::expected<void, Error> extract(PanelHandle panel, std::span<const Item> items,
-                                                                 const PluginModule &module,
-                                                                 std::wstring_view destination) = 0;
+        [[nodiscard]] virtual std::expected<std::wstring, Error> extract(PanelHandle panel, std::span<const Item> items,
+                                                                         const PluginModule &module,
+                                                                         std::wstring_view destination) = 0;
     };
 
     class IScreen
@@ -72,7 +72,8 @@ namespace burlak::core
 
         [[nodiscard]] virtual std::expected<PreparedDrag, Error> makeDataObject(
             std::span<const std::wstring> paths) = 0;
-        [[nodiscard]] virtual DragLoopOutcome runDrag(NativeWindow owner, DragData &data, std::uintptr_t source) = 0;
+        [[nodiscard]] virtual DragLoopOutcome runDrag(NativeWindow owner, DragData &data, std::uintptr_t source,
+                                                      bool allowLink) = 0;
         [[nodiscard]] virtual std::expected<void, Error> copy(std::span<const std::wstring> paths,
                                                               std::wstring_view destination, Effect effect) = 0;
     };
@@ -83,6 +84,7 @@ namespace burlak::core
         [[nodiscard]] virtual std::expected<std::wstring, Error> runDirectory() = 0;
         [[nodiscard]] virtual std::expected<std::wstring, Error> placeholder(std::wstring_view name,
                                                                              bool directory) = 0;
+        [[nodiscard]] virtual bool sameName(std::wstring_view left, std::wstring_view right) const = 0;
         [[nodiscard]] virtual std::expected<void, Error> removeTree(std::wstring_view path) = 0;
         virtual void sweep() = 0;
     };

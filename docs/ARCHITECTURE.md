@@ -25,7 +25,13 @@ Three features are next, and the layering below is judged against them:
    into a temp directory), then answers "drop". The call is wrapped in SEH so a crashing plugin
    aborts the drag with a message instead of taking Burlak down. Temp files are removed at the
    next start and at exit, and opportunistically after the drag (targets read them after the
-   drop, some asynchronously).
+   drop, some asynchronously). The original `FCTL_GETSELECTEDPANELITEM` buffers stay alive in the
+   plan and are passed back as complete `PluginPanelItem` records, matching
+   `FileList::CreatePluginItemList`. Release revalidates the panel, complete selection and owner
+   module on Far's thread. A case-insensitive duplicate name cannot be represented faithfully in
+   one temp directory and prevents the drag from starting. A rewritten `GetFilesInfo::DestPath`
+   cancels the drop because OLE already advertises the original directory. Placeholder-backed
+   drags offer copy and move, but not link: cleanup would otherwise leave a broken shortcut.
 2. **Drop into the other panel of the same Far.** The tool window that covers the terminal during
    a drag registers an `IDropTarget`. Over the panel that is not the source it offers
    copy (move with Shift); elsewhere nothing. On drop it replays Far's own panel-to-panel mouse
@@ -90,7 +96,7 @@ Interfaces core depends on (all pure virtual, all under `src/core/`, implemented
   `currentWindowIsPanels()`, `updateAndRedraw(PanelSide)`.
 - `IFarHost` — `postSynchro()`, `message(title, lines)`, `pluginModule(guid)` (module path and
   `GlobalInfo::Instance`), `extract(hPanel, items, module, destination)` (the `GetFilesW` call,
-  SEH-guarded, returns `std::expected<void, Error>`).
+  SEH-guarded, returns the plugin's effective destination).
 - `IScreen` — `cursor()`, `buttonDown(Button)`, `hostWindow()` (rect + handle, the terminal
   window under the cursor or owning the console), `cellGeometry()` (pixel size of a cell and the
   origin of cell (0,0), for point↔cell mapping).
@@ -158,7 +164,9 @@ and the COM objects. Rules: a Far API call from the tool thread is a bug (the gu
 see it, the reviewer must); the tool thread asks for main-thread work with `postSynchro` and,
 when it needs a result, waits on an event with a timeout — except the extraction wait of feature 1,
 which lasts as long as the owning plugin's `GetFilesW` runs (a large archive takes what it takes;
-the wait pumps COM so the drag loop stays alive); the main thread asks the tool thread for
+the wait pumps COM so the drag loop stays alive). A Far-thread scope guard signals that event with
+failure if an exception reaches the export firewall; the main thread otherwise signals it after
+storing the extraction outcome. The main thread asks the tool thread for
 work with `SendMessage` / `PostMessage` to the tool window. `Session` state that both threads
 read is guarded by a mutex or handed over by value in the messages; document which. For a
 same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool thread

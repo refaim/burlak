@@ -39,7 +39,7 @@ namespace burlak::adapters::shell
     [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths);
     [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
                                                                                 const ShellCalls &calls);
-    [[nodiscard]] core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source,
+    [[nodiscard]] core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, bool allowLink,
                                                 const ShellCalls &calls);
     [[nodiscard]] const ShellCalls &systemShellCalls();
 
@@ -51,8 +51,8 @@ namespace burlak::adapters::shell
 
         [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
             std::span<const std::wstring> paths) override;
-        [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &data,
-                                                    std::uintptr_t source) override;
+        [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source,
+                                                    bool allowLink) override;
         [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring> paths,
                                                             std::wstring_view destination,
                                                             core::Effect effect) override;

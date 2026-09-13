@@ -30,10 +30,10 @@ namespace burlak::adapters::far_api
         void postSynchro() override;
         void message(std::wstring_view title, std::span<const std::wstring> lines) override;
         [[nodiscard]] std::optional<core::PluginModule> pluginModule(const core::Guid &guid) override;
-        [[nodiscard]] std::expected<void, core::Error> extract(core::PanelHandle panel,
-                                                               std::span<const core::Item> items,
-                                                               const core::PluginModule &module,
-                                                               std::wstring_view destination) override;
+        [[nodiscard]] std::expected<std::wstring, core::Error> extract(core::PanelHandle panel,
+                                                                       std::span<const core::Item> items,
+                                                                       const core::PluginModule &module,
+                                                                       std::wstring_view destination) override;
 
       private:
         PluginStartupInfo &info_;

@@ -34,7 +34,9 @@ namespace burlak::drag
             return false;
         }
         succeeded_.store(false);
+        waiting_.store(true);
         if (!session_.requestExtraction()) {
+            waiting_.store(false);
             return false;
         }
 
@@ -45,6 +47,7 @@ namespace burlak::drag
             static_cast<DWORD>(COWAIT_DISPATCH_CALLS) | static_cast<DWORD>(COWAIT_DISPATCH_WINDOW_MESSAGES);
         const HRESULT status =
             calls_.coWait(pumpFlags, INFINITE, static_cast<ULONG>(handles.size()), handles.data(), &signalled);
+        waiting_.store(false);
         return status == S_OK && signalled == 0 && succeeded_.load();
     }
 
@@ -53,17 +56,39 @@ namespace burlak::drag
         session_.cleanup();
     }
 
-    void ExtractionWait::complete(bool succeeded)
+    void ExtractionWait::complete(bool succeeded) noexcept
     {
+        if (!waiting_.exchange(false)) {
+            return;
+        }
         succeeded_.store(succeeded);
         // Far's ProcessSynchroEventW thread is the sole signaler, after it has stored the extraction outcome.
         static_cast<void>(calls_.setEvent(event_.get()));
     }
 
-    void ExtractionWait::complete(std::optional<bool> succeeded)
+    void ExtractionWait::complete(std::optional<bool> succeeded) noexcept
     {
         if (succeeded) {
             complete(*succeeded);
+        }
+    }
+
+    ExtractionCompleter::ExtractionCompleter(ExtractionWait &wait) noexcept : wait_{wait}
+    {
+    }
+
+    ExtractionCompleter::~ExtractionCompleter()
+    {
+        if (!completed_) {
+            wait_.complete(false);
+        }
+    }
+
+    void ExtractionCompleter::complete(std::optional<bool> succeeded) noexcept
+    {
+        if (succeeded) {
+            wait_.complete(*succeeded);
+            completed_ = true;
         }
     }
 

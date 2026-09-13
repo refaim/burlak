@@ -57,7 +57,7 @@ namespace burlak::drag
     HRESULT DragSource::GiveFeedback(DWORD effect)
     {
         lastEffect_ = policy_.feedback((effect & DROPEFFECT_MOVE) != 0, (effect & DROPEFFECT_COPY) != 0,
-                                       (effect & DROPEFFECT_LINK) != 0);
+                                       !needsExtraction_ && (effect & DROPEFFECT_LINK) != 0);
         return DRAGDROP_S_USEDEFAULTCURSORS;
     }
 

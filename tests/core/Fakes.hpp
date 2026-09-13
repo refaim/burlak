@@ -2,7 +2,9 @@
 
 #include "core/Interfaces.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cwctype>
 #include <optional>
 #include <string>
 #include <vector>
@@ -56,7 +58,7 @@ namespace burlak::tests
         std::vector<std::vector<std::wstring>> messages;
         std::optional<core::PluginModule> module;
         std::optional<core::Guid> requestedOwner;
-        std::expected<void, core::Error> extractionResult{};
+        std::optional<std::expected<std::wstring, core::Error>> extractionResult;
         std::vector<core::PanelHandle> extractedPanels;
         std::vector<std::vector<core::Item>> extractedItems;
         std::vector<core::PluginModule> extractedModules;
@@ -78,16 +80,16 @@ namespace burlak::tests
             return module;
         }
 
-        [[nodiscard]] std::expected<void, core::Error> extract(core::PanelHandle panel,
-                                                               std::span<const core::Item> items,
-                                                               const core::PluginModule &plugin,
-                                                               std::wstring_view directory) override
+        [[nodiscard]] std::expected<std::wstring, core::Error> extract(core::PanelHandle panel,
+                                                                       std::span<const core::Item> items,
+                                                                       const core::PluginModule &plugin,
+                                                                       std::wstring_view directory) override
         {
             extractedPanels.push_back(panel);
             extractedItems.emplace_back(items.begin(), items.end());
             extractedModules.push_back(plugin);
             extractionDirectories.emplace_back(directory);
-            return extractionResult;
+            return extractionResult.value_or(std::expected<std::wstring, core::Error>{std::wstring{directory}});
         }
     };
 
@@ -119,6 +121,13 @@ namespace burlak::tests
         {
             removed.emplace_back(path);
             return {};
+        }
+
+        [[nodiscard]] bool sameName(std::wstring_view left, std::wstring_view right) const override
+        {
+            return left.size() == right.size() && std::ranges::equal(left, right, [](wchar_t first, wchar_t second) {
+                       return std::towlower(first) == std::towlower(second);
+                   });
         }
 
         void sweep() override

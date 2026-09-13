@@ -12,6 +12,7 @@ namespace burlak::core
     struct ExtractionRecipe
     {
         PanelHandle panel{};
+        Guid owner{};
         std::vector<Item> items;
         PluginModule module;
         std::wstring directory;

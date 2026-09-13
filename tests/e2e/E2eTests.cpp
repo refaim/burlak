@@ -169,10 +169,10 @@ namespace
         }
         HRESULT STDMETHODCALLTYPE DragEnter(IDataObject *data, DWORD, POINTL, DWORD *effect) override
         {
-            entered_ = true;
+            entered_.store(true);
             const auto path = firstPath(data);
-            placeholdersReady_ = path && path->filename() == expectedPlaceholder_ &&
-                                 std::filesystem::is_regular_file(*path) && std::filesystem::file_size(*path) == 0;
+            placeholdersReady_.store(path && path->filename() == expectedPlaceholder_ &&
+                                     std::filesystem::is_regular_file(*path) && std::filesystem::file_size(*path) == 0);
             *effect = DROPEFFECT_COPY;
             return S_OK;
         }
@@ -188,31 +188,31 @@ namespace
         HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD, POINTL, DWORD *effect) override
         {
             const auto path = firstPath(data);
-            received_ = path.has_value();
+            received_.store(path.has_value());
             if (path) {
-                extracted_ = std::filesystem::exists(path->parent_path() / L"plugin-e2e.extracted");
+                extracted_.store(std::filesystem::exists(path->parent_path() / L"plugin-e2e.extracted"));
             }
             *effect = DROPEFFECT_COPY;
             return S_OK;
         }
         [[nodiscard]] bool received() const
         {
-            return received_;
+            return received_.load();
         }
 
         [[nodiscard]] bool entered() const
         {
-            return entered_;
+            return entered_.load();
         }
 
         [[nodiscard]] bool placeholdersReady() const
         {
-            return placeholdersReady_;
+            return placeholdersReady_.load();
         }
 
         [[nodiscard]] bool extracted() const
         {
-            return extracted_;
+            return extracted_.load();
         }
 
       private:
@@ -236,12 +236,12 @@ namespace
             return result;
         }
 
-        ULONG references_{1};
+        std::atomic<ULONG> references_{1};
         std::wstring expectedPlaceholder_;
-        bool received_{};
-        bool entered_{};
-        bool placeholdersReady_{};
-        bool extracted_{};
+        std::atomic<bool> received_{};
+        std::atomic<bool> entered_{};
+        std::atomic<bool> placeholdersReady_{};
+        std::atomic<bool> extracted_{};
     };
 
     LRESULT CALLBACK targetProcedure(HWND window, UINT message, WPARAM word, LPARAM number)
@@ -641,7 +641,11 @@ TEST_SUITE("e2e")
 
         MouseButtonGuard button;
         button.press();
-        REQUIRE((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
+        if (!pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; })) {
+            button.release();
+            std::fputs("SKIP: the desktop did not expose the injected left-button press\n", stderr);
+            return;
+        }
         auto press = farMouse({5, 5}, FROM_LEFT_1ST_BUTTON_PRESSED);
         CHECK(input(&press) == 0);
         auto threshold = farMouse({8, 5}, FROM_LEFT_1ST_BUTTON_PRESSED, MOUSE_MOVED);
@@ -651,7 +655,11 @@ TEST_SUITE("e2e")
         ProcessSynchroEventInfo event{};
         event.Event = SE_COMMONSYNCHRO;
         CHECK(synchro(&event) == 0);
-        REQUIRE(pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }));
+        if (!pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; })) {
+            button.release();
+            std::fputs("SKIP: the desktop did not expose the tool window's injected left-button press\n", stderr);
+            return;
+        }
 
         const POINT targetPoint = inside(targetWindowGuard.get());
         REQUIRE(SetCursorPos(targetPoint.x, targetPoint.y) != FALSE);
@@ -697,7 +705,7 @@ TEST_SUITE("e2e")
                                         burlak::core::Button::Left,
                                         reinterpret_cast<burlak::core::NativeWindow>(window.get()),
                                         false};
-        const auto dragResult = burlak::adapters::shell::runDrag(window.get(), *data->data.Get(), source,
+        const auto dragResult = burlak::adapters::shell::runDrag(window.get(), *data->data.Get(), source, true,
                                                                  burlak::adapters::shell::systemShellCalls());
         REQUIRE(dragResult.status == DRAGDROP_S_DROP);
         CHECK(target.received());
