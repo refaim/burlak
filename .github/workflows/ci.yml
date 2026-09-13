@@ -68,15 +68,15 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
           $llvm = Join-Path $installation 'VC\Tools\Llvm\x64\bin'
-          "LLVM_DIR=$llvm" >> $env:GITHUB_ENV
+          "LLVM_DIR=$($llvm.Replace('\', '/'))" >> $env:GITHUB_ENV
 
       - name: Configure coverage
         shell: pwsh
         run: |
           cmake --preset coverage `
-            "-DCMAKE_CXX_COMPILER=$env:LLVM_DIR\clang-cl.exe" `
-            "-DCMAKE_RC_COMPILER=$env:LLVM_DIR\llvm-rc.exe" `
-            "-DCMAKE_LINKER=$env:LLVM_DIR\lld-link.exe"
+            "-DCMAKE_CXX_COMPILER=${env:LLVM_DIR}/clang-cl.exe" `
+            "-DCMAKE_RC_COMPILER=${env:LLVM_DIR}/llvm-rc.exe" `
+            "-DCMAKE_LINKER=${env:LLVM_DIR}/lld-link.exe"
 
       - name: Build coverage
         run: cmake --build --preset coverage
@@ -97,9 +97,21 @@ jobs:
         shell: pwsh
         run: |
           choco install cppcheck --no-progress -y
-          dotnet tool install --global Microsoft.CodeAnalysis.BinSkim
+          $binskimVersion = '4.4.9.11'
+          $binskimPackage = Join-Path $env:RUNNER_TEMP "Microsoft.CodeAnalysis.BinSkim.$binskimVersion.nupkg"
+          $binskimArchive = [IO.Path]::ChangeExtension($binskimPackage, '.zip')
+          $binskimRoot = Join-Path $env:RUNNER_TEMP "binskim-$binskimVersion"
+          Invoke-WebRequest `
+            -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.codeanalysis.binskim/$binskimVersion/microsoft.codeanalysis.binskim.$binskimVersion.nupkg" `
+            -OutFile $binskimPackage
+          Move-Item -LiteralPath $binskimPackage -Destination $binskimArchive -Force
+          Expand-Archive -LiteralPath $binskimArchive -DestinationPath $binskimRoot -Force
+          $binskimTools = Join-Path $binskimRoot 'tools\net9.0\win-x64'
+          if (-not (Test-Path -LiteralPath (Join-Path $binskimTools 'BinSkim.exe') -PathType Leaf)) {
+            throw 'BinSkim.exe was not found in the pinned NuGet package'
+          }
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
-          "$env:USERPROFILE\.dotnet\tools" >> $env:GITHUB_PATH
+          $binskimTools >> $env:GITHUB_PATH
 
       - name: Find Visual Studio LLVM
         shell: pwsh
@@ -107,15 +119,15 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath
           $llvm = Join-Path $installation 'VC\Tools\Llvm\x64\bin'
-          "LLVM_DIR=$llvm" >> $env:GITHUB_ENV
+          "LLVM_DIR=$($llvm.Replace('\', '/'))" >> $env:GITHUB_ENV
 
       - name: Build analyzer inputs
         shell: pwsh
         run: |
           cmake --preset debug `
-            "-DCMAKE_CXX_COMPILER=$env:LLVM_DIR\clang-cl.exe" `
-            "-DCMAKE_RC_COMPILER=$env:LLVM_DIR\llvm-rc.exe" `
-            "-DCMAKE_LINKER=$env:LLVM_DIR\lld-link.exe"
+            "-DCMAKE_CXX_COMPILER=${env:LLVM_DIR}/clang-cl.exe" `
+            "-DCMAKE_RC_COMPILER=${env:LLVM_DIR}/llvm-rc.exe" `
+            "-DCMAKE_LINKER=${env:LLVM_DIR}/lld-link.exe"
           cmake --build --preset debug
           foreach ($arch in 'x64', 'x86', 'arm64') {
             ./scripts/build.ps1 -Arch $arch
