@@ -156,7 +156,9 @@ Two threads, as today. Far's main thread runs the exports, the gesture, every Fa
 (feature 1) the extraction. The tool thread owns the tool window, `OleInitialize`, the drag loop
 and the COM objects. Rules: a Far API call from the tool thread is a bug (the guard test cannot
 see it, the reviewer must); the tool thread asks for main-thread work with `postSynchro` and,
-when it needs a result, waits on an event with a timeout; the main thread asks the tool thread for
+when it needs a result, waits on an event with a timeout — except the extraction wait of feature 1,
+which lasts as long as the owning plugin's `GetFilesW` runs (a large archive takes what it takes;
+the wait pumps COM so the drag loop stays alive); the main thread asks the tool thread for
 work with `SendMessage` / `PostMessage` to the tool window. `Session` state that both threads
 read is guarded by a mutex or handed over by value in the messages; document which. For a
 same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool thread
