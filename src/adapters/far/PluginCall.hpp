@@ -9,6 +9,8 @@
 namespace burlak::adapters::far_api
 {
 
+    [[nodiscard]] bool hasGetFilesExport(const core::PluginModule &module);
+
     [[nodiscard]] std::expected<void, core::Error> callPluginGetFiles(core::PanelHandle panel,
                                                                       std::span<const core::Item> items,
                                                                       const core::PluginModule &module,

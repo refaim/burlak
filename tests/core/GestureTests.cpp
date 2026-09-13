@@ -77,7 +77,7 @@ namespace burlak::core
             CHECK(gesture.feed(threshold).replacement->at == Cell{6, 6});
         }
 
-        TEST_CASE("both panels count but non-panel windows and virtual panels pass through")
+        TEST_CASE("both panels count but non-panel windows and unsupported virtual panels pass through")
         {
             tests::Panels panels;
             panels.panels[1] = tests::visiblePanel({40, 0, 79, 24});
@@ -108,6 +108,35 @@ namespace burlak::core
             panels.panels[1] = tests::visiblePanel({40, 0, 79, 24});
             auto passiveFrame = mouse({40, 5}, true, false);
             CHECK(gesture.feed(passiveFrame).action == VerdictAction::Pass);
+        }
+
+        TEST_CASE("a plugin file panel without real names arms only when it has an owner")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            tests::Host host;
+            Gesture gesture{panels, host};
+
+            const auto press = mouse({5, 5}, true, false);
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Replace);
+
+            gesture.reset();
+            panels.panels[0]->owner = {};
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Pass);
+
+            panels.panels[0]->realNames = true;
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Replace);
+
+            gesture.reset();
+            panels.panels[0]->filePanel = false;
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Pass);
         }
 
         TEST_CASE("edge rows do not arm and idle moves and releases pass")

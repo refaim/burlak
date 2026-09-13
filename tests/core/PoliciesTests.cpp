@@ -7,22 +7,33 @@ namespace burlak::core
 
     TEST_SUITE("policies")
     {
-        TEST_CASE("release policy cancels escape, drops a release, and otherwise continues")
+        TEST_CASE("release policy cancels Escape and otherwise continues or drops")
         {
             ReleasePolicy policy;
-            CHECK(policy.query(Button::Left, true, true, false) == DragAction::Cancel);
-            CHECK(policy.query(Button::Left, false, false, true) == DragAction::Drop);
-            CHECK(policy.query(Button::Left, false, true, false) == DragAction::Continue);
-            CHECK(policy.query(Button::Right, false, true, false) == DragAction::Drop);
-            CHECK(policy.query(Button::Right, false, false, true) == DragAction::Continue);
+            CHECK(policy.query(Button::Left, true, true, false, Effect::Copy, false, false) == DragAction::Cancel);
+            CHECK(policy.query(Button::Left, false, false, true, Effect::Copy, false, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, true, false, Effect::Copy, false, false) == DragAction::Continue);
+            CHECK(policy.query(Button::Right, false, true, false, Effect::Copy, false, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Right, false, false, true, Effect::Copy, false, false) == DragAction::Continue);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::None, false, false) == DragAction::Drop);
         }
 
-        TEST_CASE("release feedback prefers move, then copy, then none")
+        TEST_CASE("release policy extracts accepted plugin payloads except over the own tool window")
         {
             ReleasePolicy policy;
-            CHECK(policy.feedback(true, true) == Effect::Move);
-            CHECK(policy.feedback(false, true) == Effect::Copy);
-            CHECK(policy.feedback(false, false) == Effect::None);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false) ==
+                  DragAction::ExtractThenDrop);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Move, true, true) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Link, false, false) == DragAction::Drop);
+        }
+
+        TEST_CASE("release feedback prefers move, then copy, then link, then none")
+        {
+            ReleasePolicy policy;
+            CHECK(policy.feedback(true, true, true) == Effect::Move);
+            CHECK(policy.feedback(false, true, true) == Effect::Copy);
+            CHECK(policy.feedback(false, false, true) == Effect::Link);
+            CHECK(policy.feedback(false, false, false) == Effect::None);
         }
 
         TEST_CASE("drop policy accepts item rows only on the visible panel opposite the source")
@@ -258,6 +269,20 @@ namespace burlak::core
         {
             CHECK(allPathsAdvertised(2, 2));
             CHECK_FALSE(allPathsAdvertised(2, 1));
+        }
+
+        TEST_CASE("sweep policy removes this process and dead owners but ignores live and unrelated directories")
+        {
+            CHECK(shouldSweepRun(L"42-1", 42, true));
+            CHECK(shouldSweepRun(L"17-old", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"17-old", 42, true));
+            CHECK_FALSE(shouldSweepRun(L"other", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"17", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"17-", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"-1", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"/-1", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"x-1", 42, false));
+            CHECK_FALSE(shouldSweepRun(L"42949672960-1", 42, false));
         }
 
         TEST_CASE("window placement follows the host and always demotes before ordinary placement")

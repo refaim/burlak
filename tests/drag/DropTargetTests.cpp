@@ -58,6 +58,10 @@ namespace burlak::drag
             {
                 return true;
             }
+            [[nodiscard]] core::NativeWindow windowAt(core::Point) override
+            {
+                return 0;
+            }
             [[nodiscard]] std::optional<core::HostWindow> hostWindow() override
             {
                 return core::HostWindow{1, {0, 0, 80, 25}, false};
@@ -106,7 +110,7 @@ namespace burlak::drag
             {
                 return true;
             }
-            [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button,
+            [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button, bool,
                                        core::DropContext context) override
             {
                 auto result = adapters::shell::makeDataObject(paths);
@@ -250,7 +254,8 @@ namespace burlak::drag
             Screen screen;
             Input input;
             tests::Host host;
-            core::Session session{panels, host, screen, input};
+            tests::Files files;
+            core::Session session{panels, host, screen, input, files};
             Tool tool{session};
             REQUIRE(session.begin(tool, core::DragStart{core::Button::Left, {5, 5}}));
             REQUIRE(tool.data.Get() != nullptr);

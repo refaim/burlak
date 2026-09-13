@@ -88,7 +88,8 @@ namespace burlak::core
     {
         None,
         Copy,
-        Move
+        Move,
+        Link
     };
 
     enum class PanelSide : std::uint8_t
@@ -136,8 +137,12 @@ namespace burlak::core
     {
         std::wstring name;
         std::uint64_t size{};
+        std::uintptr_t attributes{};
         bool directory{};
+        bool selected{};
         UserData userData{};
+
+        auto operator<=>(const Item &) const = default;
     };
 
     struct CellGeometry

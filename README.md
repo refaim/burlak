@@ -6,6 +6,8 @@ browser upload box, Explorer, a chat window.
 Hold the left mouse button on a panel item, move a few cells, drop it wherever you like.
 Ordinary clicks keep working as before.
 Drop onto Far's other panel to copy there; hold Shift to move instead, including to or from plugin panels.
+Files and selections can also be dragged out of archive, FTP/SFTP, and other plugin panels;
+extraction starts only after the mouse button is released.
 
 Drag with the right button instead and it is up to the target what happens on the drop:
 Explorer offers its copy / move / shortcut menu, Telegram just takes the files. A right click

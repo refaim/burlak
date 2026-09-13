@@ -3,6 +3,8 @@
 #include "core/Types.hpp"
 
 #include <expected>
+#include <optional>
+#include <string_view>
 
 namespace burlak::core
 {
@@ -11,23 +13,25 @@ namespace burlak::core
     {
         Continue,
         Drop,
-        Cancel
+        Cancel,
+        ExtractThenDrop
     };
 
     class IReleasePolicy
     {
       public:
         virtual ~IReleasePolicy() = default;
-        [[nodiscard]] virtual DragAction query(Button button, bool escapePressed, bool leftDown,
-                                               bool rightDown) const = 0;
-        [[nodiscard]] virtual Effect feedback(bool move, bool copy) const = 0;
+        [[nodiscard]] virtual DragAction query(Button button, bool escapePressed, bool leftDown, bool rightDown,
+                                               Effect lastEffect, bool needsExtraction, bool overOwnWindow) const = 0;
+        [[nodiscard]] virtual Effect feedback(bool move, bool copy, bool link) const = 0;
     };
 
     class ReleasePolicy final : public IReleasePolicy
     {
       public:
-        [[nodiscard]] DragAction query(Button button, bool escapePressed, bool leftDown, bool rightDown) const override;
-        [[nodiscard]] Effect feedback(bool move, bool copy) const override;
+        [[nodiscard]] DragAction query(Button button, bool escapePressed, bool leftDown, bool rightDown,
+                                       Effect lastEffect, bool needsExtraction, bool overOwnWindow) const override;
+        [[nodiscard]] Effect feedback(bool move, bool copy, bool link) const override;
     };
 
     class DropPolicy final
@@ -44,5 +48,7 @@ namespace burlak::core
     [[nodiscard]] std::expected<void, Error> replayOutcome(ReplayOutcome outcome);
     [[nodiscard]] std::expected<void, Error> extractionOutcome(bool crashed, std::intptr_t result);
     [[nodiscard]] bool allPathsAdvertised(std::size_t requested, std::size_t parsed);
+    [[nodiscard]] std::optional<std::uint32_t> runOwner(std::wstring_view name);
+    [[nodiscard]] bool shouldSweepRun(std::wstring_view name, std::uint32_t currentProcess, bool ownerAlive);
 
 } // namespace burlak::core

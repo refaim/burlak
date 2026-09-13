@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/DragPlan.hpp"
 #include "core/Interfaces.hpp"
 #include "core/Policies.hpp"
 
@@ -9,12 +10,14 @@
 namespace burlak::core
 {
 
-    class Session final : public IDropSession
+    class Session final : public IDropSession, public IExtractionSession
     {
       public:
-        Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input);
+        Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input, IFiles &files);
         [[nodiscard]] bool begin(IDragTool &tool, DragStart start);
-        void synchro();
+        [[nodiscard]] bool requestExtraction() override;
+        std::optional<bool> synchro();
+        void cleanup() override;
         void prepare(DropContext context) override;
         [[nodiscard]] Effect effect(Point point, bool shift) const override;
         [[nodiscard]] Effect drop(Point point, bool shift) override;
@@ -31,11 +34,15 @@ namespace burlak::core
         IFarHost &host_;
         IScreen &screen_;
         IInput &input_;
+        IFiles &files_;
         DropPolicy dropPolicy_;
         std::optional<DropContext> farContext_;
         std::optional<DropContext> hoverContext_;
         std::mutex pendingMutex_;
         std::optional<PendingDrop> pendingDrop_;
+        std::optional<Plan> plan_;
+        std::optional<std::wstring> pendingExtraction_;
+        std::optional<std::wstring> cleanupDirectory_;
     };
 
 } // namespace burlak::core

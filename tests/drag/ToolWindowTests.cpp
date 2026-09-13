@@ -30,6 +30,11 @@ namespace burlak::drag
                 return down;
             }
 
+            [[nodiscard]] core::NativeWindow windowAt(core::Point) override
+            {
+                return 0;
+            }
+
             [[nodiscard]] std::optional<core::HostWindow> hostWindow() override
             {
                 return host;
@@ -127,6 +132,24 @@ namespace burlak::drag
             [[nodiscard]] core::Effect drop(core::Point, bool) override
             {
                 return core::Effect::None;
+            }
+        };
+
+        class Extraction final : public core::IExtraction
+        {
+          public:
+            int calls{};
+            int cleanups{};
+
+            [[nodiscard]] bool extract() override
+            {
+                ++calls;
+                return true;
+            }
+
+            void cleanup() override
+            {
+                ++cleanups;
             }
         };
 
@@ -256,14 +279,15 @@ namespace burlak::drag
             Input input;
             Shell shell;
             DropSession dropSession;
+            Extraction extraction;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
 
             CHECK(tool.start());
             CHECK(tool.start());
             REQUIRE(tool.nativeWindow() != 0);
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            CHECK(tool.prepare(paths, core::Button::Left, dropContext()));
+            CHECK(tool.prepare(paths, core::Button::Left, true, dropContext()));
             CHECK(tool.hasData());
             CHECK(dropSession.context->press == core::Cell{5, 5});
             CHECK(tool.showAndArm());
@@ -277,6 +301,7 @@ namespace burlak::drag
             SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, armTimerId(), 0);
             CHECK_FALSE(headlessWindow.visible);
             CHECK_FALSE(tool.hasData());
+            CHECK(extraction.cleanups == 1);
 
             tool.stop();
             tool.stop();
@@ -294,10 +319,11 @@ namespace burlak::drag
             Input input;
             Shell shell;
             DropSession dropSession;
-            ToolWindow tool{screen, input, shell, dropSession};
+            Extraction extraction;
+            ToolWindow tool{screen, input, shell, dropSession, extraction};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
+            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
             REQUIRE(tool.showAndArm());
             CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) != FALSE);
             tool.abort();
@@ -311,7 +337,8 @@ namespace burlak::drag
             Input input;
             Shell shell;
             DropSession dropSession;
-            ToolWindow tool{screen, input, shell, dropSession};
+            Extraction extraction;
+            ToolWindow tool{screen, input, shell, dropSession, extraction};
             REQUIRE(tool.start());
             CHECK_FALSE(tool.showAndArm());
             SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_LBUTTONDOWN, 0, 0);
@@ -319,16 +346,16 @@ namespace burlak::drag
 
             shell.prepares = false;
             const std::vector<std::wstring> invalid{L"Z:\\definitely-missing\\file.txt"};
-            CHECK_FALSE(tool.prepare(invalid, core::Button::Right, dropContext()));
+            CHECK_FALSE(tool.prepare(invalid, core::Button::Right, false, dropContext()));
             shell.prepares = true;
             shell.parsedPaths = 1;
             const std::vector<std::wstring> valid{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(valid, core::Button::Right, dropContext()));
+            REQUIRE(tool.prepare(valid, core::Button::Right, false, dropContext()));
             CHECK_FALSE(tool.showAndArm());
             CHECK_FALSE(tool.hasData());
             CHECK(input.presses.empty());
 
-            REQUIRE(tool.prepare(valid, core::Button::Right, dropContext()));
+            REQUIRE(tool.prepare(valid, core::Button::Right, false, dropContext()));
             tool.abort();
             CHECK_FALSE(tool.hasData());
             tool.stop();
@@ -341,11 +368,12 @@ namespace burlak::drag
             Shell shell;
             shell.parsedPaths = 1;
             DropSession dropSession;
-            ToolWindow tool{screen, input, shell, dropSession};
+            Extraction extraction;
+            ToolWindow tool{screen, input, shell, dropSession, extraction};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
 
-            CHECK_FALSE(tool.prepare(paths, core::Button::Left, dropContext()));
+            CHECK_FALSE(tool.prepare(paths, core::Button::Left, false, dropContext()));
             CHECK_FALSE(tool.hasData());
             CHECK_FALSE(dropSession.context.has_value());
             tool.stop();
@@ -359,11 +387,12 @@ namespace burlak::drag
             Input input;
             Shell shell;
             DropSession dropSession;
+            Extraction extraction;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Right, dropContext()));
+            REQUIRE(tool.prepare(paths, core::Button::Right, true, dropContext()));
             REQUIRE(tool.showAndArm());
             CHECK(headlessWindow.placements == 1);
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
@@ -378,9 +407,10 @@ namespace burlak::drag
             CHECK_FALSE(tool.active());
             CHECK_FALSE(tool.hasData());
             CHECK_FALSE(headlessWindow.visible);
+            CHECK(extraction.cleanups == 1);
 
             screen.host->topmost = false;
-            REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
+            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
             REQUIRE(tool.showAndArm());
             CHECK(headlessWindow.placements == 3);
             shell.duringDrag = [&tool](core::NativeWindow owner) {
@@ -399,16 +429,17 @@ namespace burlak::drag
             Input input;
             Shell shell;
             DropSession dropSession;
+            Extraction extraction;
 
             auto calls = systemToolWindowCalls();
             calls.createThread = failCreateThread;
-            ToolWindow noThread{screen, input, shell, dropSession, calls};
+            ToolWindow noThread{screen, input, shell, dropSession, extraction, calls};
             CHECK_FALSE(noThread.start());
 
             calls = systemToolWindowCalls();
             calls.createWindow = failCreateWindow;
             calls.sleep = shortSleep;
-            ToolWindow noWindow{screen, input, shell, dropSession, calls};
+            ToolWindow noWindow{screen, input, shell, dropSession, extraction, calls};
             CHECK_FALSE(noWindow.start());
             noWindow.stop();
         }
@@ -421,14 +452,16 @@ namespace burlak::drag
             Input input;
             Shell shell;
             DropSession dropSession;
+            Extraction extraction;
             auto calls = headlessCalls();
             calls.isWindowVisible = reportInvisible;
-            ToolWindow tool{screen, input, shell, dropSession, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left, dropContext()));
+            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
             CHECK_FALSE(tool.showAndArm());
             CHECK_FALSE(tool.hasData());
+            CHECK(extraction.cleanups == 1);
 
             const HWND withoutState = CreateWindowExW(0, L"BurlakToolWindow", L"", WS_POPUP, 0, 0, 1, 1, nullptr,
                                                       nullptr, GetModuleHandleW(nullptr), nullptr);

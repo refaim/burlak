@@ -21,11 +21,12 @@ namespace burlak::adapters::far_api
         bool advFailure{};
         std::wstring directoryName{L"C:\\panel"};
         std::wstring selectedName{L"selected.txt"};
+        PLUGINPANELITEMFLAGS selectedFlags{PPIF_SELECTED};
         PANELINFOTYPE panelType{PTYPE_FILEPANEL};
         UUID ownerGuid{0x12345678, 0x1111, 0x2222, {1, 2, 3, 4, 5, 6, 7, 8}};
         GlobalInfo pluginGlobal{};
         PluginInfo pluginInfo{};
-        std::wstring pluginPath{L"C:\\plugins\\Sample.dll"};
+        std::wstring pluginPath{GETFILES_SUCCESS_PATH};
 
         enum class PanelFailure : std::uint8_t
         {
@@ -100,6 +101,7 @@ namespace burlak::adapters::far_api
                 request.Item->FileName = panelFailure == PanelFailure::ItemName ? nullptr : name;
                 request.Item->FileSize = 9;
                 request.Item->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+                request.Item->Flags = selectedFlags;
                 request.Item->UserData.Data = reinterpret_cast<void *>(23);
                 return static_cast<intptr_t>(bytes);
             }
@@ -139,7 +141,10 @@ namespace burlak::adapters::far_api
         intptr_t WINAPI pluginsControl(HANDLE, FAR_PLUGINS_CONTROL_COMMANDS command, intptr_t, void *param2)
         {
             if (command == PCTL_FINDPLUGIN) {
-                return pluginFailure == PluginFailure::Find ? 0 : 91;
+                const auto &requested = *static_cast<UUID *>(param2);
+                return pluginFailure == PluginFailure::Find || std::memcmp(&requested, &ownerGuid, sizeof(UUID)) != 0
+                           ? 0
+                           : 91;
             }
             if (param2 == nullptr) {
                 return pluginFailure == PluginFailure::Size ? 0 : sizeof(FarGetPluginInformation);
@@ -205,8 +210,15 @@ namespace burlak::adapters::far_api
             REQUIRE(items.size() == 1);
             CHECK(items[0].name == selectedName);
             CHECK(items[0].size == 9);
+            CHECK(items[0].attributes == FILE_ATTRIBUTE_DIRECTORY);
             CHECK(items[0].directory);
+            CHECK(items[0].selected);
             CHECK(items[0].userData.value == 23);
+            selectedFlags = PPIF_NONE;
+            const auto unflagged = panels.selectedItems(core::PanelSide::Active);
+            REQUIRE(unflagged.size() == 1);
+            CHECK_FALSE(unflagged[0].selected);
+            selectedFlags = PPIF_SELECTED;
 
             panelsWindow = true;
             CHECK(panels.currentWindowIsPanels());
@@ -274,6 +286,16 @@ namespace burlak::adapters::far_api
             REQUIRE(module.has_value());
             CHECK(module->path == pluginPath);
             CHECK(module->instance == 42);
+
+            core::Guid unknown{};
+            unknown[0] = std::byte{1};
+            CHECK_FALSE(host.pluginModule(unknown).has_value());
+
+            pluginPath = L"kernel32.dll";
+            CHECK_FALSE(host.pluginModule(guid).has_value());
+            pluginPath = L"missing-burlak-plugin.dll";
+            CHECK_FALSE(host.pluginModule(guid).has_value());
+            pluginPath = GETFILES_SUCCESS_PATH;
 
             const core::PluginModule callable{.path = GETFILES_SUCCESS_PATH, .instance = 42};
             const std::vector<core::Item> items{{.name = L"far-host.txt"}};

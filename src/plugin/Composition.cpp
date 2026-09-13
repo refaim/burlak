@@ -2,9 +2,11 @@
 
 #include "adapters/far/FarApi.hpp"
 #include "adapters/shell/Shell.hpp"
+#include "adapters/win/Files.hpp"
 #include "adapters/win/Input.hpp"
 #include "adapters/win/Screen.hpp"
 #include "core/Session.hpp"
+#include "drag/ExtractionWait.hpp"
 #include "drag/ToolWindow.hpp"
 
 #include <utility>
@@ -17,8 +19,10 @@ namespace burlak::plugin
       public:
         explicit Runtime(const PluginStartupInfo &startupInfo)
             : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_}, gesture_{panels_, host_},
-              session_{panels_, host_, screen_, input_}, tool_{screen_, input_, shell_, session_}
+              session_{panels_, host_, screen_, input_, files_}, extraction_{session_},
+              tool_{screen_, input_, shell_, session_, extraction_}
         {
+            files_.sweep();
         }
 
         [[nodiscard]] core::Verdict feed(const core::MouseEvent &event)
@@ -32,23 +36,26 @@ namespace burlak::plugin
             if (start) {
                 static_cast<void>(session_.begin(tool_, *start));
             }
-            session_.synchro();
+            extraction_.complete(session_.synchro());
         }
 
         void stop()
         {
             tool_.stop();
+            files_.sweep();
         }
 
       private:
         PluginStartupInfo startupInfo_{};
         adapters::far_api::FarPanels panels_;
         adapters::far_api::FarHost host_;
+        adapters::win::Files files_;
         adapters::win::Screen screen_;
         adapters::win::Input input_;
         adapters::shell::Shell shell_;
         core::Gesture gesture_;
         core::Session session_;
+        drag::ExtractionWait extraction_;
         drag::ToolWindow tool_;
     };
 

@@ -79,7 +79,9 @@ namespace burlak::adapters::far_api
             const auto &item = *request.Item;
             items.push_back({.name = item.FileName == nullptr ? L"" : item.FileName,
                              .size = item.FileSize,
+                             .attributes = item.FileAttributes,
                              .directory = (item.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0,
+                             .selected = (item.Flags & PPIF_SELECTED) != 0,
                              .userData = {.value = reinterpret_cast<std::uintptr_t>(item.UserData.Data)}});
         }
         return items;
@@ -175,8 +177,9 @@ namespace burlak::adapters::far_api
             information.ModuleName == nullptr || information.GInfo == nullptr) {
             return std::nullopt;
         }
-        return core::PluginModule{.path = information.ModuleName,
+        core::PluginModule module{.path = information.ModuleName,
                                   .instance = reinterpret_cast<core::PluginInstance>(information.GInfo->Instance)};
+        return hasGetFilesExport(module) ? std::optional{std::move(module)} : std::nullopt;
     }
 
     std::expected<void, core::Error> FarHost::extract(core::PanelHandle panel, std::span<const core::Item> items,

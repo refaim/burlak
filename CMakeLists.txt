@@ -54,6 +54,7 @@ add_library(
   burlak_adapters STATIC
   src/adapters/far/FarApi.cpp
   src/adapters/far/PluginCall.cpp
+  src/adapters/win/Files.cpp
   src/adapters/win/Screen.cpp
   src/adapters/win/Input.cpp
   src/adapters/shell/Shell.cpp)
@@ -64,6 +65,7 @@ add_library(
   burlak_drag STATIC
   src/drag/DragSource.cpp
   src/drag/DropTarget.cpp
+  src/drag/ExtractionWait.cpp
   src/drag/ToolWindow.cpp)
 target_include_directories(burlak_drag PUBLIC src)
 target_link_libraries(burlak_drag PUBLIC burlak_core burlak_options PRIVATE ole32 shell32 user32)
@@ -119,6 +121,7 @@ if(BUILD_TESTING)
     $<TARGET_OBJECTS:burlak_test_main>
     tests/adapters/FarTests.cpp
     tests/adapters/PluginCallTests.cpp
+    tests/adapters/FilesTests.cpp
     tests/adapters/ScreenTests.cpp
     tests/adapters/InputTests.cpp
     tests/adapters/ShellTests.cpp)
@@ -156,9 +159,13 @@ if(BUILD_TESTING)
     $<TARGET_OBJECTS:burlak_test_main>
     tests/e2e/E2eTests.cpp)
   target_include_directories(e2e_tests PRIVATE third_party sdk src)
-  target_compile_definitions(e2e_tests PRIVATE BURLAK_DLL_PATH=L"$<TARGET_FILE:Burlak>")
+  target_compile_definitions(
+    e2e_tests
+    PRIVATE
+      BURLAK_DLL_PATH=L"$<TARGET_FILE:Burlak>"
+      GETFILES_SUCCESS_PATH=L"$<TARGET_FILE:getfiles_success>")
   target_link_libraries(e2e_tests PRIVATE burlak_drag burlak_adapters ole32 shell32 user32)
-  add_dependencies(e2e_tests Burlak)
+  add_dependencies(e2e_tests Burlak getfiles_success)
   add_test(NAME e2e COMMAND e2e_tests)
   # Adapters and e2e move the cursor, while drag can raise its tool window topmost; they must not
   # compete for the shared desktop when CTest runs in parallel.

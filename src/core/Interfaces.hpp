@@ -39,6 +39,7 @@ namespace burlak::core
       public:
         [[nodiscard]] virtual std::optional<Point> cursor() = 0;
         [[nodiscard]] virtual bool buttonDown(Button button) = 0;
+        [[nodiscard]] virtual NativeWindow windowAt(Point point) = 0;
         [[nodiscard]] virtual std::optional<HostWindow> hostWindow() = 0;
         [[nodiscard]] virtual std::optional<HostWindow> hostWindowAt(Point point) = 0;
         [[nodiscard]] virtual std::expected<CellGeometry, Error> cellGeometry() = 0;
@@ -98,11 +99,28 @@ namespace burlak::core
     {
       public:
         [[nodiscard]] virtual bool start() = 0;
-        [[nodiscard]] virtual bool prepare(std::span<const std::wstring> paths, Button button, DropContext context) = 0;
+        [[nodiscard]] virtual bool prepare(std::span<const std::wstring> paths, Button button, bool needsExtraction,
+                                           DropContext context) = 0;
         [[nodiscard]] virtual bool showAndArm() = 0;
         virtual void abort() = 0;
         [[nodiscard]] virtual bool active() const = 0;
         virtual void stop() = 0;
+    };
+
+    class IExtraction
+    {
+      public:
+        virtual ~IExtraction() = default;
+        [[nodiscard]] virtual bool extract() = 0;
+        virtual void cleanup() = 0;
+    };
+
+    class IExtractionSession
+    {
+      public:
+        virtual ~IExtractionSession() = default;
+        [[nodiscard]] virtual bool requestExtraction() = 0;
+        virtual void cleanup() = 0;
     };
 
     class IDropSession

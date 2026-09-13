@@ -20,6 +20,7 @@ namespace burlak::adapters::win
             SHORT rightKey{};
             HWND console{reinterpret_cast<HWND>(1)};
             HWND foreground{reinterpret_cast<HWND>(2)};
+            HWND pointWindow{reinterpret_cast<HWND>(4)};
             bool rectSucceeds{true};
             bool visible{true};
             HWND hiddenWindow{};
@@ -58,6 +59,11 @@ namespace burlak::adapters::win
         HWND WINAPI fakeGetForegroundWindow()
         {
             return fakeState.foreground;
+        }
+
+        HWND WINAPI fakeWindowFromPoint(POINT)
+        {
+            return fakeState.pointWindow;
         }
 
         BOOL WINAPI fakeGetWindowRect(HWND, LPRECT rect)
@@ -106,10 +112,19 @@ namespace burlak::adapters::win
             return fakeState.bufferSucceeds ? TRUE : FALSE;
         }
 
-        const ScreenCalls fakeCalls{fakeGetCursorPos,          fakeGetAsyncKeyState, fakeGetConsoleWindow,
-                                    fakeGetForegroundWindow,   fakeGetWindowRect,    fakeGetClientRect,
-                                    fakeIsWindowVisible,       fakeGetWindowLong,    fakeGetStdHandle,
-                                    fakeGetCurrentConsoleFont, fakeClientToScreen,   fakeGetConsoleScreenBufferInfo};
+        const ScreenCalls fakeCalls{fakeGetCursorPos,
+                                    fakeGetAsyncKeyState,
+                                    fakeGetConsoleWindow,
+                                    fakeGetForegroundWindow,
+                                    fakeWindowFromPoint,
+                                    fakeGetWindowRect,
+                                    fakeGetClientRect,
+                                    fakeIsWindowVisible,
+                                    fakeGetWindowLong,
+                                    fakeGetStdHandle,
+                                    fakeGetCurrentConsoleFont,
+                                    fakeClientToScreen,
+                                    fakeGetConsoleScreenBufferInfo};
 
         void resetFakeScreen()
         {
@@ -186,6 +201,7 @@ namespace burlak::adapters::win
             resetFakeScreen();
             Screen screen{fakeCalls};
             CHECK(screen.cursor() == std::optional{core::Point{50, 50}});
+            CHECK(screen.windowAt({50, 50}) == reinterpret_cast<core::NativeWindow>(fakeState.pointWindow));
             CHECK_FALSE(screen.buttonDown(core::Button::Left));
             fakeState.rightKey = static_cast<SHORT>(0x8000);
             CHECK(screen.buttonDown(core::Button::Right));

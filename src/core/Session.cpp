@@ -2,6 +2,7 @@
 
 #include "core/DragPlan.hpp"
 
+#include <algorithm>
 #include <array>
 #include <utility>
 
@@ -24,22 +25,33 @@ namespace burlak::core
 
     } // namespace
 
-    Session::Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input)
-        : panels_{panels}, host_{host}, screen_{screen}, input_{input}
+    Session::Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input, IFiles &files)
+        : panels_{panels}, host_{host}, screen_{screen}, input_{input}, files_{files}
     {
     }
 
     bool Session::begin(IDragTool &tool, DragStart start)
     {
+        cleanup();
         if (!panels_.currentWindowIsPanels()) {
             return false;
         }
-        const auto paths = DragPlan{panels_}.paths();
-        if (!paths || !tool.start()) {
+        auto plan = DragPlan{panels_, host_, files_}.build();
+        if (!plan) {
+            return false;
+        }
+        const auto discard = [this, &plan] {
+            if (plan->extraction) {
+                static_cast<void>(files_.removeTree(plan->extraction->directory));
+            }
+        };
+        if (!tool.start()) {
+            discard();
             return false;
         }
 
         if (!screen_.buttonDown(start.button)) {
+            discard();
             return false;
         }
         // The panel that handled the press is active by the time Far invokes the input export
@@ -52,7 +64,7 @@ namespace burlak::core
                             .host = screen_.hostWindow(),
                             .geometry = std::nullopt,
                             .panelsWindow = true,
-                            .sourcePaths = *paths,
+                            .sourcePaths = plan->paths,
                             .destinationDirectory = panels_.directory(PanelSide::Passive)};
         if (const auto geometry = screen_.cellGeometry()) {
             context.geometry = *geometry;
@@ -61,24 +73,37 @@ namespace burlak::core
         // again immediately before synthesizing the release.
         // The synchronous prepare message copies the complete hover and identity snapshot; the tool
         // thread reads that value only after this Far-thread call and before showAndArm.
-        if (!tool.prepare(*paths, start.button, context)) {
+        if (!tool.prepare(plan->paths, start.button, plan->extraction.has_value(), context)) {
+            discard();
             return false;
         }
         // This Far-thread snapshot is stored before showAndArm; OLE cannot publish PendingDrop until
         // afterward. ToolWindow's prepare message separately transfers the cosmetic hover snapshot by value.
+        {
+            const std::lock_guard lock{pendingMutex_};
+            cleanupDirectory_ =
+                plan->extraction.transform([](const ExtractionRecipe &recipe) { return recipe.directory; });
+            plan_ = std::move(*plan);
+        }
         farContext_ = context;
         if (!context.host) {
             tool.abort();
+            cleanup();
             return false;
         }
         if (!screen_.buttonDown(start.button)) {
             tool.abort();
+            cleanup();
             return false;
         }
 
         // The fresh press over the tool window must follow this release in the serial input stream.
         input_.release(start.button);
-        return tool.showAndArm();
+        const bool shown = tool.showAndArm();
+        if (!shown) {
+            cleanup();
+        }
+        return shown;
     }
 
     void Session::prepare(DropContext context)
@@ -108,20 +133,52 @@ namespace burlak::core
         return decision.effect;
     }
 
-    void Session::synchro()
+    bool Session::requestExtraction()
     {
+        std::unique_lock lock{pendingMutex_};
+        if (!plan_ || !plan_->extraction || pendingExtraction_) {
+            return false;
+        }
+        // Only this directory value crosses from the tool thread; the panel handle, items, and module
+        // remain in the Far-thread plan until ProcessSynchroEventW consumes the request.
+        pendingExtraction_ = plan_->extraction->directory;
+        lock.unlock();
+        host_.postSynchro();
+        return true;
+    }
+
+    std::optional<bool> Session::synchro()
+    {
+        std::optional<std::wstring> extraction;
         std::optional<PendingDrop> pending;
         {
             const std::lock_guard lock{pendingMutex_};
+            extraction = std::exchange(pendingExtraction_, std::nullopt);
             pending = std::exchange(pendingDrop_, std::nullopt);
         }
+        if (extraction) {
+            ExtractionRecipe recipe;
+            {
+                const std::lock_guard lock{pendingMutex_};
+                // A pending extraction is published only after begin stored this plugin plan; the fallback keeps
+                // invariant loss inside the export firewall instead of dereferencing an empty optional.
+                recipe =
+                    plan_.and_then([](const Plan &stored) { return stored.extraction; }).value_or(ExtractionRecipe{});
+            }
+            const bool succeeded = host_.extract(recipe.panel, recipe.items, recipe.module, *extraction).has_value();
+            if (!succeeded) {
+                const auto separator = recipe.module.path.find_last_of(L"\\/");
+                const auto name = recipe.module.path.substr(separator == std::wstring::npos ? 0 : separator + 1);
+                report(host_, L"Could not extract files with " + name + L".");
+            }
+            return succeeded;
+        }
         if (!pending) {
-            return;
+            return std::nullopt;
         }
 
         const auto panelsWindow = panels_.currentWindowIsPanels();
         const std::array panels{panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)};
-        const auto paths = DragPlan{panels_}.paths();
         const auto destinationDirectory = panels_.directory(PanelSide::Passive);
         const auto host = screen_.hostWindowAt(pending->point);
         const auto geometryResult = screen_.cellGeometryAt(pending->point);
@@ -131,7 +188,24 @@ namespace burlak::core
         // FilePanels::SwapPanels).
         if (!farContext_) {
             report(host_, L"Panels changed during the drag; the drop was cancelled.");
-            return;
+            return std::nullopt;
+        }
+
+        Plan originalPlan;
+        {
+            const std::lock_guard lock{pendingMutex_};
+            originalPlan = *plan_;
+        }
+        std::vector<std::wstring> freshPaths;
+        if (originalPlan.extraction) {
+            auto items = panels_.selectedItems(PanelSide::Active);
+            std::erase_if(
+                items, [](const Item &item) { return item.name.empty() || item.name == L"." || item.name == L".."; });
+            if (items == originalPlan.extraction->items) {
+                freshPaths = originalPlan.paths;
+            }
+        } else if (const auto freshPlan = DragPlan{panels_, host_, files_}.build()) {
+            freshPaths = freshPlan->paths;
         }
 
         DropContext fresh{.press = farContext_->press,
@@ -140,29 +214,26 @@ namespace burlak::core
                           .host = host,
                           .geometry = std::nullopt,
                           .panelsWindow = panelsWindow,
-                          .sourcePaths = {},
+                          .sourcePaths = std::move(freshPaths),
                           .destinationDirectory = destinationDirectory};
         if (geometryResult) {
             fresh.geometry = *geometryResult;
         }
-        if (paths) {
-            fresh.sourcePaths = *paths;
-        }
         if (!dropPolicy_.sameIdentity(*farContext_, fresh)) {
             report(host_, L"Panels changed during the drag; the drop was cancelled.");
-            return;
+            return std::nullopt;
         }
         const auto decision = dropPolicy_.drop(fresh, pending->point, pending->effect == Effect::Move);
         // MoveToMouse consumes the freshly mapped row, so accepting a different cell could change the target
         // directory (Far source: far/filelist.cpp, FileList::MoveToMouse).
         if (decision.effect != pending->effect || decision.events[1].at != pending->cell) {
             report(host_, L"Panels changed during the drag; the drop was cancelled.");
-            return;
+            return std::nullopt;
         }
 
         const auto outcome = input_.replay(decision.events);
         if (complete(outcome, decision.events.size())) {
-            return;
+            return std::nullopt;
         }
 
         bool recoveryFailed = false;
@@ -174,6 +245,20 @@ namespace burlak::core
         }
         report(host_, recoveryFailed ? L"Far could not receive the drop input or its recovery release."
                                      : L"Far could not receive the complete drop input.");
+        return std::nullopt;
+    }
+
+    void Session::cleanup()
+    {
+        std::optional<std::wstring> directory;
+        {
+            const std::lock_guard lock{pendingMutex_};
+            directory = std::exchange(cleanupDirectory_, std::nullopt);
+        }
+        if (directory) {
+            // Drop targets may keep reading after OLE returns; a sharing failure is intentionally left for sweep.
+            static_cast<void>(files_.removeTree(*directory));
+        }
     }
 
 } // namespace burlak::core

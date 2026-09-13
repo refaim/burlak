@@ -1,0 +1,75 @@
+#include "drag/ExtractionWait.hpp"
+
+#include <array>
+
+namespace burlak::drag
+{
+
+    namespace
+    {
+
+        const ExtractionWaitCalls systemCalls{CreateEventW, ResetEvent, SetEvent, CloseHandle,
+                                              CoWaitForMultipleHandles};
+
+    } // namespace
+
+    void ExtractionWait::EventHandle::operator()(void *handle) const noexcept
+    {
+        static_cast<void>(close(handle));
+    }
+
+    ExtractionWait::ExtractionWait(core::IExtractionSession &session) : ExtractionWait{session, systemCalls}
+    {
+    }
+
+    ExtractionWait::ExtractionWait(core::IExtractionSession &session, const ExtractionWaitCalls &calls)
+        : session_{session}, calls_{calls},
+          event_{calls_.createEvent(nullptr, TRUE, FALSE, nullptr), EventHandle{calls_.closeHandle}}
+    {
+    }
+
+    bool ExtractionWait::extract()
+    {
+        if (!event_ || calls_.resetEvent(event_.get()) == FALSE) {
+            return false;
+        }
+        succeeded_.store(false);
+        if (!session_.requestExtraction()) {
+            return false;
+        }
+
+        std::array handles{static_cast<HANDLE>(event_.get())};
+        DWORD signalled{};
+        // Archive extraction has no timeout: the owner plugin may legitimately show progress for a large archive.
+        constexpr DWORD pumpFlags =
+            static_cast<DWORD>(COWAIT_DISPATCH_CALLS) | static_cast<DWORD>(COWAIT_DISPATCH_WINDOW_MESSAGES);
+        const HRESULT status =
+            calls_.coWait(pumpFlags, INFINITE, static_cast<ULONG>(handles.size()), handles.data(), &signalled);
+        return status == S_OK && signalled == 0 && succeeded_.load();
+    }
+
+    void ExtractionWait::cleanup()
+    {
+        session_.cleanup();
+    }
+
+    void ExtractionWait::complete(bool succeeded)
+    {
+        succeeded_.store(succeeded);
+        // Far's ProcessSynchroEventW thread is the sole signaler, after it has stored the extraction outcome.
+        static_cast<void>(calls_.setEvent(event_.get()));
+    }
+
+    void ExtractionWait::complete(std::optional<bool> succeeded)
+    {
+        if (succeeded) {
+            complete(*succeeded);
+        }
+    }
+
+    const ExtractionWaitCalls &systemExtractionWaitCalls()
+    {
+        return systemCalls;
+    }
+
+} // namespace burlak::drag

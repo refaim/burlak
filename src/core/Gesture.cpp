@@ -2,6 +2,7 @@
 
 #include "core/Geometry.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace burlak::core
@@ -15,6 +16,14 @@ namespace burlak::core
         [[nodiscard]] bool held(Button button, const MouseEvent &event)
         {
             return button == Button::Left ? event.left : event.right;
+        }
+
+        [[nodiscard]] bool usableSource(const PanelInfo &panel)
+        {
+            const bool ownedPlugin =
+                panel.plugin && !panel.realNames &&
+                std::ranges::any_of(panel.owner, [](std::byte value) { return value != std::byte{}; });
+            return panel.filePanel && (panel.realNames || ownedPlugin);
         }
 
     } // namespace
@@ -127,8 +136,8 @@ namespace burlak::core
         }
         const auto active = panels_.panel(PanelSide::Active);
         const auto passive = panels_.panel(PanelSide::Passive);
-        return (active && active->realNames && isItemCell(*active, cell)) ||
-               (passive && passive->realNames && isItemCell(*passive, cell));
+        return (active && usableSource(*active) && isItemCell(*active, cell)) ||
+               (passive && usableSource(*passive) && isItemCell(*passive, cell));
     }
 
 } // namespace burlak::core

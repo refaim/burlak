@@ -7,6 +7,8 @@ executable src/adapters/shell/Shell.cpp
 declarations-only src/adapters/shell/Shell.hpp
 executable src/adapters/win/Input.cpp
 declarations-only src/adapters/win/Input.hpp
+executable src/adapters/win/Files.cpp
+declarations-only src/adapters/win/Files.hpp
 executable src/adapters/win/Screen.cpp
 declarations-only src/adapters/win/Screen.hpp
 executable src/core/DragPlan.cpp
@@ -25,6 +27,8 @@ executable src/drag/DragSource.cpp
 declarations-only src/drag/DragSource.hpp
 executable src/drag/DropTarget.cpp
 declarations-only src/drag/DropTarget.hpp
+executable src/drag/ExtractionWait.cpp
+declarations-only src/drag/ExtractionWait.hpp
 executable src/drag/ToolWindow.cpp
 declarations-only src/drag/ToolWindow.hpp
 declarations-only src/plugin/Burlak.def

@@ -1,3 +1,4 @@
+#include "drag/ExtractionWait.hpp"
 #include "plugin/Composition.hpp"
 #include "plugin/Firewall.hpp"
 
@@ -13,6 +14,60 @@ namespace
 
     int synchros{};
     bool throwFromFar{};
+
+    class ExtractionSession final : public burlak::core::IExtractionSession
+    {
+      public:
+        bool accepts{true};
+        int requests{};
+        int cleanups{};
+
+        [[nodiscard]] bool requestExtraction() override
+        {
+            ++requests;
+            return accepts;
+        }
+
+        void cleanup() override
+        {
+            ++cleanups;
+        }
+    };
+
+    burlak::drag::ExtractionWait *activeWait{};
+    bool waitOutcome{true};
+    HRESULT waitStatus{S_OK};
+    DWORD waitIndex{};
+    BOOL resetStatus{TRUE};
+
+    HANDLE WINAPI createTestEvent(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCWSTR)
+    {
+        return CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
+
+    HANDLE WINAPI failCreateEvent(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCWSTR)
+    {
+        return nullptr;
+    }
+
+    BOOL WINAPI resetTestEvent(HANDLE event)
+    {
+        return resetStatus == FALSE ? FALSE : ResetEvent(event);
+    }
+
+    HRESULT WINAPI waitTestEvent(DWORD, DWORD, ULONG, LPHANDLE, LPDWORD index)
+    {
+        *index = waitIndex;
+        if (waitStatus == S_OK) {
+            activeWait->complete(waitOutcome);
+        }
+        return waitStatus;
+    }
+
+    burlak::drag::ExtractionWaitCalls waitCalls()
+    {
+        return {createTestEvent, resetTestEvent, SetEvent, CloseHandle, waitTestEvent};
+    }
 
     intptr_t WINAPI panelControl(HANDLE panel, FILE_CONTROL_COMMANDS command, intptr_t, void *parameter)
     {
@@ -84,6 +139,46 @@ TEST_SUITE("plugin exports")
         CHECK(plugin.StructSize == sizeof(plugin));
         CHECK(plugin.Flags == PF_NONE);
         CHECK(OpenW(nullptr) == nullptr);
+    }
+
+    TEST_CASE("the composition-owned extraction event pumps until Far reports success or failure")
+    {
+        ExtractionSession session;
+        const auto calls = waitCalls();
+        burlak::drag::ExtractionWait wait{session, calls};
+        activeWait = &wait;
+        resetStatus = TRUE;
+        waitStatus = S_OK;
+        waitIndex = 0;
+        waitOutcome = true;
+        CHECK(wait.extract());
+        CHECK(session.requests == 1);
+
+        waitOutcome = false;
+        CHECK_FALSE(wait.extract());
+        CHECK(session.requests == 2);
+        wait.cleanup();
+        CHECK(session.cleanups == 1);
+
+        session.accepts = false;
+        CHECK_FALSE(wait.extract());
+        session.accepts = true;
+        resetStatus = FALSE;
+        CHECK_FALSE(wait.extract());
+        resetStatus = TRUE;
+        waitStatus = E_FAIL;
+        CHECK_FALSE(wait.extract());
+        waitStatus = S_OK;
+        waitIndex = 1;
+        CHECK_FALSE(wait.extract());
+        wait.complete(std::nullopt);
+        wait.complete(std::optional{true});
+
+        auto missingCalls = calls;
+        missingCalls.createEvent = failCreateEvent;
+        burlak::drag::ExtractionWait missing{session, missingCalls};
+        CHECK_FALSE(missing.extract());
+        CHECK(burlak::drag::systemExtractionWaitCalls().coWait == CoWaitForMultipleHandles);
     }
 
     TEST_CASE("mouse marshalling preserves the left and right 1.2.0 verdicts")

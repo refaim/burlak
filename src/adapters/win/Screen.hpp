@@ -13,6 +13,7 @@ namespace burlak::adapters::win
         decltype(&GetAsyncKeyState) getAsyncKeyState;
         decltype(&GetConsoleWindow) getConsoleWindow;
         decltype(&GetForegroundWindow) getForegroundWindow;
+        decltype(&WindowFromPoint) windowFromPoint;
         decltype(&GetWindowRect) getWindowRect;
         decltype(&GetClientRect) getClientRect;
         decltype(&IsWindowVisible) isWindowVisible;
@@ -31,6 +32,7 @@ namespace burlak::adapters::win
 
         [[nodiscard]] std::optional<core::Point> cursor() override;
         [[nodiscard]] bool buttonDown(core::Button button) override;
+        [[nodiscard]] core::NativeWindow windowAt(core::Point point) override;
         [[nodiscard]] std::optional<core::HostWindow> hostWindow() override;
         [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point point) override;
         [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometry() override;

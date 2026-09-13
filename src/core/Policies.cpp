@@ -2,6 +2,8 @@
 
 #include "core/Geometry.hpp"
 
+#include <limits>
+
 namespace burlak::core
 {
 
@@ -43,21 +45,29 @@ namespace burlak::core
 
     } // namespace
 
-    DragAction ReleasePolicy::query(Button button, bool escapePressed, bool leftDown, bool rightDown) const
+    DragAction ReleasePolicy::query(Button button, bool escapePressed, bool leftDown, bool rightDown, Effect lastEffect,
+                                    bool needsExtraction, bool overOwnWindow) const
     {
         if (escapePressed) {
             return DragAction::Cancel;
         }
         const bool trackedDown = button == Button::Left ? leftDown : rightDown;
-        return trackedDown ? DragAction::Continue : DragAction::Drop;
+        if (trackedDown) {
+            return DragAction::Continue;
+        }
+        return lastEffect != Effect::None && needsExtraction && !overOwnWindow ? DragAction::ExtractThenDrop
+                                                                               : DragAction::Drop;
     }
 
-    Effect ReleasePolicy::feedback(bool move, bool copy) const
+    Effect ReleasePolicy::feedback(bool move, bool copy, bool link) const
     {
         if (move) {
             return Effect::Move;
         }
-        return copy ? Effect::Copy : Effect::None;
+        if (copy) {
+            return Effect::Copy;
+        }
+        return link ? Effect::Link : Effect::None;
     }
 
     Effect DropPolicy::effect(const DropContext &context, Point point, bool shift) const
@@ -138,6 +148,33 @@ namespace burlak::core
     bool allPathsAdvertised(std::size_t requested, std::size_t parsed)
     {
         return requested == parsed;
+    }
+
+    std::optional<std::uint32_t> runOwner(std::wstring_view name)
+    {
+        const auto separator = name.find(L'-');
+        if (separator == 0 || separator == std::wstring_view::npos || separator + 1 == name.size()) {
+            return std::nullopt;
+        }
+
+        std::uint32_t owner{};
+        for (const wchar_t character : name.substr(0, separator)) {
+            if (character < L'0' || character > L'9') {
+                return std::nullopt;
+            }
+            const auto digit = static_cast<std::uint32_t>(character - L'0');
+            if (owner > (std::numeric_limits<std::uint32_t>::max() - digit) / 10U) {
+                return std::nullopt;
+            }
+            owner = owner * 10U + digit;
+        }
+        return owner;
+    }
+
+    bool shouldSweepRun(std::wstring_view name, std::uint32_t currentProcess, bool ownerAlive)
+    {
+        const auto owner = runOwner(name);
+        return owner && (*owner == currentProcess || !ownerAlive);
     }
 
 } // namespace burlak::core

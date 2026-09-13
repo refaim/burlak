@@ -38,6 +38,11 @@ namespace burlak::core
                 return result;
             }
 
+            [[nodiscard]] NativeWindow windowAt(Point) override
+            {
+                return 0;
+            }
+
             [[nodiscard]] std::optional<HostWindow> hostWindow() override
             {
                 calls.emplace_back("host");
@@ -110,6 +115,8 @@ namespace burlak::core
             bool shown{true};
             bool aborted{};
             std::optional<DropContext> context;
+            std::vector<std::wstring> paths;
+            bool needsExtraction{};
 
             [[nodiscard]] bool start() override
             {
@@ -117,9 +124,12 @@ namespace burlak::core
                 return started;
             }
 
-            [[nodiscard]] bool prepare(std::span<const std::wstring>, Button, DropContext dropContext) override
+            [[nodiscard]] bool prepare(std::span<const std::wstring> preparedPaths, Button, bool extraction,
+                                       DropContext dropContext) override
             {
                 calls.emplace_back("data");
+                paths.assign(preparedPaths.begin(), preparedPaths.end());
+                needsExtraction = extraction;
                 context = dropContext;
                 return prepared;
             }
@@ -178,8 +188,9 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
+            tests::Files files;
 
-            Session session{panels, host, screen, input};
+            Session session{panels, host, screen, input, files};
             CHECK(session.begin(tool, DragStart{Button::Right, {5, 5}}));
             CHECK(calls == std::vector<std::string>{"thread", "button", "host", "geometry", "data", "button", "release",
                                                     "show"});
@@ -206,7 +217,8 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                tests::Files files;
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls.empty());
             }
 
@@ -218,7 +230,8 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                tests::Files files;
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls.empty());
             }
 
@@ -230,8 +243,9 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
+                tests::Files files;
                 tool.started = false;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls == std::vector<std::string>{"thread"});
             }
 
@@ -243,8 +257,9 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
+                tests::Files files;
                 tool.prepared = false;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls == std::vector<std::string>{"thread", "button", "host", "geometry", "data"});
             }
 
@@ -257,7 +272,8 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                tests::Files files;
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls == std::vector<std::string>{"thread", "button"});
             }
 
@@ -270,7 +286,8 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                tests::Files files;
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls == std::vector<std::string>{"thread", "button", "host", "geometry", "data", "abort"});
             }
 
@@ -283,9 +300,25 @@ namespace burlak::core
                 Input input{calls};
                 Tool tool{calls};
                 tests::Host host;
-                CHECK_FALSE(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                tests::Files files;
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
                 CHECK(calls ==
                       std::vector<std::string>{"thread", "button", "host", "geometry", "data", "button", "abort"});
+            }
+
+            SUBCASE("show")
+            {
+                auto panels = readyPanels();
+                std::vector<std::string> calls;
+                Screen screen{calls};
+                Input input{calls};
+                Tool tool{calls};
+                tool.shown = false;
+                tests::Host host;
+                tests::Files files;
+                CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
+                CHECK(calls == std::vector<std::string>{"thread", "button", "host", "geometry", "data", "button",
+                                                        "release", "show"});
             }
         }
 
@@ -297,7 +330,8 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
 
             CHECK(session.effect({45, 5}, false) == Effect::None);
             CHECK(session.drop({45, 5}, false) == Effect::None);
@@ -331,7 +365,8 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
             arm(session, tool);
             REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
 
@@ -387,7 +422,8 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
             arm(session, tool);
             REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
 
@@ -441,7 +477,8 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
             arm(session, tool);
             REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
             screen.pointGeometry = CellGeometry{{1, 0}, 1, 1};
@@ -459,7 +496,8 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
             arm(session, tool);
             REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
             screen.window = std::nullopt;
@@ -477,7 +515,8 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
             arm(session, tool);
             REQUIRE(session.drop({45, 5}, true) == Effect::Move);
 
@@ -519,7 +558,8 @@ namespace burlak::core
             Screen screen{calls};
             Input input{calls};
             tests::Host host;
-            Session session{panels, host, screen, input};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
             session.prepare(DropContext{.press = {5, 5},
                                         .source = PanelSide::Active,
                                         .panels = panels.panels,
@@ -543,10 +583,159 @@ namespace burlak::core
             Input input{calls};
             Tool tool{calls};
             tests::Host host;
+            tests::Files files;
 
-            CHECK(Session{panels, host, screen, input}.begin(tool, DragStart{Button::Left, {5, 5}}));
+            CHECK(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
             REQUIRE(tool.context.has_value());
             CHECK_FALSE(tool.context->geometry.has_value());
+        }
+
+        TEST_CASE("plugin-panel extraction is requested by value and completed on Far synchro")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {
+                {.name = L"one.txt", .size = 19, .attributes = 2, .selected = true, .userData = {.value = 23}}};
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
+
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            CHECK(tool.needsExtraction);
+            CHECK(tool.paths == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1\\one.txt"});
+            REQUIRE(session.requestExtraction());
+            CHECK_FALSE(session.requestExtraction());
+            CHECK(host.synchros == 1);
+            CHECK(host.extractedPanels.empty());
+
+            const auto result = session.synchro();
+            REQUIRE(result.has_value());
+            CHECK(*result);
+            CHECK(host.extractedPanels == std::vector<PanelHandle>{11});
+            CHECK(host.extractedItems == std::vector<std::vector<Item>>{panels.items[0]});
+            CHECK(host.extractedModules[0].path == L"Archive.dll");
+            CHECK(host.extractionDirectories == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
+            CHECK(session.synchro() == std::nullopt);
+
+            session.cleanup();
+            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
+            session.cleanup();
+            CHECK(files.removed.size() == 1);
+        }
+
+        TEST_CASE("a plugin placeholder run is discarded when the drag thread cannot start")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tool.started = false;
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            CHECK_FALSE(Session{panels, host, screen, input, files}.begin(tool, DragStart{Button::Left, {5, 5}}));
+            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
+        }
+
+        TEST_CASE("a same-Far plugin-panel drop replays Far's copy without extracting placeholders")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {{.name = L"one.txt", .size = 19, .attributes = 2, .selected = true},
+                               {.name = L""},
+                               {.name = L"."},
+                               {.name = L".."}};
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
+            arm(session, tool);
+            REQUIRE(session.drop({45, 5}, false) == Effect::Copy);
+
+            SUBCASE("the selection is unchanged")
+            {
+                session.synchro();
+                CHECK(input.replays.size() == 1);
+                CHECK(host.extractedPanels.empty());
+            }
+            SUBCASE("the selection changed")
+            {
+                panels.items[0][0].size = 20;
+                session.synchro();
+                CHECK(input.replays.empty());
+                CHECK(host.extractedPanels.empty());
+                CHECK(host.messages.size() == 1);
+            }
+        }
+
+        TEST_CASE("plugin refusal cancels extraction with a one-line message naming its module")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            std::wstring modulePath;
+            SUBCASE("qualified module path")
+            {
+                modulePath = L"C:\\Plugins\\NetBox.dll";
+            }
+            SUBCASE("bare module name")
+            {
+                modulePath = L"NetBox.dll";
+            }
+            host.module = PluginModule{.path = modulePath, .instance = 42};
+            host.extractionResult = std::unexpected(Error::ForeignCallFailed);
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
+
+            CHECK_FALSE(session.requestExtraction());
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            REQUIRE(session.requestExtraction());
+            CHECK(session.synchro() == std::optional{false});
+            REQUIRE(host.messages.size() == 1);
+            REQUIRE(host.messages[0].size() == 1);
+            CHECK(host.messages[0][0].find(L"NetBox.dll") != std::wstring::npos);
+        }
+
+        TEST_CASE("real-path plans neither request extraction nor ask the tool to clean temporary files")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            tests::Files files;
+            Session session{panels, host, screen, input, files};
+
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            CHECK_FALSE(tool.needsExtraction);
+            CHECK_FALSE(session.requestExtraction());
+            session.cleanup();
+            CHECK(files.removed.empty());
         }
     }
 

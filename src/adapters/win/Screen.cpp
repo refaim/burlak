@@ -10,10 +10,10 @@ namespace burlak::adapters::win
     namespace
     {
 
-        const ScreenCalls systemCalls{GetCursorPos,          GetAsyncKeyState,  GetConsoleWindow,
-                                      GetForegroundWindow,   GetWindowRect,     GetClientRect,
-                                      IsWindowVisible,       GetWindowLongPtrW, GetStdHandle,
-                                      GetCurrentConsoleFont, ClientToScreen,    GetConsoleScreenBufferInfo};
+        const ScreenCalls systemCalls{
+            GetCursorPos,          GetAsyncKeyState, GetConsoleWindow,          GetForegroundWindow, WindowFromPoint,
+            GetWindowRect,         GetClientRect,    IsWindowVisible,           GetWindowLongPtrW,   GetStdHandle,
+            GetCurrentConsoleFont, ClientToScreen,   GetConsoleScreenBufferInfo};
 
         [[nodiscard]] std::optional<core::HostWindow> coveringWindow(core::NativeWindow native, core::Point point,
                                                                      const ScreenCalls &calls)
@@ -55,6 +55,11 @@ namespace burlak::adapters::win
     {
         constexpr std::array<int, 2> virtualKeys{VK_LBUTTON, VK_RBUTTON};
         return (calls_.getAsyncKeyState(virtualKeys.at(static_cast<std::size_t>(button))) & 0x8000) != 0;
+    }
+
+    core::NativeWindow Screen::windowAt(core::Point point)
+    {
+        return reinterpret_cast<core::NativeWindow>(calls_.windowFromPoint(POINT{point.x, point.y}));
     }
 
     std::optional<core::HostWindow> Screen::hostWindow()

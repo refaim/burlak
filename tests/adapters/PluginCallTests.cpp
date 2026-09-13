@@ -2,6 +2,8 @@
 
 #include <doctest/doctest.h>
 
+#include <windows.h>
+
 #include <filesystem>
 
 namespace burlak::adapters::far_api
@@ -14,8 +16,14 @@ namespace burlak::adapters::far_api
             const auto destination = std::filesystem::temp_directory_path() / L"burlak-getfiles-success";
             std::filesystem::remove_all(destination);
             const std::vector<core::Item> items{
-                {.name = L"one.txt"}, {.name = L"two.txt"}, {.name = L"folder", .directory = true}};
-            const core::PluginModule module{.path = GETFILES_SUCCESS_PATH, .instance = 42};
+                {.name = L"one.txt",
+                 .size = 19,
+                 .attributes = FILE_ATTRIBUTE_HIDDEN,
+                 .selected = true,
+                 .userData = {.value = 23}},
+                {.name = L"two.txt"},
+                {.name = L"folder", .attributes = FILE_ATTRIBUTE_DIRECTORY, .directory = true, .selected = true}};
+            const core::PluginModule module{.path = GETFILES_SUCCESS_PATH, .instance = 43};
 
             CHECK(callPluginGetFiles(7, items, module, destination.wstring()).has_value());
             CHECK(std::filesystem::exists(destination / L"one.txt"));

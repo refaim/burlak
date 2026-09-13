@@ -54,6 +54,13 @@ namespace burlak::tests
       public:
         int synchros{};
         std::vector<std::vector<std::wstring>> messages;
+        std::optional<core::PluginModule> module;
+        std::optional<core::Guid> requestedOwner;
+        std::expected<void, core::Error> extractionResult{};
+        std::vector<core::PanelHandle> extractedPanels;
+        std::vector<std::vector<core::Item>> extractedItems;
+        std::vector<core::PluginModule> extractedModules;
+        std::vector<std::wstring> extractionDirectories;
 
         void postSynchro() override
         {
@@ -65,15 +72,58 @@ namespace burlak::tests
             messages.emplace_back(lines.begin(), lines.end());
         }
 
-        [[nodiscard]] std::optional<core::PluginModule> pluginModule(const core::Guid &) override
+        [[nodiscard]] std::optional<core::PluginModule> pluginModule(const core::Guid &owner) override
         {
-            return std::nullopt;
+            requestedOwner = owner;
+            return module;
         }
 
-        [[nodiscard]] std::expected<void, core::Error> extract(core::PanelHandle, std::span<const core::Item>,
-                                                               const core::PluginModule &, std::wstring_view) override
+        [[nodiscard]] std::expected<void, core::Error> extract(core::PanelHandle panel,
+                                                               std::span<const core::Item> items,
+                                                               const core::PluginModule &plugin,
+                                                               std::wstring_view directory) override
         {
+            extractedPanels.push_back(panel);
+            extractedItems.emplace_back(items.begin(), items.end());
+            extractedModules.push_back(plugin);
+            extractionDirectories.emplace_back(directory);
+            return extractionResult;
+        }
+    };
+
+    class Files final : public core::IFiles
+    {
+      public:
+        std::expected<std::wstring, core::Error> directory{L"C:\\Temp\\Burlak\\7-1"};
+        std::optional<std::wstring> rejectedName;
+        std::vector<std::pair<std::wstring, bool>> placeholders;
+        std::vector<std::wstring> removed;
+        int sweeps{};
+
+        [[nodiscard]] std::expected<std::wstring, core::Error> runDirectory() override
+        {
+            return directory;
+        }
+
+        [[nodiscard]] std::expected<std::wstring, core::Error> placeholder(std::wstring_view name,
+                                                                           bool isDirectory) override
+        {
+            placeholders.emplace_back(name, isDirectory);
+            if (rejectedName && name == *rejectedName) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            return *directory + L"\\" + std::wstring{name};
+        }
+
+        [[nodiscard]] std::expected<void, core::Error> removeTree(std::wstring_view path) override
+        {
+            removed.emplace_back(path);
             return {};
+        }
+
+        void sweep() override
+        {
+            ++sweeps;
         }
     };
 

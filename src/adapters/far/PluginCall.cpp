@@ -48,6 +48,12 @@ namespace burlak::adapters::far_api
 
     } // namespace
 
+    bool hasGetFilesExport(const core::PluginModule &module)
+    {
+        UniqueModule loaded{LoadLibraryW(module.path.c_str())};
+        return loaded && GetProcAddress(loaded.get(), "GetFilesW") != nullptr;
+    }
+
     std::expected<void, core::Error> callPluginGetFiles(core::PanelHandle panel, std::span<const core::Item> items,
                                                         const core::PluginModule &module, std::wstring_view destination)
     {
@@ -61,12 +67,15 @@ namespace burlak::adapters::far_api
             return std::unexpected(core::Error::ForeignCallFailed);
         }
 
+        // Far passes CreatePluginItemList's FileName, FileAttributes, Flags, UserData and FileSize unchanged
+        // through PluginManager::GetFiles (Far sources: far/filelist.cpp, FileList::CreatePluginItemList;
+        // far/plugins.cpp, PluginManager::GetFiles).
         std::vector<PluginPanelItem> foreignItems(items.size());
         for (std::size_t index = 0; index < items.size(); ++index) {
             foreignItems[index].FileName = items[index].name.c_str();
             foreignItems[index].FileSize = items[index].size;
-            foreignItems[index].FileAttributes =
-                items[index].directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+            foreignItems[index].FileAttributes = items[index].attributes;
+            foreignItems[index].Flags = items[index].selected ? PPIF_SELECTED : PPIF_NONE;
             foreignItems[index].UserData.Data = reinterpret_cast<void *>(items[index].userData.value);
         }
 

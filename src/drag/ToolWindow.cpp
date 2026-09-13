@@ -63,6 +63,7 @@ namespace burlak::drag
         {
             std::span<const std::wstring> paths;
             core::Button button{core::Button::Left};
+            bool needsExtraction{};
             core::DropContext context;
         };
 
@@ -72,9 +73,9 @@ namespace burlak::drag
     {
       public:
         State(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
-              const ToolWindowCalls &calls)
-            : screen_{screen}, input_{input}, shell_{shell}, dropSession_{dropSession}, calls_{calls},
-              dropTarget_{dropSession_}
+              core::IExtraction &extraction, const ToolWindowCalls &calls)
+            : screen_{screen}, input_{input}, shell_{shell}, dropSession_{dropSession}, extraction_{extraction},
+              calls_{calls}, dropTarget_{dropSession_}
         {
         }
 
@@ -105,11 +106,12 @@ namespace burlak::drag
             threadId_ = 0;
         }
 
-        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button, core::DropContext context)
+        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button, bool needsExtraction,
+                                   core::DropContext context)
         {
             // SendMessage is synchronous across these threads, so the path view remains alive while the
             // context value transfers the Far-thread snapshot before any hover or drop can read it.
-            const PreparePayload payload{paths, button, std::move(context)};
+            const PreparePayload payload{paths, button, needsExtraction, std::move(context)};
             return SendMessageW(windowHandle(), prepareDragMessage, 0, reinterpret_cast<LPARAM>(&payload)) != 0;
         }
 
@@ -178,7 +180,7 @@ namespace burlak::drag
                 static_cast<void>(DispatchMessageW(&message));
             }
 
-            data_.reset();
+            clearDrag();
             registration.reset();
             ownedWindow.reset();
             window_.store(0);
@@ -205,7 +207,7 @@ namespace burlak::drag
             switch (message) {
             case prepareDragMessage: {
                 const auto &payload = *reinterpret_cast<const PreparePayload *>(number);
-                data_.reset();
+                clearDrag();
                 auto prepared = shell_.makeDataObject(payload.paths);
                 // Far's eventual copy consumes its live selection, so every selected path must also be present in
                 // the OLE payload (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
@@ -213,6 +215,7 @@ namespace burlak::drag
                     return 0;
                 }
                 button_ = payload.button;
+                needsExtraction_ = payload.needsExtraction;
                 dropSession_.prepare(payload.context);
                 data_ = std::move(prepared->data);
                 return 1;
@@ -220,7 +223,7 @@ namespace burlak::drag
             case startDragMessage:
                 return showAndArm(window);
             case abortDragMessage:
-                data_.reset();
+                clearDrag();
                 return 0;
             case hasDataMessage:
                 return data_ ? 1 : 0;
@@ -248,7 +251,7 @@ namespace burlak::drag
         {
             const auto host = screen_.hostWindow();
             if (!data_ || !host) {
-                data_.reset();
+                clearDrag();
                 return 0;
             }
 
@@ -262,7 +265,7 @@ namespace burlak::drag
                                 host->rect.right - host->rect.left, host->rect.bottom - host->rect.top,
                                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
             if (!calls_.isWindowVisible(window)) {
-                data_.reset();
+                clearDrag();
                 return 0;
             }
             calls_.setCapture(window);
@@ -278,13 +281,17 @@ namespace burlak::drag
             if (!data_ || active_.exchange(true)) {
                 return;
             }
-            DragSource source{releasePolicy_, button_};
+            DragSource source{
+                releasePolicy_,  screen_, extraction_, button_, reinterpret_cast<core::NativeWindow>(window),
+                needsExtraction_};
+            // A target may report Move after taking the extracted placeholders; GetFilesW is always non-moving,
+            // so the archive or remote panel remains untouched.
             static_cast<void>(shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
                                              reinterpret_cast<std::uintptr_t>(&source)));
             active_.store(false);
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);
-            data_.reset();
+            clearDrag();
         }
 
         void disarm(HWND window)
@@ -295,33 +302,43 @@ namespace burlak::drag
             }
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);
+            clearDrag();
+        }
+
+        void clearDrag()
+        {
             data_.reset();
+            if (std::exchange(needsExtraction_, false)) {
+                extraction_.cleanup();
+            }
         }
 
         core::IScreen &screen_;
         core::IInput &input_;
         core::IShell &shell_;
         core::IDropSession &dropSession_;
+        core::IExtraction &extraction_;
         const ToolWindowCalls &calls_;
         UniqueHandle thread_;
         DWORD threadId_{};
         std::atomic<core::NativeWindow> window_{};
         std::atomic<bool> active_{};
         core::Button button_{core::Button::Left};
+        bool needsExtraction_{};
         std::unique_ptr<core::IShell::DragData> data_;
         core::ReleasePolicy releasePolicy_;
         DropTarget dropTarget_;
     };
 
     ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           core::IDropSession &dropSession)
-        : state_{std::make_unique<State>(screen, input, shell, dropSession, systemCalls)}
+                           core::IDropSession &dropSession, core::IExtraction &extraction)
+        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, systemCalls)}
     {
     }
 
     ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           core::IDropSession &dropSession, const ToolWindowCalls &calls)
-        : state_{std::make_unique<State>(screen, input, shell, dropSession, calls)}
+                           core::IDropSession &dropSession, core::IExtraction &extraction, const ToolWindowCalls &calls)
+        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, calls)}
     {
     }
 
@@ -335,9 +352,10 @@ namespace burlak::drag
         return state_->start();
     }
 
-    bool ToolWindow::prepare(std::span<const std::wstring> paths, core::Button button, core::DropContext context)
+    bool ToolWindow::prepare(std::span<const std::wstring> paths, core::Button button, bool needsExtraction,
+                             core::DropContext context)
     {
-        return state_->prepare(paths, button, context);
+        return state_->prepare(paths, button, needsExtraction, context);
     }
 
     bool ToolWindow::showAndArm()
