@@ -106,8 +106,7 @@ namespace burlak::adapters::shell
         TEST_CASE("a real shell data object carries the requested file")
         {
             REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
-            const auto root = std::filesystem::canonical(std::filesystem::temp_directory_path()) /
-                              L"burlak-shell-data";
+            const auto root = std::filesystem::canonical(std::filesystem::temp_directory_path()) / L"burlak-shell-data";
             std::filesystem::create_directories(root);
             const auto file = root / L"one.txt";
             {
