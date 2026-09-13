@@ -33,9 +33,25 @@ namespace burlak::adapters::win
             return outcomes[static_cast<std::size_t>(created)];
         }
 
+        [[nodiscard]] std::filesystem::path systemTempDirectory(std::error_code &error)
+        {
+            return std::filesystem::temp_directory_path(error);
+        }
+
+        [[nodiscard]] std::expected<std::filesystem::path, core::Error> temporaryRoot(
+            TempDirectoryProbe tempDirectoryProbe)
+        {
+            std::error_code error;
+            const auto directory = tempDirectoryProbe(error);
+            if (error || directory.empty()) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            return directory / L"Burlak";
+        }
+
     } // namespace
 
-    Files::Files() : Files{std::filesystem::temp_directory_path() / L"Burlak", GetCurrentProcessId(), processAlive}
+    Files::Files() : Files{GetCurrentProcessId(), processAlive, systemTempDirectory}
     {
     }
 
@@ -44,8 +60,16 @@ namespace burlak::adapters::win
     {
     }
 
+    Files::Files(std::uint32_t process, ProcessProbe processProbe, TempDirectoryProbe tempDirectoryProbe)
+        : Files{temporaryRoot(tempDirectoryProbe).value_or(std::filesystem::path{}), process, processProbe}
+    {
+    }
+
     std::expected<std::wstring, core::Error> Files::runDirectory()
     {
+        if (root_.empty()) {
+            return std::unexpected(core::Error::Unavailable);
+        }
         std::error_code error;
         static_cast<void>(std::filesystem::create_directories(root_, error));
         if (error) {
@@ -97,6 +121,9 @@ namespace burlak::adapters::win
 
     void Files::sweep()
     {
+        if (root_.empty()) {
+            return;
+        }
         std::error_code error;
         std::filesystem::directory_iterator entries{root_, error};
         if (error) {

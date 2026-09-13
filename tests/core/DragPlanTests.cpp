@@ -68,6 +68,7 @@ namespace burlak::core
             panels.items[0] = {
                 {.name = L"one.txt", .size = 19, .attributes = 2, .selected = true, .userData = {.value = 23}},
                 {.name = L"folder", .attributes = 16, .directory = true, .selected = true}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             tests::Host host;
             host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
             tests::Files files;
@@ -95,6 +96,7 @@ namespace burlak::core
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
             panels.items[0] = {{.name = L"one.txt"}, {.name = L"two.txt"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             tests::Host host;
             tests::Files files;
 
@@ -111,7 +113,25 @@ namespace burlak::core
             CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
 
             panels.items[0] = {{.name = L"."}, {.name = L".."}, {.name = L""}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             CHECK(DragPlan{panels, host, files}.build().error() == Error::NoSelection);
+        }
+
+        TEST_CASE("plugin plans reject an incomplete selected-item snapshot")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->selectedItems = 2;
+            panels.items[0] = {{.name = L"one.txt"}};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            CHECK(DragPlan{panels, host, files}.build() == std::unexpected(Error::Unavailable));
+            CHECK_FALSE(host.requestedOwner.has_value());
+            CHECK(files.placeholders.empty());
         }
 
         TEST_CASE("plugin plans reject case-insensitive duplicate placeholder names before creating a run")
@@ -122,6 +142,7 @@ namespace burlak::core
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
             panels.items[0] = {{.name = L"Report.txt"}, {.name = L"REPORT.TXT"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             tests::Host host;
             host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
             tests::Files files;

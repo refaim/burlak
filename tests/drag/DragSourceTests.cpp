@@ -3,6 +3,9 @@
 
 #include <doctest/doctest.h>
 
+#include <atomic>
+#include <thread>
+
 namespace burlak::drag
 {
 
@@ -123,6 +126,22 @@ namespace burlak::drag
             }
         };
 
+        class PostedExtractionHost final : public core::IExtractionSession
+        {
+          public:
+            std::atomic<int> requests{};
+
+            [[nodiscard]] bool requestExtraction() override
+            {
+                ++requests;
+                return true;
+            }
+
+            void cleanup() override
+            {
+            }
+        };
+
         ExtractionWait *activeWait{};
         bool waitOutcome{};
         bool scopedOutcome{};
@@ -163,6 +182,15 @@ namespace burlak::drag
             }
             *index = 0;
             return WaitForSingleObject(handles[0], 0) == WAIT_OBJECT_0 ? S_OK : E_FAIL;
+        }
+
+        HRESULT WINAPI waitForShutdown(DWORD, DWORD, ULONG, LPHANDLE handles, LPDWORD index)
+        {
+            if (WaitForSingleObject(handles[0], INFINITE) != WAIT_OBJECT_0) {
+                return E_FAIL;
+            }
+            *index = 0;
+            return S_OK;
         }
 
     } // namespace
@@ -282,6 +310,27 @@ namespace burlak::drag
 
             CHECK_FALSE(extraction.extract());
             CHECK(host.requests == 1);
+        }
+
+        TEST_CASE("shutdown after a posted extraction request wakes the tool-thread wait")
+        {
+            PostedExtractionHost host;
+            const ExtractionWaitCalls calls{createEvent, ResetEvent, SetEvent, CloseHandle, waitForShutdown};
+            ExtractionWait extraction{host, calls};
+            bool outcome{true};
+            std::jthread toolThread{[&] { outcome = extraction.extract(); }};
+
+            for (int attempt = 0; attempt != 1000 && host.requests.load() == 0; ++attempt) {
+                Sleep(1);
+            }
+            const bool posted = host.requests.load() == 1;
+            extraction.cancel();
+            toolThread.join();
+
+            REQUIRE(posted);
+            CHECK_FALSE(outcome);
+            CHECK_FALSE(extraction.extract());
+            CHECK(host.requests.load() == 1);
         }
 
         TEST_CASE("a completed Far-thread scope signals exactly the stored extraction outcome")

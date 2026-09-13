@@ -655,11 +655,7 @@ TEST_SUITE("e2e")
         ProcessSynchroEventInfo event{};
         event.Event = SE_COMMONSYNCHRO;
         CHECK(synchro(&event) == 0);
-        if (!pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; })) {
-            button.release();
-            std::fputs("SKIP: the desktop did not expose the tool window's injected left-button press\n", stderr);
-            return;
-        }
+        REQUIRE(pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }));
 
         const POINT targetPoint = inside(targetWindowGuard.get());
         REQUIRE(SetCursorPos(targetPoint.x, targetPoint.y) != FALSE);

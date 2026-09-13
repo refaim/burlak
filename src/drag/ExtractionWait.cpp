@@ -34,9 +34,13 @@ namespace burlak::drag
             return false;
         }
         succeeded_.store(false);
-        waiting_.store(true);
+        auto idle = State::Idle;
+        if (!state_.compare_exchange_strong(idle, State::Waiting)) {
+            return false;
+        }
         if (!session_.requestExtraction()) {
-            waiting_.store(false);
+            auto waiting = State::Waiting;
+            static_cast<void>(state_.compare_exchange_strong(waiting, State::Idle));
             return false;
         }
 
@@ -47,7 +51,8 @@ namespace burlak::drag
             static_cast<DWORD>(COWAIT_DISPATCH_CALLS) | static_cast<DWORD>(COWAIT_DISPATCH_WINDOW_MESSAGES);
         const HRESULT status =
             calls_.coWait(pumpFlags, INFINITE, static_cast<ULONG>(handles.size()), handles.data(), &signalled);
-        waiting_.store(false);
+        auto waiting = State::Waiting;
+        static_cast<void>(state_.compare_exchange_strong(waiting, State::Idle));
         return status == S_OK && signalled == 0 && succeeded_.load();
     }
 
@@ -56,13 +61,25 @@ namespace burlak::drag
         session_.cleanup();
     }
 
+    void ExtractionWait::cancel() noexcept
+    {
+        if (state_.exchange(State::Cancelled) != State::Waiting) {
+            return;
+        }
+        succeeded_.store(false);
+        // Teardown owns this signal and sends it before joining the tool thread, closing the race where the
+        // unbounded wait has posted synchro work that Far will no longer dispatch.
+        static_cast<void>(calls_.setEvent(event_.get()));
+    }
+
     void ExtractionWait::complete(bool succeeded) noexcept
     {
-        if (!waiting_.exchange(false)) {
+        auto waiting = State::Waiting;
+        if (!state_.compare_exchange_strong(waiting, State::Idle)) {
             return;
         }
         succeeded_.store(succeeded);
-        // Far's ProcessSynchroEventW thread is the sole signaler, after it has stored the extraction outcome.
+        // Far's synchro thread owns this signal and sends it after publishing the extraction outcome.
         static_cast<void>(calls_.setEvent(event_.get()));
     }
 

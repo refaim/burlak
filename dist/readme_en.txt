@@ -10,7 +10,8 @@ How to use:
   Drop onto Far's other panel to copy there; hold Shift to move instead,
   including to or from plugin panels.
   Files and selections can also be dragged out of archive, FTP/SFTP, and
-  other plugin panels; extraction starts only after the mouse button is released.
+  other plugin panels; after release they are extracted as copies for the target,
+  so these plugin-panel drags do not offer shortcuts.
 
   Drag with the right button if you want the target to ask what to do:
   Explorer will offer to copy, move or make a shortcut. Telegram and the

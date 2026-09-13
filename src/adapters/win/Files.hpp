@@ -4,17 +4,20 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <system_error>
 
 namespace burlak::adapters::win
 {
 
     using ProcessProbe = bool (*)(std::uint32_t process);
+    using TempDirectoryProbe = std::filesystem::path (*)(std::error_code &error);
 
     class Files final : public core::IFiles
     {
       public:
         Files();
         Files(std::filesystem::path root, std::uint32_t process, ProcessProbe processProbe);
+        Files(std::uint32_t process, ProcessProbe processProbe, TempDirectoryProbe tempDirectoryProbe);
 
         [[nodiscard]] std::expected<std::wstring, core::Error> runDirectory() override;
         [[nodiscard]] std::expected<std::wstring, core::Error> placeholder(std::wstring_view name,

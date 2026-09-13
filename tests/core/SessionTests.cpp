@@ -601,6 +601,7 @@ namespace burlak::core
                 {.name = L""},
                 {.name = L"."},
                 {.name = L".."}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -642,6 +643,7 @@ namespace burlak::core
             panels.panels[0]->realNames = false;
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -665,6 +667,7 @@ namespace burlak::core
                                {.name = L""},
                                {.name = L"."},
                                {.name = L".."}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -690,6 +693,22 @@ namespace burlak::core
                 CHECK(host.extractedPanels.empty());
                 CHECK(host.messages.size() == 1);
             }
+            SUBCASE("the selected-item snapshot is incomplete")
+            {
+                panels.panels[0]->selectedItems = panels.items[0].size() + 1;
+                session.synchro();
+                CHECK(input.replays.empty());
+                CHECK(host.extractedPanels.empty());
+                CHECK(host.messages.size() == 1);
+            }
+            SUBCASE("the source panel disappeared")
+            {
+                panels.panels[0].reset();
+                session.synchro();
+                CHECK(input.replays.empty());
+                CHECK(host.extractedPanels.empty());
+                CHECK(host.messages.size() == 1);
+            }
         }
 
         TEST_CASE("plugin refusal cancels extraction with a one-line message naming its module")
@@ -698,6 +717,7 @@ namespace burlak::core
             panels.panels[0]->realNames = false;
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -732,6 +752,7 @@ namespace burlak::core
             panels.panels[0]->realNames = false;
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -757,6 +778,7 @@ namespace burlak::core
             panels.panels[0]->plugin = true;
             panels.panels[0]->owner[0] = std::byte{1};
             panels.items[0] = {{.name = L"one.txt", .size = 19, .selected = true}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
             std::vector<std::string> calls;
             Screen screen{calls};
             Input input{calls};
@@ -807,6 +829,10 @@ namespace burlak::core
             SUBCASE("a pointer-backed selection field changed")
             {
                 panels.items[0][0].identity = {std::byte{1}};
+            }
+            SUBCASE("the selected-item snapshot became incomplete")
+            {
+                panels.panels[0]->selectedItems = 2;
             }
             SUBCASE("owner module disappeared")
             {

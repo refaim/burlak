@@ -44,6 +44,7 @@ namespace burlak::plugin
 
         void stop()
         {
+            extraction_.cancel();
             tool_.stop();
             files_.sweep();
         }

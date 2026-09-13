@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 
 namespace burlak::drag
@@ -27,10 +28,18 @@ namespace burlak::drag
 
         [[nodiscard]] bool extract() override;
         void cleanup() override;
+        void cancel() noexcept;
         void complete(bool succeeded) noexcept;
         void complete(std::optional<bool> succeeded) noexcept;
 
       private:
+        enum class State : std::uint8_t
+        {
+            Idle,
+            Waiting,
+            Cancelled,
+        };
+
         struct EventHandle
         {
             decltype(&CloseHandle) close;
@@ -43,7 +52,7 @@ namespace burlak::drag
         const ExtractionWaitCalls &calls_;
         UniqueEvent event_;
         std::atomic<bool> succeeded_{};
-        std::atomic<bool> waiting_{};
+        std::atomic<State> state_{State::Idle};
     };
 
     class ExtractionCompleter final

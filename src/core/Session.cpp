@@ -44,9 +44,12 @@ namespace burlak::core
                 return false;
             }
             auto items = panels.selectedItems(PanelSide::Active);
+            const auto selectedCount =
+                panel.transform([](const PanelInfo &current) { return current.selectedItems; }).value_or(0);
+            const bool completeSnapshot = items.size() == selectedCount;
             std::erase_if(
                 items, [](const Item &item) { return item.name.empty() || item.name == L"." || item.name == L".."; });
-            if (items != recipe.items) {
+            if (!completeSnapshot || items != recipe.items) {
                 report(host, L"Plugin panel changed during the drag; the drop was cancelled.");
                 return false;
             }
@@ -245,19 +248,24 @@ namespace burlak::core
         std::vector<std::wstring> freshPaths;
         if (extractionPlan) {
             auto items = panels_.selectedItems(PanelSide::Active);
+            const bool completeSnapshot =
+                panels[0]
+                    .transform([&](const PanelInfo &panel) { return items.size() == panel.selectedItems; })
+                    .value_or(false);
             std::erase_if(
                 items, [](const Item &item) { return item.name.empty() || item.name == L"." || item.name == L".."; });
             bool sameItems{};
             {
                 const std::lock_guard lock{pendingMutex_};
-                sameItems =
-                    plan_
-                        .transform([&](const Plan &stored) {
-                            return stored.extraction
-                                .transform([&](const ExtractionRecipe &recipe) { return items == recipe.items; })
+                sameItems = plan_
+                                .transform([&](const Plan &stored) {
+                                    return stored.extraction
+                                        .transform([&](const ExtractionRecipe &recipe) {
+                                            return completeSnapshot && items == recipe.items;
+                                        })
+                                        .value_or(false);
+                                })
                                 .value_or(false);
-                        })
-                        .value_or(false);
             }
             if (sameItems) {
                 freshPaths = std::move(originalPaths);

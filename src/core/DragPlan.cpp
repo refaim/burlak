@@ -37,6 +37,9 @@ namespace burlak::core
                 return std::unexpected(Error::NoRealNames);
             }
             auto items = panels_.selectedItems(PanelSide::Active);
+            if (items.size() != panel->selectedItems) {
+                return std::unexpected(Error::Unavailable);
+            }
             std::erase_if(items, [](const Item &item) { return !usable(item); });
             if (items.empty()) {
                 return std::unexpected(Error::NoSelection);

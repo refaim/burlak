@@ -54,6 +54,24 @@ namespace burlak::adapters::win
             return std::filesystem::temp_directory_path() / (L"burlak-files-" + std::to_wstring(GetCurrentProcessId()));
         }
 
+        std::filesystem::path fakeTempDirectory(std::error_code &error)
+        {
+            error.clear();
+            return testRoot();
+        }
+
+        std::filesystem::path unavailableTempDirectory(std::error_code &error)
+        {
+            error = std::make_error_code(std::errc::permission_denied);
+            return {};
+        }
+
+        std::filesystem::path emptyTempDirectory(std::error_code &error)
+        {
+            error.clear();
+            return {};
+        }
+
     } // namespace
 
     TEST_SUITE("files adapter")
@@ -152,6 +170,25 @@ namespace burlak::adapters::win
             std::filesystem::remove(root.path());
             Files absent{root.path(), 700, fakeProcessAlive};
             absent.sweep();
+        }
+
+        TEST_CASE("temporary-directory discovery never throws and its failure disables only run creation")
+        {
+            CHECK_NOTHROW(Files{});
+
+            DirectoryGuard root{testRoot()};
+            Files resolved{700, fakeProcessAlive, fakeTempDirectory};
+            const auto directory = resolved.runDirectory();
+            REQUIRE(directory.has_value());
+            CHECK(std::filesystem::path{*directory}.parent_path() == root.path() / L"Burlak");
+
+            Files unavailable{700, fakeProcessAlive, unavailableTempDirectory};
+            CHECK(unavailable.runDirectory() == std::unexpected(core::Error::Unavailable));
+            unavailable.sweep();
+
+            Files empty{700, fakeProcessAlive, emptyTempDirectory};
+            CHECK(empty.runDirectory() == std::unexpected(core::Error::Unavailable));
+            empty.sweep();
         }
 
         TEST_CASE("the process probe recognizes this process and a nonexistent process")
