@@ -1,0 +1,8 @@
+# Vendored Far headers are immutable and expose C ABI structs without C++ constructors.
+uninitMemberVarNoCtor:*sdk/plugin.hpp
+
+# The same immutable Far C ABI union is also reported under cppcheck's constructor-specific id.
+uninitMemberVar:*sdk/plugin.hpp
+
+# doctest is a vendored single-header test framework and is not first-party code.
+*:*/third_party/doctest/*
