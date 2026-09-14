@@ -625,6 +625,39 @@ namespace burlak::drag
             tool.stop();
         }
 
+        TEST_CASE("private tool messages ignore foreign pointer-shaped parameters")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
+            Input input;
+            Shell shell;
+            DropSession dropSession;
+            Extraction extraction;
+            Peers peers;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            constexpr LPARAM garbage = 1;
+
+            CHECK(SendMessageW(window, WM_USER + 0x101, 0, garbage) == 0);
+            CHECK_FALSE(tool.hasData());
+
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
+            CHECK(SendMessageW(window, WM_USER + 0x102, 0, garbage) == 0);
+            CHECK(input.presses.empty());
+            CHECK(SendMessageW(window, WM_USER + 0x104, 0, garbage) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x103, 0, garbage) == 0);
+            CHECK(tool.hasData());
+
+            tool.abort();
+            CHECK_FALSE(tool.hasData());
+            CHECK(IsWindow(window) != FALSE);
+            tool.stop();
+        }
+
         TEST_CASE("a successful plugin-panel peer handoff retains extracted files for the receiving synchro")
         {
             resetHeadlessWindow();

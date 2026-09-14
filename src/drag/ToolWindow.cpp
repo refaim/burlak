@@ -9,9 +9,12 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace burlak::drag
 {
@@ -63,7 +66,7 @@ namespace burlak::drag
 
         struct PreparePayload
         {
-            std::span<const std::wstring> paths;
+            std::vector<std::wstring> paths;
             core::Button button{core::Button::Left};
             bool needsExtraction{};
             core::DropContext context;
@@ -145,20 +148,27 @@ namespace burlak::drag
         [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button, bool needsExtraction,
                                    core::DropContext context)
         {
-            // SendMessage is synchronous across these threads, so the path view remains alive while the
-            // context value transfers the Far-thread snapshot before any hover or drop can read it.
-            const PreparePayload payload{paths, button, needsExtraction, std::move(context)};
-            return SendMessageW(windowHandle(), prepareDragMessage, 0, reinterpret_cast<LPARAM>(&payload)) != 0;
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                preparePayload_.emplace(PreparePayload{std::vector<std::wstring>{paths.begin(), paths.end()}, button,
+                                                       needsExtraction, std::move(context)});
+            }
+            const auto result = SendMessageW(windowHandle(), prepareDragMessage, 0, 0);
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                preparePayload_.reset();
+            }
+            return result != 0;
         }
 
         [[nodiscard]] bool showAndArm()
         {
-            return SendMessageW(windowHandle(), startDragMessage, 0, 0) != 0;
+            return sendPrivateMessage(startDragMessage, startRequested_) != 0;
         }
 
         void abort()
         {
-            static_cast<void>(SendMessageW(windowHandle(), abortDragMessage, 0, 0));
+            static_cast<void>(sendPrivateMessage(abortDragMessage, abortRequested_));
         }
 
         [[nodiscard]] bool active() const
@@ -173,13 +183,39 @@ namespace burlak::drag
 
         [[nodiscard]] bool hasData() const
         {
-            return SendMessageW(windowHandle(), hasDataMessage, 0, 0) != 0;
+            return sendPrivateMessage(hasDataMessage, hasDataRequested_) != 0;
         }
 
       private:
         [[nodiscard]] HWND windowHandle() const
         {
             return reinterpret_cast<HWND>(window_.load());
+        }
+
+        [[nodiscard]] LRESULT sendPrivateMessage(UINT message, bool &request) const
+        {
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                request = true;
+            }
+            const auto result = SendMessageW(windowHandle(), message, 0, 0);
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                request = false;
+            }
+            return result;
+        }
+
+        [[nodiscard]] bool takePrivateRequest(bool &request)
+        {
+            const std::lock_guard lock{privateMessageMutex_};
+            return std::exchange(request, false);
+        }
+
+        [[nodiscard]] std::optional<PreparePayload> takePreparePayload()
+        {
+            const std::lock_guard lock{privateMessageMutex_};
+            return std::exchange(preparePayload_, std::nullopt);
         }
 
         static DWORD WINAPI threadEntry(void *parameter)
@@ -292,20 +328,25 @@ namespace burlak::drag
             }
             switch (message) {
             case prepareDragMessage: {
-                const auto &payload = *reinterpret_cast<const PreparePayload *>(number);
-                clearDrag();
-                auto prepared = shell_.makeDataObject(payload.paths);
-                // Far's eventual copy consumes its live selection, so every selected path must also be present in
-                // the OLE payload (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
-                if (!prepared || !core::allPathsAdvertised(payload.paths.size(), prepared->parsedPaths)) {
+                auto payload = takePreparePayload();
+                // Predictable WM_USER messages can cross a same-integrity process boundary without pointer
+                // marshalling. Only a request placed in this process's mutex-protected slot is actionable.
+                if (!payload) {
                     return 0;
                 }
-                button_ = payload.button;
-                needsExtraction_ = payload.needsExtraction;
-                paths_.assign(payload.paths.begin(), payload.paths.end());
-                ownHost_ = payload.context.host.transform([](const core::HostWindow &host) { return host.handle; })
+                clearDrag();
+                auto prepared = shell_.makeDataObject(payload->paths);
+                // Far's eventual copy consumes its live selection, so every selected path must also be present in
+                // the OLE payload (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
+                if (!prepared || !core::allPathsAdvertised(payload->paths.size(), prepared->parsedPaths)) {
+                    return 0;
+                }
+                button_ = payload->button;
+                needsExtraction_ = payload->needsExtraction;
+                paths_ = std::move(payload->paths);
+                ownHost_ = payload->context.host.transform([](const core::HostWindow &host) { return host.handle; })
                                .value_or(0);
-                dropSession_.prepare(payload.context);
+                dropSession_.prepare(std::move(payload->context));
                 data_ = std::move(prepared->data);
                 if (const auto nonce = peers_.newNonce()) {
                     sourceNonce_ = *nonce;
@@ -315,11 +356,20 @@ namespace burlak::drag
                 return 1;
             }
             case startDragMessage:
+                if (!takePrivateRequest(startRequested_)) {
+                    return 0;
+                }
                 return showAndArm(window);
             case abortDragMessage:
+                if (!takePrivateRequest(abortRequested_)) {
+                    return 0;
+                }
                 clearDrag();
                 return 0;
             case hasDataMessage:
+                if (!takePrivateRequest(hasDataRequested_)) {
+                    return 0;
+                }
                 return data_ ? 1 : 0;
             case WM_LBUTTONDOWN:
             case WM_RBUTTONDOWN:
@@ -439,6 +489,11 @@ namespace burlak::drag
         std::atomic<core::NativeWindow> window_{};
         std::atomic<bool> active_{};
         std::atomic<bool> stopRequested_{};
+        mutable std::mutex privateMessageMutex_;
+        std::optional<PreparePayload> preparePayload_;
+        mutable bool startRequested_{};
+        mutable bool abortRequested_{};
+        mutable bool hasDataRequested_{};
         core::Button button_{core::Button::Left};
         bool needsExtraction_{};
         core::NativeWindow ownHost_{};
