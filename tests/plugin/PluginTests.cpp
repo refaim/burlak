@@ -58,7 +58,7 @@ namespace
         void endAnnouncement(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t) override
         {
         }
-        [[nodiscard]] bool reply(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t,
+        [[nodiscard]] bool reply(burlak::core::PeerIdentity, burlak::core::NativeWindow, std::uint64_t,
                                  std::uint64_t) override
         {
             return true;

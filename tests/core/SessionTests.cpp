@@ -953,6 +953,8 @@ namespace burlak::core
             tests::Shell shell;
             Session session{panels, host, screen, input, files, shell};
             Point point{5, 5};
+            files.adoptedResult = core::AdoptedPeerPaths{.paths = {L"C:\\Temp\\Burlak\\8-peer-2\\one.txt"},
+                                                         .cleanupDirectory = L"C:\\Temp\\Burlak\\8-peer-2"};
 
             SUBCASE("host unavailable")
             {
@@ -995,6 +997,8 @@ namespace burlak::core
             REQUIRE(host.messages.size() == 1);
             REQUIRE(host.messages[0].size() == 1);
             CHECK(host.messages[0][0].starts_with(L"Burlak: drop here is not possible: "));
+            CHECK(files.peerProcesses == std::vector<std::uint32_t>{7});
+            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\8-peer-2"});
         }
 
         TEST_CASE("the pending peer-drop queue rejects overflow instead of discarding an accepted drop")

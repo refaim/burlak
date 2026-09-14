@@ -674,7 +674,9 @@ TEST_SUITE("e2e")
         mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
         if (!pumpUntil([&target] { return target.entered(); })) {
             button.release();
-            std::fputs("SKIP: OLE did not notice the cursor entering the drop target\n", stderr);
+            // Desktop availability is a registration-time skip; a validated runner can still fail to wake OLE,
+            // which is an observed desktop outcome and therefore remains a visible runtime warning.
+            WARN_MESSAGE(false, "OLE did not notice the cursor entering the drop target");
             return;
         }
         CHECK(target.placeholdersReady());
@@ -738,7 +740,9 @@ TEST_SUITE("e2e")
                                                                  burlak::adapters::shell::systemShellCalls());
         cursorWake.join();
         if (!target.entered()) {
-            std::fputs("SKIP: OLE did not notice the cursor entering the drop target\n", stderr);
+            // Desktop availability is a registration-time skip; a validated runner can still fail to wake OLE,
+            // which is an observed desktop outcome and therefore remains a visible runtime warning.
+            WARN_MESSAGE(false, "OLE did not notice the cursor entering the drop target");
             return;
         }
         REQUIRE(dragResult.status == DRAGDROP_S_DROP);

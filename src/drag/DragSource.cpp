@@ -92,7 +92,10 @@ namespace burlak::drag
         if (!pending) {
             return;
         }
-        peerHandoff_ = peers_.send(pending->peer, pending->drop).has_value();
+        const auto sent = peers_.send(pending->peer, pending->drop);
+        // Once a timed-out handler might have queued an extracted drop, deleting its advertised run would race
+        // that receiver. Keeping it is safe; a later dead-owner sweep removes it after the ten-minute grace period.
+        peerHandoff_ = sent.has_value() || (needsExtraction_ && sent.error() == core::Error::Indeterminate);
     }
 
     core::Effect DragSource::lastEffect() const

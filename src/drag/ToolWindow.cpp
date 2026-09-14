@@ -267,7 +267,7 @@ namespace burlak::drag
                 if (!nonce || !incoming_.begin(*announcement, *nonce)) {
                     return 0;
                 }
-                if (!peers_.reply(announcement->source.window, reinterpret_cast<core::NativeWindow>(window),
+                if (!peers_.reply(announcement->source, reinterpret_cast<core::NativeWindow>(window),
                                   announcement->nonce, *nonce)) {
                     incoming_.end(core::PeerAnnouncement{.action = core::PeerAnnouncementAction::End,
                                                          .source = announcement->source,

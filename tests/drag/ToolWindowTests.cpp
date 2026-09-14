@@ -229,7 +229,7 @@ namespace burlak::drag
             {
                 ++endings;
             }
-            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow, std::uint64_t, std::uint64_t) override
+            [[nodiscard]] bool reply(core::PeerIdentity, core::NativeWindow, std::uint64_t, std::uint64_t) override
             {
                 ++replies;
                 return replySucceeds;

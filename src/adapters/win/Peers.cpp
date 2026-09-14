@@ -95,6 +95,19 @@ namespace burlak::adapters::win
         return core::PeerIdentity{.window = window, .process = process};
     }
 
+    bool Peers::expectedWindow(core::NativeWindow window, std::uint32_t process, std::wstring_view expectedClass) const
+    {
+        if (window == 0 || process == 0) {
+            return false;
+        }
+        const auto native = reinterpret_cast<HWND>(window);
+        std::array<wchar_t, 64> name{};
+        const auto length = calls_.getClassName(native, name.data(), static_cast<int>(name.size()));
+        DWORD actualProcess{};
+        return length > 0 && std::wstring_view{name.data(), static_cast<std::size_t>(length)} == expectedClass &&
+               calls_.getWindowProcess(native, &actualProcess) != 0 && actualProcess == process;
+    }
+
     std::optional<core::PeerAnnouncement> Peers::receiveAnnouncement(std::uint32_t message, std::uintptr_t word,
                                                                      std::intptr_t number)
     {
@@ -183,7 +196,7 @@ namespace burlak::adapters::win
         return reinterpret_cast<core::NativeWindow>(console == nullptr ? nullptr : calls_.getWindow(console, GW_OWNER));
     }
 
-    bool Peers::reply(core::NativeWindow target, core::NativeWindow tool, std::uint64_t echoNonce, std::uint64_t nonce)
+    bool Peers::reply(core::PeerIdentity target, core::NativeWindow tool, std::uint64_t echoNonce, std::uint64_t nonce)
     {
         const auto host = hostWindow();
         if (host == 0) {
@@ -197,7 +210,7 @@ namespace burlak::adapters::win
                                                   .nonce = nonce});
         const auto previous = tool_;
         tool_ = tool;
-        const bool sent = sendBytes(target, helloKind, bytes);
+        const bool sent = sendBytes(target, toolClass, helloKind, bytes).has_value();
         tool_ = previous;
         return sent;
     }
@@ -224,19 +237,23 @@ namespace burlak::adapters::win
         return std::nullopt;
     }
 
-    bool Peers::sendBytes(core::NativeWindow target, std::uintptr_t kind, std::span<const std::byte> bytes) const
+    std::expected<void, core::Error> Peers::sendBytes(core::PeerIdentity target, std::wstring_view expectedClass,
+                                                      std::uintptr_t kind, std::span<const std::byte> bytes) const
     {
-        if (bytes.empty() || !toolIdentity(target)) {
-            return false;
+        if (bytes.empty() || !expectedWindow(target.window, target.process, expectedClass)) {
+            return std::unexpected(core::Error::Unavailable);
         }
         COPYDATASTRUCT copy{.dwData = kind,
                             .cbData = static_cast<DWORD>(bytes.size()),
                             .lpData = const_cast<std::byte *>(bytes.data())};
         DWORD_PTR result{};
-        const auto sent = calls_.sendMessageTimeout(reinterpret_cast<HWND>(target), WM_COPYDATA,
+        const auto sent = calls_.sendMessageTimeout(reinterpret_cast<HWND>(target.window), WM_COPYDATA,
                                                     static_cast<WPARAM>(tool_), reinterpret_cast<LPARAM>(&copy),
                                                     SMTO_ABORTIFHUNG | SMTO_BLOCK, sendTimeoutMilliseconds, &result);
-        return sent != 0 && result != 0;
+        if (sent == 0) {
+            return std::unexpected(core::Error::Indeterminate);
+        }
+        return core::expectedOutcome(result != 0, core::Error::Unavailable);
     }
 
     std::expected<void, core::Error> Peers::send(const core::Peer &peer, const core::Drop &drop)
@@ -245,7 +262,7 @@ namespace burlak::adapters::win
             return std::unexpected(core::Error::Unavailable);
         }
         const auto bytes = core::encodePeerDrop(drop);
-        return core::expectedOutcome(sendBytes(peer.window, dropKind, bytes), core::Error::Unavailable);
+        return sendBytes({.window = peer.window, .process = peer.process}, toolClass, dropKind, bytes);
     }
 
     core::PeerMenuChoice Peers::menu(core::NativeWindow owner, core::Point point)

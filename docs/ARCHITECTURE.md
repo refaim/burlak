@@ -50,11 +50,14 @@ Three features are next, and the layering below is judged against them:
    visible one). Tool-window class and process identity are verified on both routes, and the
    receiver nonce authorizes exactly one drop from that source window. UIPI remains closed, so
    elevated and non-elevated Fars do not exchange drops. Hello and Drop sends use a short
-   `SendMessageTimeoutW`; Drop is bounded to 1 MiB and 4096 absolute paths. Discovery is active
+   `SendMessageTimeoutW`; a timed-out extracted Drop is indeterminate, so its source run remains
+   for the dead-owner sweep instead of being deleted during drag cleanup. Drop is bounded to
+   1 MiB and 4096 absolute paths. Discovery is active
    only for the drag, keeps at most 64 newest replies, and does not expire a reply mid-drag. At
    release, if the window under the cursor belongs to a peer, the source cancels the OLE drop (so
    the terminal does not paste the path into the command line) and hands the peer the paths, the
    screen point and the effect over `WM_COPYDATA`. The peer queues accepted drops for Far's thread,
+   adopts an extraction run before validating the recorded point so a refused run is removed,
    maps each point to a panel and copies with `IFileOperation` into that panel's directory, then
    `FCTL_UPDATEPANEL`/`FCTL_REDRAWPANEL`. Right-button menus are shown by the source (it holds the
    foreground); the chosen effect travels with the message.

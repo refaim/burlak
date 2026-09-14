@@ -50,6 +50,26 @@ namespace burlak::core
             report(host, L"Burlak: drop here is not possible: " + std::move(reason));
         }
 
+        class PeerRunCleanup final
+        {
+          public:
+            PeerRunCleanup(IFiles &files, const std::optional<std::wstring> &directory)
+                : files_{files}, directory_{directory}
+            {
+            }
+
+            ~PeerRunCleanup()
+            {
+                if (directory_) {
+                    static_cast<void>(files_.removeTree(*directory_));
+                }
+            }
+
+          private:
+            IFiles &files_;
+            const std::optional<std::wstring> &directory_;
+        };
+
         [[nodiscard]] bool extractRecipe(IPanels &panels, IFarHost &host, const ExtractionRecipe &recipe,
                                          std::wstring_view requestedDirectory)
         {
@@ -257,6 +277,10 @@ namespace burlak::core
                 .value_or(false);
         }
         if (peerDrop) {
+            // Taking ownership before validating the destination lets this Far remove an extracted run even when
+            // the recorded point is refused; a failed rename leaves cleanup to the source and dead-owner sweep.
+            auto adopted = files_.adoptPeerPaths(peerDrop->drop.paths, peerDrop->sourceProcess);
+            const PeerRunCleanup cleanup{files_, adopted.cleanupDirectory};
             const auto host = screen_.hostWindowAt(peerDrop->drop.at);
             if (!host) {
                 reportPeerRefusal(host_, refusalText(PeerDropRefusal::HostUnavailable));
@@ -273,11 +297,7 @@ namespace burlak::core
                 reportPeerRefusal(host_, refusalText(destination.error()));
                 return std::nullopt;
             }
-            auto adopted = files_.adoptPeerPaths(peerDrop->drop.paths, peerDrop->sourceProcess);
             const auto copied = shell_.copy(adopted.paths, destination->directory, peerDrop->drop.effect, host->handle);
-            if (adopted.cleanupDirectory) {
-                static_cast<void>(files_.removeTree(*adopted.cleanupDirectory));
-            }
             if (!copied) {
                 reportPeerRefusal(host_, L"the shell copy failed");
                 return std::nullopt;

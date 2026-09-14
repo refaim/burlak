@@ -127,7 +127,7 @@ namespace burlak::drag
             core::PeerMenuChoice choice{core::PeerMenuChoice::Copy};
             std::vector<core::Drop> drops;
             std::vector<std::string> *callLog{};
-            bool sendSucceeds{true};
+            std::optional<core::Error> sendFailure;
 
             [[nodiscard]] std::wstring_view toolWindowClass() const override
             {
@@ -160,7 +160,7 @@ namespace burlak::drag
             void endAnnouncement(core::NativeWindow, core::NativeWindow, std::uint64_t) override
             {
             }
-            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow, std::uint64_t, std::uint64_t) override
+            [[nodiscard]] bool reply(core::PeerIdentity, core::NativeWindow, std::uint64_t, std::uint64_t) override
             {
                 return true;
             }
@@ -174,7 +174,7 @@ namespace burlak::drag
                     callLog->emplace_back("send");
                 }
                 drops.push_back(drop);
-                return sendSucceeds ? std::expected<void, core::Error>{} : std::unexpected(core::Error::Unavailable);
+                return sendFailure ? std::unexpected(*sendFailure) : std::expected<void, core::Error>{};
             }
             [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow, core::Point) override
             {
@@ -579,8 +579,28 @@ namespace burlak::drag
             SUBCASE("send failure")
             {
                 Extraction extraction;
-                peers.sendSucceeds = false;
+                peers.sendFailure = core::Error::Unavailable;
                 DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                CHECK_FALSE(source.peerHandoff());
+            }
+            SUBCASE("an indeterminate extracted send preserves the run")
+            {
+                Extraction extraction;
+                peers.sendFailure = core::Error::Indeterminate;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                CHECK(source.peerHandoff());
+            }
+            SUBCASE("a definite extracted-send refusal does not preserve the run")
+            {
+                Extraction extraction;
+                peers.sendFailure = core::Error::Unavailable;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, paths};
                 REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
                 CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
                 source.completePeerHandoff();

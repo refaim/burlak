@@ -157,7 +157,7 @@ namespace burlak::adapters::win
                     if (announcement) {
                         router->announcement = announcement;
                         if (router->answer && announcement->action == core::PeerAnnouncementAction::Begin) {
-                            return router->peers->reply(announcement->source.window,
+                            return router->peers->reply(announcement->source,
                                                         reinterpret_cast<core::NativeWindow>(window),
                                                         announcement->nonce, router->receiverNonce)
                                        ? 1
@@ -264,6 +264,7 @@ namespace burlak::adapters::win
             CHECK(timedSendTimeout == peerSendTimeoutMilliseconds());
 
             const core::Peer peer{.window = reinterpret_cast<core::NativeWindow>(secondWindow),
+                                  .process = GetCurrentProcessId(),
                                   .nonce = secondRouter.receiverNonce};
             const core::Drop drop{.paths = {L"C:\\one.txt"},
                                   .at = {5, 6},
@@ -303,28 +304,31 @@ namespace burlak::adapters::win
             fakeVisible = true;
             fakeRectSucceeds = true;
             fakeRect = {0, 0, 100, 100};
-            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             CHECK(std::get<core::PeerHello>(router.received->payload).host == 10);
+            const auto sendsBeforeMismatch = timedSendCalls;
+            CHECK_FALSE(peers.reply({.window = tool, .process = GetCurrentProcessId() + 1}, tool, 11, 22));
+            CHECK(timedSendCalls == sendsBeforeMismatch);
 
             fakeVisible = false;
-            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
             fakeVisible = true;
             fakeRect = {0, 0, 0, 100};
-            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
             fakeRect = {0, 0, 100, 0};
-            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
             fakeRectSucceeds = false;
-            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
 
             fakeConsole = reinterpret_cast<HWND>(10);
             fakeOwner = nullptr;
-            CHECK_FALSE(peers.reply(tool, tool, 11, 22));
+            CHECK_FALSE(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             fakeConsole = nullptr;
-            CHECK_FALSE(peers.reply(tool, tool, 11, 22));
+            CHECK_FALSE(peers.reply({.window = tool, .process = GetCurrentProcessId()}, tool, 11, 22));
             DestroyWindow(recipient);
         }
 
@@ -374,6 +378,7 @@ namespace burlak::adapters::win
             CHECK_FALSE(peers.receiveAnnouncement(high.message, high.wParam, 0));
 
             CHECK_FALSE(peers.receive(0, 0));
+            CHECK_FALSE(peers.receive(777, 1));
             CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), 0));
             CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(foreign), 1));
             COPYDATASTRUCT copy{};
@@ -389,37 +394,55 @@ namespace burlak::adapters::win
             CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), reinterpret_cast<std::intptr_t>(&copy)));
 
             const core::Drop validDrop{.paths = {L"C:\\one.txt"}, .effect = core::Effect::Copy, .nonce = 5};
+            const auto process = GetCurrentProcessId();
             CHECK(peers.send(core::Peer{}, validDrop) == std::unexpected(core::Error::Unavailable));
             CHECK(peers.send(core::Peer{.window = 0, .host = 0, .lastFocus = 0, .process = 0, .nonce = 5}, validDrop) ==
                   std::unexpected(core::Error::Unavailable));
+            CHECK(
+                peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = 0, .nonce = 5},
+                           validDrop) == std::unexpected(core::Error::Unavailable));
             CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 6},
                              validDrop) == std::unexpected(core::Error::Unavailable));
-            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(foreign), .nonce = 5},
-                             validDrop) == std::unexpected(core::Error::Unavailable));
-            CHECK(peers.send(core::Peer{.window = 777, .host = 0, .lastFocus = 0, .process = 0, .nonce = 5},
+            CHECK(
+                peers.send(
+                    core::Peer{.window = reinterpret_cast<core::NativeWindow>(foreign), .process = process, .nonce = 5},
+                    validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = 777, .host = 0, .lastFocus = 0, .process = process, .nonce = 5},
                              validDrop) == std::unexpected(core::Error::Unavailable));
             CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 5},
                              core::Drop{.paths = {}, .at = {}, .effect = core::Effect::Copy, .nonce = 5}) ==
                   std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid),
+                                        .process = process + 1,
+                                        .nonce = 5},
+                             validDrop) == std::unexpected(core::Error::Unavailable));
 
             peers.announce(reinterpret_cast<core::NativeWindow>(valid), reinterpret_cast<core::NativeWindow>(valid), 5);
             pumpMessages(2);
             timedSendFails = true;
-            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 5},
-                             validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(
+                      core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
+                      validDrop) == std::unexpected(core::Error::Indeterminate));
             timedSendFails = false;
             timedSendRejects = true;
-            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 5},
-                             validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(
+                      core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
+                      validDrop) == std::unexpected(core::Error::Unavailable));
             timedSendRejects = false;
 
             auto noProcessCalls = calls;
             noProcessCalls.getWindowProcess = failWindowProcess;
             Peers noProcess{focus, noProcessCalls};
             CHECK_FALSE(noProcess.receive(reinterpret_cast<WPARAM>(valid), 1));
+            CHECK(noProcess.send(
+                      core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
+                      validDrop) == std::unexpected(core::Error::Unavailable));
             noProcessCalls.getWindowProcess = zeroWindowProcess;
             Peers zeroProcess{focus, noProcessCalls};
             CHECK_FALSE(zeroProcess.receive(reinterpret_cast<WPARAM>(valid), 1));
+            CHECK(zeroProcess.send(
+                      core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
+                      validDrop) == std::unexpected(core::Error::Unavailable));
 
             peers.announce(0, reinterpret_cast<core::NativeWindow>(valid), 5);
             peers.announce(reinterpret_cast<core::NativeWindow>(valid), 0, 5);

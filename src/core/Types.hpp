@@ -310,7 +310,8 @@ namespace burlak::core
         DirectoryUnavailable,
         NoSelection,
         ForeignCallFailed,
-        ForeignCallCrashed
+        ForeignCallCrashed,
+        Indeterminate
     };
 
 } // namespace burlak::core
