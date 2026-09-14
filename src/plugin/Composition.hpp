@@ -25,8 +25,10 @@ namespace burlak::plugin
         void recordFocus();
         [[nodiscard]] std::uint64_t lastFocus() const;
         [[nodiscard]] core::NativeWindow toolWindow() const;
+        void dropOnToolWindow(core::Point point, bool shift);
         void usePeerDropAdapters(core::IScreen &screen, core::IShell &shell);
         void usePeerDropAdapters(core::IScreen &screen, core::IShell &shell, core::IPeers &peers);
+        void useInputAdapter(core::IInput &input);
         void useDefaultAdapters();
         void synchro();
         void stop();
@@ -37,6 +39,7 @@ namespace burlak::plugin
         std::optional<std::reference_wrapper<core::IScreen>> screenOverride_;
         std::optional<std::reference_wrapper<core::IShell>> shellOverride_;
         std::optional<std::reference_wrapper<core::IPeers>> peersOverride_;
+        std::optional<std::reference_wrapper<core::IInput>> inputOverride_;
     };
 
     [[nodiscard]] Composition &composition();

@@ -26,6 +26,7 @@ namespace burlak::drag
         void completePeerHandoff();
         [[nodiscard]] core::Effect lastEffect() const;
         [[nodiscard]] bool peerHandoff() const;
+        [[nodiscard]] bool extractionRan() const;
 
       private:
         struct PendingPeerHandoff
@@ -48,6 +49,7 @@ namespace burlak::drag
         core::Effect lastEffect_{core::Effect::None};
         std::optional<PendingPeerHandoff> pendingPeerHandoff_;
         bool peerHandoff_{};
+        bool extractionRan_{};
     };
 
 } // namespace burlak::drag

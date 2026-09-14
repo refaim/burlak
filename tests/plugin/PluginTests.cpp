@@ -1,3 +1,4 @@
+#include "adapters/win/Input.hpp"
 #include "adapters/win/Peers.hpp"
 #include "core/PeerWire.hpp"
 #include "drag/ExtractionWait.hpp"
@@ -8,18 +9,46 @@
 
 #include <plugin.hpp>
 
+#include <atomic>
 #include <cstring>
 #include <stdexcept>
 
 namespace
 {
 
-    int synchros{};
+    std::atomic<int> synchros{};
     bool throwFromFar{};
     bool peerPanel{};
+    bool sameFarPanels{};
     int panelUpdates{};
     int panelRedraws{};
     std::wstring peerDirectory;
+    std::vector<INPUT_RECORD> replayedRecords;
+
+    constexpr burlak::core::Point sameFarDropPoint{45, 7};
+
+    void WINAPI replayMouseEvent(DWORD flags, DWORD, DWORD, DWORD, ULONG_PTR)
+    {
+        if (flags == (MOUSEEVENTF_MOVE | MOUSEEVENTF_LEFTDOWN)) {
+            const auto tool = burlak::plugin::composition().toolWindow();
+            static_cast<void>(SendMessageW(reinterpret_cast<HWND>(tool), WM_LBUTTONDOWN, 0, 0));
+        }
+    }
+
+    BOOL WINAPI replayConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO info)
+    {
+        *info = {};
+        info->dwSize = {80, 9001};
+        info->srWindow = {0, 0, 79, 49};
+        return TRUE;
+    }
+
+    BOOL WINAPI captureConsoleInput(HANDLE, const INPUT_RECORD *records, DWORD count, LPDWORD written)
+    {
+        replayedRecords.assign(records, records + count);
+        *written = count;
+        return TRUE;
+    }
 
     class PeerDropPeers final : public burlak::core::IPeers
     {
@@ -142,10 +171,45 @@ namespace
     {
         if (command == FCTL_GETPANELINFO) {
             auto &info = *static_cast<PanelInfo *>(parameter);
-            info.Flags = panel == PANEL_ACTIVE ? PFLAGS_VISIBLE | PFLAGS_REALNAMES : PFLAGS_NONE;
+            info.Flags = sameFarPanels || panel == PANEL_ACTIVE ? PFLAGS_VISIBLE | PFLAGS_REALNAMES : PFLAGS_NONE;
             info.PanelType = PTYPE_FILEPANEL;
-            info.PanelRect = RECT{0, 0, 39, 24};
+            info.PanelRect = panel == PANEL_ACTIVE ? RECT{0, 0, 39, 24} : RECT{40, 0, 79, 24};
+            info.SelectedItemsNumber = sameFarPanels && panel == PANEL_ACTIVE ? 1 : 0;
+            info.CurrentItem = 0;
+            info.TopPanelItem = 0;
             return 1;
+        }
+        if (sameFarPanels && panel == PANEL_ACTIVE && command == FCTL_GETSELECTEDPANELITEM) {
+            constexpr wchar_t itemName[] = L"source.txt";
+            constexpr auto bytes = sizeof(PluginPanelItem) + sizeof(itemName);
+            if (parameter == nullptr) {
+                return bytes;
+            }
+            auto &request = *static_cast<FarGetPluginPanelItem *>(parameter);
+            *request.Item = {};
+            auto *name =
+                reinterpret_cast<wchar_t *>(reinterpret_cast<std::byte *>(request.Item) + sizeof(PluginPanelItem));
+            std::memcpy(name, itemName, sizeof(itemName));
+            request.Item->FileName = name;
+            request.Item->Flags = PPIF_SELECTED;
+            return bytes;
+        }
+        if (sameFarPanels && command == FCTL_GETPANELDIRECTORY) {
+            constexpr wchar_t activeDirectory[] = L"C:\\source";
+            constexpr wchar_t passiveDirectory[] = L"D:\\destination";
+            const auto source =
+                panel == PANEL_ACTIVE ? std::wstring_view{activeDirectory} : std::wstring_view{passiveDirectory};
+            const auto bytes = sizeof(FarPanelDirectory) + (source.size() + 1) * sizeof(wchar_t);
+            if (parameter == nullptr) {
+                return static_cast<intptr_t>(bytes);
+            }
+            auto &directory = *static_cast<FarPanelDirectory *>(parameter);
+            auto *name =
+                reinterpret_cast<wchar_t *>(reinterpret_cast<std::byte *>(parameter) + sizeof(FarPanelDirectory));
+            std::memcpy(name, source.data(), source.size() * sizeof(wchar_t));
+            name[source.size()] = L'\0';
+            directory.Name = name;
+            return static_cast<intptr_t>(bytes);
         }
         if (peerPanel && command == FCTL_GETPANELDIRECTORY) {
             if (parameter == nullptr) {
@@ -252,7 +316,7 @@ namespace
         burlak::core::NativeWindow owner{};
 
         [[nodiscard]] std::expected<PreparedDrag, burlak::core::Error> makeDataObject(
-            std::span<const std::wstring>) override
+            std::span<const std::wstring>, std::optional<burlak::core::Effect>) override
         {
             return std::unexpected(burlak::core::Error::Unavailable);
         }
@@ -271,6 +335,74 @@ namespace
             effect = chosen;
             owner = host;
             return {};
+        }
+    };
+
+    class SameFarScreen final : public burlak::core::IScreen
+    {
+      public:
+        [[nodiscard]] std::optional<burlak::core::Point> cursor() override
+        {
+            return sameFarDropPoint;
+        }
+        [[nodiscard]] bool buttonDown(burlak::core::Button) override
+        {
+            return true;
+        }
+        [[nodiscard]] burlak::core::NativeWindow windowAt(burlak::core::Point) override
+        {
+            return burlak::plugin::composition().toolWindow();
+        }
+        [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindow() override
+        {
+            return burlak::core::HostWindow{99, {0, 0, 80, 25}, false};
+        }
+        [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindowAt(burlak::core::Point) override
+        {
+            return hostWindow();
+        }
+        [[nodiscard]] std::expected<burlak::core::CellGeometry, burlak::core::Error> cellGeometry() override
+        {
+            return burlak::core::CellGeometry{{0, 0}, 1, 1};
+        }
+        [[nodiscard]] std::expected<burlak::core::CellGeometry, burlak::core::Error> cellGeometryAt(
+            burlak::core::Point) override
+        {
+            return cellGeometry();
+        }
+    };
+
+    class SameFarShell final : public burlak::core::IShell
+    {
+      public:
+        class Data final : public DragData
+        {
+          public:
+            [[nodiscard]] std::uintptr_t nativeHandle() const override
+            {
+                return 0;
+            }
+        };
+
+        burlak::core::NativeWindow dragOwner{};
+
+        [[nodiscard]] std::expected<PreparedDrag, burlak::core::Error> makeDataObject(
+            std::span<const std::wstring> paths, std::optional<burlak::core::Effect>) override
+        {
+            return PreparedDrag{std::make_unique<Data>(), paths.size()};
+        }
+        [[nodiscard]] burlak::core::DragLoopOutcome runDrag(burlak::core::NativeWindow owner, DragData &,
+                                                            std::uintptr_t, bool) override
+        {
+            dragOwner = owner;
+            burlak::plugin::composition().dropOnToolWindow(sameFarDropPoint, true);
+            return {.status = DRAGDROP_S_DROP, .effect = DROPEFFECT_MOVE};
+        }
+        [[nodiscard]] std::expected<void, burlak::core::Error> copy(std::span<const std::wstring>, std::wstring_view,
+                                                                    burlak::core::Effect,
+                                                                    burlak::core::NativeWindow) override
+        {
+            return std::unexpected(burlak::core::Error::Unavailable);
         }
     };
 
@@ -429,7 +561,7 @@ TEST_SUITE("plugin exports")
             .paths = {source}, .at = {5, 5}, .effect = burlak::core::Effect::Copy, .nonce = 500};
         peers.envelope = burlak::core::PeerEnvelope{.sender = sender, .payload = drop};
         COPYDATASTRUCT copy{};
-        const auto before = synchros;
+        const auto before = synchros.load();
         REQUIRE(SendMessageW(reinterpret_cast<HWND>(tool), WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
         CHECK(synchros == before + 1);
 
@@ -488,6 +620,54 @@ TEST_SUITE("plugin exports")
         CHECK(std::memcmp(&release.Rec.Event.MouseEvent, &originalRelease, sizeof(originalRelease)) == 0);
     }
 
+    TEST_CASE("a same-Far drop through the exports replays buffer-relative press and release records")
+    {
+        SameFarScreen screen;
+        SameFarShell shell;
+        const burlak::adapters::win::InputCalls calls{replayMouseEvent, replayConsoleInfo, captureConsoleInput};
+        burlak::adapters::win::Input input{11, 12, calls};
+        burlak::plugin::composition().usePeerDropAdapters(screen, shell);
+        burlak::plugin::composition().useInputAdapter(input);
+        sameFarPanels = true;
+        synchros = 0;
+        replayedRecords.clear();
+        auto startupInfo = startup();
+        SetStartupInfoW(&startupInfo);
+
+        auto press = inputInfo({5, 5}, FROM_LEFT_1ST_BUTTON_PRESSED);
+        press.Rec.Event.MouseEvent.dwControlKeyState = SHIFT_PRESSED;
+        CHECK(ProcessConsoleInputW(&press) == 0);
+        auto threshold = inputInfo({8, 5}, FROM_LEFT_1ST_BUTTON_PRESSED, MOUSE_MOVED);
+        threshold.Rec.Event.MouseEvent.dwControlKeyState = SHIFT_PRESSED;
+        REQUIRE(ProcessConsoleInputW(&threshold) == 2);
+        CHECK(synchros == 1);
+
+        ProcessSynchroEventInfo event{};
+        event.Event = SE_COMMONSYNCHRO;
+        CHECK(ProcessSynchroEventW(&event) == 0);
+        CHECK(shell.dragOwner == burlak::plugin::composition().toolWindow());
+        CHECK(synchros == 2);
+        CHECK(ProcessSynchroEventW(&event) == 0);
+
+        REQUIRE(replayedRecords.size() == 2);
+        const auto &replayedPress = replayedRecords[0].Event.MouseEvent;
+        CHECK(replayedPress.dwMousePosition.X == 5);
+        CHECK(replayedPress.dwMousePosition.Y == 8956);
+        CHECK(replayedPress.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED);
+        CHECK(replayedPress.dwControlKeyState == SHIFT_PRESSED);
+        CHECK(replayedPress.dwEventFlags == 0);
+        const auto &replayedRelease = replayedRecords[1].Event.MouseEvent;
+        CHECK(replayedRelease.dwMousePosition.X == sameFarDropPoint.x);
+        CHECK(replayedRelease.dwMousePosition.Y == sameFarDropPoint.y + 8951);
+        CHECK(replayedRelease.dwButtonState == 0);
+        CHECK(replayedRelease.dwControlKeyState == SHIFT_PRESSED);
+        CHECK(replayedRelease.dwEventFlags == 0);
+
+        ExitFARW(nullptr);
+        sameFarPanels = false;
+        burlak::plugin::composition().useDefaultAdapters();
+    }
+
     TEST_CASE("non-mouse input, null input, null startup, and Far exceptions stay behind the firewall")
     {
         SetStartupInfoW(nullptr);
@@ -510,6 +690,7 @@ TEST_SUITE("plugin exports")
         empty.recordFocus();
         CHECK(empty.lastFocus() == 0);
         CHECK(empty.toolWindow() == 0);
+        empty.dropOnToolWindow({}, false);
         empty.synchro();
         empty.stop();
         empty.useDefaultAdapters();

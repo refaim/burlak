@@ -659,6 +659,7 @@ namespace burlak::core
 
             session.cleanup();
             CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
+            CHECK(files.touched.empty());
             session.cleanup();
             CHECK(files.removed.size() == 1);
         }
@@ -685,7 +686,7 @@ namespace burlak::core
             CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
         }
 
-        TEST_CASE("retaining a peer extraction detaches it from source-session cleanup")
+        TEST_CASE("retaining an extraction restarts its grace clock and detaches cleanup")
         {
             auto panels = readyPanels();
             panels.panels[0]->realNames = false;
@@ -699,13 +700,17 @@ namespace burlak::core
             tests::Host host;
             host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
             tests::Files files;
+            files.touchResult = std::unexpected(Error::Unavailable);
             tests::Shell shell;
             Session session{panels, host, screen, input, files, shell};
 
             REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
             session.retain();
             session.cleanup();
+            CHECK(files.touched == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
             CHECK(files.removed.empty());
+            session.retain();
+            CHECK(files.touched.size() == 1);
         }
 
         TEST_CASE("a same-Far plugin-panel drop replays Far's copy without extracting placeholders")
@@ -1035,8 +1040,11 @@ namespace burlak::core
             Session session{panels, host, screen, input, files, shell};
 
             REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            CHECK(files.sweeps == 1);
             CHECK_FALSE(tool.needsExtraction);
             CHECK_FALSE(session.requestExtraction());
+            session.retain();
+            CHECK(files.touched.empty());
             session.cleanup();
             CHECK(files.removed.empty());
         }

@@ -26,6 +26,8 @@ namespace burlak::adapters::win
         } clicks;
 
         std::vector<DWORD> injectedFlags;
+        std::vector<INPUT_RECORD> replayedRecords;
+        int replayWrites{};
 
         void WINAPI recordMouseEvent(DWORD flags, DWORD, DWORD, DWORD, ULONG_PTR)
         {
@@ -35,6 +37,34 @@ namespace burlak::adapters::win
         BOOL WINAPI partialWrite(HANDLE, const INPUT_RECORD *, DWORD requested, LPDWORD written)
         {
             *written = requested - 1;
+            return TRUE;
+        }
+
+        BOOL WINAPI tallConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO info)
+        {
+            *info = {};
+            info->dwSize.Y = 9001;
+            info->srWindow.Top = 20;
+            info->srWindow.Bottom = 69;
+            return TRUE;
+        }
+
+        BOOL WINAPI unavailableConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO)
+        {
+            return FALSE;
+        }
+
+        BOOL WINAPI degenerateConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO info)
+        {
+            *info = {};
+            return TRUE;
+        }
+
+        BOOL WINAPI captureReplay(HANDLE, const INPUT_RECORD *records, DWORD requested, LPDWORD written)
+        {
+            ++replayWrites;
+            replayedRecords.assign(records, records + requested);
+            *written = requested;
             return TRUE;
         }
 
@@ -183,9 +213,14 @@ namespace burlak::adapters::win
                 CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                             OPEN_EXISTING, 0, nullptr);
             REQUIRE(consoleInput != INVALID_HANDLE_VALUE);
+            const HANDLE consoleOutput =
+                CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_EXISTING, 0, nullptr);
+            REQUIRE(consoleOutput != INVALID_HANDLE_VALUE);
             FlushConsoleInputBuffer(consoleInput);
 
-            Input adapter{reinterpret_cast<core::NativeWindow>(consoleInput)};
+            Input adapter{reinterpret_cast<core::NativeWindow>(consoleInput),
+                          reinterpret_cast<core::NativeWindow>(consoleOutput), systemInputCalls()};
             const std::vector<core::MouseEvent> events{
                 {.at = {7, 8}, .left = true, .moved = true, .mods = {.shift = true}},
                 {.at = {9, 10}, .right = true, .wheel = true, .mods = {.control = true, .alt = true}}};
@@ -205,6 +240,7 @@ namespace burlak::adapters::win
             CHECK(records[1].Event.MouseEvent.dwEventFlags == MOUSE_WHEELED);
             CHECK((records[1].Event.MouseEvent.dwControlKeyState & LEFT_CTRL_PRESSED) != 0);
             CHECK((records[1].Event.MouseEvent.dwControlKeyState & LEFT_ALT_PRESSED) != 0);
+            CloseHandle(consoleOutput);
             CloseHandle(consoleInput);
         }
 
@@ -224,9 +260,62 @@ namespace burlak::adapters::win
             CloseHandle(file);
         }
 
+        TEST_CASE("console replay adds Far's window-mode row offset and preserves every other field")
+        {
+            auto calls = systemInputCalls();
+            calls.getConsoleScreenBufferInfo = tallConsoleInfo;
+            calls.writeConsoleInput = captureReplay;
+            Input input{1, 2, calls};
+            const std::vector<core::MouseEvent> events{{.at = {5, 5}, .left = true, .mods = {.shift = true}},
+                                                       {.at = {45, 6}, .mods = {.shift = true}}};
+            replayedRecords.clear();
+            replayWrites = 0;
+
+            CHECK(input.replay(events) == core::ReplayOutcome{true, 2, 2});
+            REQUIRE(replayedRecords.size() == 2);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwMousePosition.X == 5);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwMousePosition.Y == 8956);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwControlKeyState == SHIFT_PRESSED);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwEventFlags == 0);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwMousePosition.X == 45);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwMousePosition.Y == 8957);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwButtonState == 0);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwControlKeyState == SHIFT_PRESSED);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwEventFlags == 0);
+        }
+
+        TEST_CASE("console replay writes nothing when buffer geometry is unavailable")
+        {
+            auto calls = systemInputCalls();
+            calls.writeConsoleInput = captureReplay;
+            const std::vector<core::MouseEvent> events{{.at = {5, 5}, .left = true}};
+            replayedRecords.clear();
+            replayWrites = 0;
+
+            SUBCASE("the CSBI call failed")
+            {
+                calls.getConsoleScreenBufferInfo = unavailableConsoleInfo;
+            }
+            SUBCASE("the CSBI described a degenerate buffer")
+            {
+                calls.getConsoleScreenBufferInfo = degenerateConsoleInfo;
+            }
+
+            Input input{1, 2, calls};
+            const auto outcome = input.replay(events);
+            CHECK(outcome == core::ReplayOutcome{false, 1, 0});
+            CHECK(core::replayOutcome(outcome) == std::unexpected(core::Error::Unavailable));
+            CHECK(replayWrites == 0);
+            CHECK(replayedRecords.empty());
+        }
+
         TEST_CASE("a partial console replay is rejected by core")
         {
-            InputCalls calls{recordMouseEvent, partialWrite};
+            auto calls = systemInputCalls();
+            calls.mouseEvent = recordMouseEvent;
+            calls.getConsoleScreenBufferInfo = tallConsoleInfo;
+            calls.writeConsoleInput = partialWrite;
             Input input{1, calls};
             const std::vector<core::MouseEvent> events{{}, {}};
             const auto replay = input.replay(events);

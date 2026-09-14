@@ -4,6 +4,7 @@
 
 #include <shlobj.h>
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -23,6 +24,18 @@ namespace burlak::adapters::shell
 
         using UniquePidl = std::unique_ptr<ITEMIDLIST, PidlFreer>;
 
+        struct GlobalFreer
+        {
+            decltype(&GlobalFree) release;
+
+            void operator()(void *memory) const noexcept
+            {
+                static_cast<void>(release(memory));
+            }
+        };
+
+        using UniqueGlobal = std::unique_ptr<void, GlobalFreer>;
+
         class ShellDragData final : public core::IShell::DragData
         {
           public:
@@ -41,6 +54,42 @@ namespace burlak::adapters::shell
         HRESULT bindDataObject(IShellItemArray &array, IDataObject **data)
         {
             return array.BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(data));
+        }
+
+        HRESULT setData(IDataObject &data, FORMATETC &format, STGMEDIUM &medium, BOOL release)
+        {
+            return data.SetData(&format, &medium, release);
+        }
+
+        [[nodiscard]] std::expected<void, core::Error> setPreferredEffect(IDataObject &data, core::Effect effect,
+                                                                          const ShellCalls &api)
+        {
+            const auto clipboardFormat = api.registerClipboardFormat(CFSTR_PREFERREDDROPEFFECT);
+            if (clipboardFormat == 0) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            UniqueGlobal memory{api.globalAlloc(GMEM_MOVEABLE, sizeof(DWORD)), GlobalFreer{api.globalFree}};
+            if (!memory) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            const auto value = static_cast<DWORD *>(api.globalLock(memory.get()));
+            if (value == nullptr) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            constexpr std::array<DWORD, 4> nativeEffects{DROPEFFECT_NONE, DROPEFFECT_COPY, DROPEFFECT_MOVE,
+                                                         DROPEFFECT_LINK};
+            *value = nativeEffects.at(static_cast<std::size_t>(effect));
+            static_cast<void>(api.globalUnlock(memory.get()));
+
+            FORMATETC format{static_cast<CLIPFORMAT>(clipboardFormat), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            STGMEDIUM medium{};
+            medium.tymed = TYMED_HGLOBAL;
+            medium.hGlobal = memory.get();
+            if (FAILED(api.setData(data, format, medium, TRUE))) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            static_cast<void>(memory.release());
+            return {};
         }
 
         HRESULT createOperation(IFileOperation **operation)
@@ -86,6 +135,12 @@ namespace burlak::adapters::shell
         const ShellCalls calls{SHParseDisplayName,
                                SHCreateShellItemArrayFromIDLists,
                                bindDataObject,
+                               RegisterClipboardFormatW,
+                               GlobalAlloc,
+                               GlobalLock,
+                               GlobalUnlock,
+                               GlobalFree,
+                               setData,
                                SHDoDragDrop,
                                createOperation,
                                setOwner,
@@ -100,10 +155,23 @@ namespace burlak::adapters::shell
 
     std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths)
     {
-        return makeDataObject(paths, calls);
+        return makeDataObject(paths, std::nullopt, calls);
     }
 
     std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  std::optional<core::Effect> preferredEffect)
+    {
+        return makeDataObject(paths, preferredEffect, calls);
+    }
+
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  const ShellCalls &api)
+    {
+        return makeDataObject(paths, std::nullopt, api);
+    }
+
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  std::optional<core::Effect> preferredEffect,
                                                                   const ShellCalls &api)
     {
         std::vector<UniquePidl> ownedPidls;
@@ -127,6 +195,9 @@ namespace burlak::adapters::shell
         }
         DataObject data;
         if (FAILED(api.bindDataObject(*array.Get(), data.GetAddressOf()))) {
+            return std::unexpected(core::Error::Unavailable);
+        }
+        if (preferredEffect && !setPreferredEffect(*data.Get(), *preferredEffect, api)) {
             return std::unexpected(core::Error::Unavailable);
         }
         return PreparedDataObject{.data = std::move(data), .parsedPaths = pidls.size()};
@@ -154,9 +225,10 @@ namespace burlak::adapters::shell
     {
     }
 
-    std::expected<core::IShell::PreparedDrag, core::Error> Shell::makeDataObject(std::span<const std::wstring> paths)
+    std::expected<core::IShell::PreparedDrag, core::Error> Shell::makeDataObject(
+        std::span<const std::wstring> paths, std::optional<core::Effect> preferredEffect)
     {
-        return shell::makeDataObject(paths, calls_).transform([](PreparedDataObject prepared) {
+        return shell::makeDataObject(paths, preferredEffect, calls_).transform([](PreparedDataObject prepared) {
             return PreparedDrag{.data = std::make_unique<ShellDragData>(std::move(prepared.data)),
                                 .parsedPaths = prepared.parsedPaths};
         });

@@ -27,6 +27,12 @@ namespace burlak::adapters::shell
         decltype(&SHParseDisplayName) parseDisplayName;
         decltype(&SHCreateShellItemArrayFromIDLists) createItemArray;
         HRESULT (*bindDataObject)(IShellItemArray &array, IDataObject **data);
+        decltype(&RegisterClipboardFormatW) registerClipboardFormat;
+        decltype(&GlobalAlloc) globalAlloc;
+        decltype(&GlobalLock) globalLock;
+        decltype(&GlobalUnlock) globalUnlock;
+        decltype(&GlobalFree) globalFree;
+        HRESULT (*setData)(IDataObject &data, FORMATETC &format, STGMEDIUM &medium, BOOL release);
         decltype(&SHDoDragDrop) doDragDrop;
         HRESULT (*createOperation)(IFileOperation **operation);
         HRESULT (*setOwner)(IFileOperation &operation, HWND owner);
@@ -39,8 +45,12 @@ namespace burlak::adapters::shell
     };
 
     [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths);
+    [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(
+        std::span<const std::wstring> paths, std::optional<core::Effect> preferredEffect);
     [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
                                                                                 const ShellCalls &calls);
+    [[nodiscard]] std::expected<PreparedDataObject, core::Error> makeDataObject(
+        std::span<const std::wstring> paths, std::optional<core::Effect> preferredEffect, const ShellCalls &calls);
     [[nodiscard]] core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, bool allowLink,
                                                 const ShellCalls &calls);
     [[nodiscard]] const ShellCalls &systemShellCalls();
@@ -52,7 +62,7 @@ namespace burlak::adapters::shell
         explicit Shell(const ShellCalls &calls);
 
         [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
-            std::span<const std::wstring> paths) override;
+            std::span<const std::wstring> paths, std::optional<core::Effect> preferredEffect = std::nullopt) override;
         [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source,
                                                     bool allowLink) override;
         [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring> paths,

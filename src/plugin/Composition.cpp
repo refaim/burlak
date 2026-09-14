@@ -22,9 +22,11 @@ namespace burlak::plugin
         Runtime(const PluginStartupInfo &startupInfo,
                 const std::optional<std::reference_wrapper<core::IScreen>> &screenOverride,
                 const std::optional<std::reference_wrapper<core::IShell>> &shellOverride,
-                const std::optional<std::reference_wrapper<core::IPeers>> &peersOverride)
+                const std::optional<std::reference_wrapper<core::IPeers>> &peersOverride,
+                const std::optional<std::reference_wrapper<core::IInput>> &inputOverride)
             : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_},
               screen_{screenOverride ? screenOverride->get() : static_cast<core::IScreen &>(realScreen_)},
+              input_{inputOverride ? inputOverride->get() : static_cast<core::IInput &>(realInput_)},
               shell_{shellOverride ? shellOverride->get() : static_cast<core::IShell &>(realShell_)},
               gesture_{panels_, host_}, session_{panels_, host_, screen_, input_, files_, shell_},
               extraction_{session_}, realPeers_{focus_},
@@ -67,6 +69,11 @@ namespace burlak::plugin
             return tool_.nativeWindow();
         }
 
+        void dropOnToolWindow(core::Point point, bool shift)
+        {
+            tool_.drop(point, shift);
+        }
+
         void stop()
         {
             extraction_.cancel();
@@ -80,10 +87,11 @@ namespace burlak::plugin
         adapters::far_api::FarHost host_;
         adapters::win::Files files_;
         adapters::win::Screen realScreen_;
-        adapters::win::Input input_;
+        adapters::win::Input realInput_;
         adapters::shell::Shell realShell_;
         adapters::win::Focus focus_;
         core::IScreen &screen_;
+        core::IInput &input_;
         core::IShell &shell_;
         core::Gesture gesture_;
         core::Session session_;
@@ -103,7 +111,7 @@ namespace burlak::plugin
     void Composition::setStartupInfo(const PluginStartupInfo &info)
     {
         reset();
-        runtime_ = std::make_unique<Runtime>(info, screenOverride_, shellOverride_, peersOverride_);
+        runtime_ = std::make_unique<Runtime>(info, screenOverride_, shellOverride_, peersOverride_, inputOverride_);
     }
 
     void Composition::reset()
@@ -134,6 +142,13 @@ namespace burlak::plugin
         return runtime_ ? runtime_->toolWindow() : 0;
     }
 
+    void Composition::dropOnToolWindow(core::Point point, bool shift)
+    {
+        if (runtime_) {
+            runtime_->dropOnToolWindow(point, shift);
+        }
+    }
+
     void Composition::usePeerDropAdapters(core::IScreen &screen, core::IShell &shell)
     {
         reset();
@@ -150,12 +165,19 @@ namespace burlak::plugin
         peersOverride_ = peers;
     }
 
+    void Composition::useInputAdapter(core::IInput &input)
+    {
+        reset();
+        inputOverride_ = input;
+    }
+
     void Composition::useDefaultAdapters()
     {
         reset();
         screenOverride_.reset();
         shellOverride_.reset();
         peersOverride_.reset();
+        inputOverride_.reset();
     }
 
     void Composition::synchro()

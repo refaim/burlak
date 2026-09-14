@@ -119,6 +119,7 @@ namespace burlak::core
     bool Session::begin(IDragTool &tool, DragStart start)
     {
         cleanup();
+        files_.sweep();
         if (!panels_.currentWindowIsPanels()) {
             return false;
         }
@@ -416,6 +417,12 @@ namespace burlak::core
     void Session::retain()
     {
         const std::lock_guard lock{pendingMutex_};
+        if (cleanupDirectory_) {
+            // Rewriting placeholder contents does not update their parent directory's last-write time on NTFS, so
+            // retention starts the grace clock here before another begin can sweep. A failed refresh is ignored:
+            // sweep may then run early, which shortens retention but is not unsafe.
+            static_cast<void>(files_.touch(*cleanupDirectory_));
+        }
         // A successful peer handoff transfers the run by rename. If that rename later fails, leaving the source
         // run here lets the receiving shell finish even when this drag session or Far shuts down meanwhile.
         cleanupDirectory_.reset();

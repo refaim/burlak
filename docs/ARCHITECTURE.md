@@ -23,12 +23,14 @@ Three features are next, and the layering below is judged against them:
    `PCTL_FINDPLUGIN` + `PCTL_GETPLUGININFORMATION` give its module and `GlobalInfo::Instance`),
    exactly as Far itself does for plugin-to-plugin copy (`FileList::PluginGetFiles`, `OPM_SILENT`
    into a temp directory), then answers "drop". The call is wrapped in SEH so a crashing plugin
-   aborts the drag with a message instead of taking Burlak down. Ordinary OLE drops clean temp
-   files opportunistically after the drag (targets may still read them asynchronously). For a
+   aborts the drag with a message instead of taking Burlak down. A completed ordinary OLE drop
+   refreshes the run timestamp and retains extracted files for ten minutes so asynchronous targets
+   can read them; sweeps at startup, shutdown, and before each drag remove old own runs and old
+   dead-owner runs. For a
    peer drop, the receiver atomically renames an extraction run into its own
    `<receiver-pid>-peer-<sequence>` namespace before copying and removes it afterward. If the
-   rename fails, the source leaves the run intact; startup sweep removes only runs whose owner
-   process is dead and whose last write is at least ten minutes old. The original
+   rename fails, the source leaves the run intact; sweeps remove old own runs and old runs whose
+   owner process is dead. The original
    `FCTL_GETSELECTEDPANELITEM` buffers stay alive in the
    plan and are passed back as complete `PluginPanelItem` records, matching
    `FileList::CreatePluginItemList`. Release revalidates the panel, complete selection and owner
@@ -120,8 +122,9 @@ Interfaces core depends on (all pure virtual, all under `src/core/`, implemented
   MouseEvent>)` (WriteConsoleInputW).
 - `IShell` — `makeDataObject(paths)`, `runDrag(...)` (SHDoDragDrop with our IDropSource), `copy
   (paths, destination, Effect)` (IFileOperation).
-- `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, atomic
-  peer-run adoption, `sweep(older dead-owner runs)`.
+- `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, `touch`,
+  atomic peer-run adoption, and one grace-period sweep of old own runs and old dead-owner runs
+  at startup, before each drag, and at exit.
 - `IPeers` — nonce creation, begin/end announcements, Hello/Drop receive and bounded send, and the
   right-drag menu; the registered-message and `WM_COPYDATA` transport is the adapter's business.
 
@@ -197,6 +200,9 @@ earlier `PostThreadMessage(WM_QUIT)` had no queue.
 The main thread asks the tool thread for
 work with `SendMessage` / `PostMessage` to the tool window. `Session` state that both threads
 read is guarded by a mutex or handed over by value in the messages; document which. For a
+completed drag, the tool thread retains/touches or cleans its run before clearing `active`; Far's
+thread treats `active` as the gate that prevents a new `Session::begin` cleanup/sweep from racing
+that work. For a
 same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool thread
 for cosmetic hover feedback. On `Drop`, that thread puts a by-value
 `PendingDrop { point, cell, effect }` behind the session mutex, posts synchro, and returns the effect to

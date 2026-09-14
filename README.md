@@ -9,6 +9,7 @@ Drop onto Far's other panel to copy there; hold Shift to move instead, including
 To drop into another Far, both Fars need Burlak and the same elevation level; if several Fars share one Windows Terminal window, the drop goes to the tab that most recently had focus.
 Files and selections can also be dragged out of archive, FTP/SFTP, and other plugin panels;
 after release they are extracted as copies for the target, so these plugin-panel drags do not offer shortcuts.
+Files dragged out of a plugin panel are extracted into `%TEMP%\Burlak` and removed about ten minutes later, giving the receiving program time to read them.
 
 Drag with the right button instead and it is up to the target what happens on the drop:
 Explorer offers its copy / move / shortcut menu, Telegram just takes the files. A right click

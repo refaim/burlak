@@ -153,6 +153,20 @@ namespace burlak::core
         return requested == parsed;
     }
 
+    std::optional<Effect> preferredDropEffect(bool needsExtraction)
+    {
+        return needsExtraction ? std::optional{Effect::Copy} : std::nullopt;
+    }
+
+    std::expected<int, Error> consoleRowOffset(int bufferHeight, int windowTop, int windowBottom)
+    {
+        const auto viewHeight = static_cast<std::int64_t>(windowBottom) - windowTop + 1;
+        if (bufferHeight <= 0 || viewHeight <= 0 || viewHeight > bufferHeight) {
+            return std::unexpected(Error::Unavailable);
+        }
+        return bufferHeight - static_cast<int>(viewHeight);
+    }
+
     std::optional<std::uint32_t> runOwner(std::wstring_view name)
     {
         const auto separator = name.find(L'-');
@@ -174,10 +188,14 @@ namespace burlak::core
         return owner;
     }
 
-    bool shouldSweepRun(std::wstring_view name, bool ownerAlive, bool oldEnough)
+    bool shouldSweepRun(bool ownRun, bool ownerAlive, bool oldEnough)
     {
-        const auto owner = runOwner(name);
-        return owner && !ownerAlive && oldEnough;
+        return oldEnough && (ownRun || !ownerAlive);
+    }
+
+    bool retainExtractedRun(bool extractionRan, DragLoopOutcome outcome, std::int32_t droppedStatus)
+    {
+        return extractionRan && outcome.status == droppedStatus && outcome.effect != 0;
     }
 
 } // namespace burlak::core

@@ -196,6 +196,14 @@ namespace burlak::drag
             return sendPrivateMessage(hasDataMessage, hasDataRequested_) != 0;
         }
 
+        void drop(core::Point point, bool shift)
+        {
+            constexpr DWORD keyStates[]{0, MK_SHIFT};
+            DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
+            static_cast<void>(dropTarget_.Drop(nullptr, keyStates[static_cast<std::size_t>(shift)],
+                                               POINTL{point.x, point.y}, &effect));
+        }
+
       private:
         [[nodiscard]] HWND windowHandle() const
         {
@@ -355,7 +363,8 @@ namespace burlak::drag
                     return 0;
                 }
                 clearDrag();
-                auto prepared = shell_.makeDataObject(payload->paths);
+                auto prepared =
+                    shell_.makeDataObject(payload->paths, core::preferredDropEffect(payload->needsExtraction));
                 // Far's eventual copy consumes its live selection, so every selected path must also be present in
                 // the OLE payload (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
                 if (!prepared || !core::allPathsAdvertised(payload->paths.size(), prepared->parsedPaths)) {
@@ -466,13 +475,16 @@ namespace burlak::drag
                               paths_};
             // A target may report Move after taking the extracted placeholders; GetFilesW is always non-moving,
             // so the archive or remote panel remains untouched.
-            static_cast<void>(shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
-                                             reinterpret_cast<std::uintptr_t>(&source), !needsExtraction_));
+            const auto outcome = shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
+                                                reinterpret_cast<std::uintptr_t>(&source), !needsExtraction_);
             source.completePeerHandoff();
-            active_.store(false);
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);
-            clearDrag(source.peerHandoff());
+            // The tool thread must retain/touch or clean this run before publishing inactivity: Far's thread gates
+            // a new Session::begin on active(), and its cleanup/sweep could otherwise remove the previous run.
+            clearDrag(source.peerHandoff() ||
+                      core::retainExtractedRun(source.extractionRan(), outcome, DRAGDROP_S_DROP));
+            active_.store(false);
         }
 
         void disarm(HWND window)
@@ -592,6 +604,11 @@ namespace burlak::drag
     bool ToolWindow::hasData() const
     {
         return state_->hasData();
+    }
+
+    void ToolWindow::drop(core::Point point, bool shift)
+    {
+        state_->drop(point, shift);
     }
 
     std::uintptr_t armTimerId()

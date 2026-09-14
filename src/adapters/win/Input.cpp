@@ -1,5 +1,7 @@
 #include "adapters/win/Input.hpp"
 
+#include "core/Policies.hpp"
+
 #include <windows.h>
 
 #include <vector>
@@ -10,7 +12,7 @@ namespace burlak::adapters::win
     namespace
     {
 
-        const InputCalls systemCalls{mouse_event, WriteConsoleInputW};
+        const InputCalls systemCalls{mouse_event, GetConsoleScreenBufferInfo, WriteConsoleInputW};
 
         [[nodiscard]] DWORD mouseFlag(core::Button button, bool down)
         {
@@ -36,15 +38,24 @@ namespace burlak::adapters::win
 
     } // namespace
 
-    Input::Input() : Input{reinterpret_cast<core::NativeWindow>(GetStdHandle(STD_INPUT_HANDLE)), systemCalls}
+    Input::Input()
+        : Input{reinterpret_cast<core::NativeWindow>(GetStdHandle(STD_INPUT_HANDLE)),
+                reinterpret_cast<core::NativeWindow>(GetStdHandle(STD_OUTPUT_HANDLE)), systemCalls}
     {
     }
 
-    Input::Input(core::NativeWindow input) : Input{input, systemCalls}
+    Input::Input(core::NativeWindow input)
+        : Input{input, reinterpret_cast<core::NativeWindow>(GetStdHandle(STD_OUTPUT_HANDLE)), systemCalls}
     {
     }
 
-    Input::Input(core::NativeWindow input, const InputCalls &calls) : input_{input}, calls_{calls}
+    Input::Input(core::NativeWindow input, const InputCalls &calls)
+        : Input{input, reinterpret_cast<core::NativeWindow>(GetStdHandle(STD_OUTPUT_HANDLE)), calls}
+    {
+    }
+
+    Input::Input(core::NativeWindow input, core::NativeWindow output, const InputCalls &calls)
+        : input_{input}, output_{output}, calls_{calls}
     {
     }
 
@@ -60,14 +71,29 @@ namespace burlak::adapters::win
 
     core::ReplayOutcome Input::replay(std::span<const core::MouseEvent> events)
     {
+        const auto requested = static_cast<DWORD>(events.size());
+        CONSOLE_SCREEN_BUFFER_INFO buffer{};
+        const auto output = reinterpret_cast<HANDLE>(output_);
+        if (calls_.getConsoleScreenBufferInfo(output, &buffer) == FALSE) {
+            return {.status = FALSE, .requested = requested, .written = 0};
+        }
+        const auto offset = core::consoleRowOffset(buffer.dwSize.Y, buffer.srWindow.Top, buffer.srWindow.Bottom);
+        if (!offset) {
+            return {.status = FALSE, .requested = requested, .written = 0};
+        }
+
         std::vector<INPUT_RECORD> records;
         records.reserve(events.size());
         for (const auto &event : events) {
             records.push_back(consoleRecord(event));
+            records.back().Event.MouseEvent.dwMousePosition.Y =
+                static_cast<SHORT>(records.back().Event.MouseEvent.dwMousePosition.Y + *offset);
         }
         DWORD written{};
         const auto input = reinterpret_cast<HANDLE>(input_);
-        const auto requested = static_cast<DWORD>(records.size());
+        // Far's console::WriteInput adds the window-mode buffer delta before WriteConsoleInputW. In contrast,
+        // records replaced through PluginManager::ProcessConsoleInput stay window-relative because keyboard.cpp
+        // returns them directly to Far after plugin processing; only this replay boundary needs the conversion.
         const auto status = calls_.writeConsoleInput(input, records.data(), requested, &written);
         return {.status = status, .requested = requested, .written = written};
     }

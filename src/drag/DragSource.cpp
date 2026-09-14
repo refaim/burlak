@@ -58,11 +58,15 @@ namespace burlak::drag
         const auto action = policy_.query(button_, escaped, leftDown, rightDown, lastEffect_, needsExtraction_,
                                           overOwnWindow, peer.has_value());
         if (action == core::DragAction::ExtractThenDrop) {
-            return extraction_.extract() ? DRAGDROP_S_DROP : DRAGDROP_S_CANCEL;
+            extractionRan_ = extraction_.extract();
+            return extractionRan_ ? DRAGDROP_S_DROP : DRAGDROP_S_CANCEL;
         }
         if (action == core::DragAction::HandToPeer) {
-            if (needsExtraction_ && !extraction_.extract()) {
-                return DRAGDROP_S_CANCEL;
+            if (needsExtraction_) {
+                extractionRan_ = extraction_.extract();
+                if (!extractionRan_) {
+                    return DRAGDROP_S_CANCEL;
+                }
             }
             const auto chosen = button_ == core::Button::Right
                                     ? core::peerMenuEffect(peers_.menu(ownWindow_, *point))
@@ -107,6 +111,11 @@ namespace burlak::drag
     bool DragSource::peerHandoff() const
     {
         return peerHandoff_;
+    }
+
+    bool DragSource::extractionRan() const
+    {
+        return extractionRan_;
     }
 
 } // namespace burlak::drag

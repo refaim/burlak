@@ -2,6 +2,7 @@
 
 #include "core/Types.hpp"
 
+#include <chrono>
 #include <expected>
 #include <optional>
 #include <string_view>
@@ -51,7 +52,11 @@ namespace burlak::core
     [[nodiscard]] std::expected<void, Error> replayOutcome(ReplayOutcome outcome);
     [[nodiscard]] std::expected<void, Error> extractionOutcome(bool crashed, std::intptr_t result);
     [[nodiscard]] bool allPathsAdvertised(std::size_t requested, std::size_t parsed);
+    [[nodiscard]] std::optional<Effect> preferredDropEffect(bool needsExtraction);
+    [[nodiscard]] std::expected<int, Error> consoleRowOffset(int bufferHeight, int windowTop, int windowBottom);
     [[nodiscard]] std::optional<std::uint32_t> runOwner(std::wstring_view name);
-    [[nodiscard]] bool shouldSweepRun(std::wstring_view name, bool ownerAlive, bool oldEnough);
+    inline constexpr auto extractionRunGracePeriod = std::chrono::minutes{10};
+    [[nodiscard]] bool shouldSweepRun(bool ownRun, bool ownerAlive, bool oldEnough);
+    [[nodiscard]] bool retainExtractedRun(bool extractionRan, DragLoopOutcome outcome, std::int32_t droppedStatus);
 
 } // namespace burlak::core

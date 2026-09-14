@@ -66,6 +66,26 @@ namespace burlak::adapters::shell
             return E_FAIL;
         }
 
+        UINT WINAPI failClipboardFormat(LPCWSTR)
+        {
+            return 0;
+        }
+
+        HGLOBAL WINAPI failGlobalAllocation(UINT, SIZE_T)
+        {
+            return nullptr;
+        }
+
+        LPVOID WINAPI failGlobalLock(HGLOBAL)
+        {
+            return nullptr;
+        }
+
+        HRESULT failSetData(IDataObject &, FORMATETC &, STGMEDIUM &, BOOL)
+        {
+            return E_FAIL;
+        }
+
         HRESULT dragResult{DRAGDROP_S_DROP};
         DWORD draggedEffect{DROPEFFECT_COPY};
         DWORD allowedEffects{};
@@ -196,6 +216,32 @@ namespace burlak::adapters::shell
             CHECK(DragQueryFileW(drop, 0, path, MAX_PATH) > 0);
             CHECK(std::filesystem::canonical(std::filesystem::path{path}) == std::filesystem::canonical(file));
 
+            const auto preferredFormat = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
+            REQUIRE(preferredFormat != 0);
+            FORMATETC preferred{static_cast<CLIPFORMAT>(preferredFormat), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            const auto realQuery = data->data->QueryGetData(&preferred);
+            STGMEDIUM realPreferredMedium{};
+            const auto realGet = data->data->GetData(&preferred, &realPreferredMedium);
+            if (SUCCEEDED(realGet)) {
+                const auto value = static_cast<const DWORD *>(GlobalLock(realPreferredMedium.hGlobal));
+                if (value != nullptr) {
+                    GlobalUnlock(realPreferredMedium.hGlobal);
+                }
+                ReleaseStgMedium(&realPreferredMedium);
+            }
+            CHECK(realQuery != S_OK);
+            CHECK(FAILED(realGet));
+
+            auto placeholders = makeDataObject(paths, core::Effect::Copy);
+            REQUIRE(placeholders.has_value());
+            STGMEDIUM preferredMedium{};
+            REQUIRE(SUCCEEDED(placeholders->data->GetData(&preferred, &preferredMedium)));
+            const auto preferredValue = static_cast<const DWORD *>(GlobalLock(preferredMedium.hGlobal));
+            REQUIRE(preferredValue != nullptr);
+            CHECK(*preferredValue == DROPEFFECT_COPY);
+            GlobalUnlock(preferredMedium.hGlobal);
+            ReleaseStgMedium(&preferredMedium);
+
             TestDropSource source;
             auto calls = systemShellCalls();
             calls.doDragDrop = fakeDrag;
@@ -260,6 +306,18 @@ namespace burlak::adapters::shell
             calls = systemShellCalls();
             calls.bindDataObject = failBind;
             CHECK(makeDataObject(paths, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.registerClipboardFormat = failClipboardFormat;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.globalAlloc = failGlobalAllocation;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.globalLock = failGlobalLock;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.setData = failSetData;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
 
             std::filesystem::remove_all(root);
             OleUninitialize();

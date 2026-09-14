@@ -86,6 +86,15 @@ extern "C" intptr_t WINAPI GetFilesW(GetFilesInfo *info)
         if (file == INVALID_HANDLE_VALUE) {
             return 0;
         }
+        if (info->Instance == reinterpret_cast<void *>(44)) {
+            constexpr char contents[] = "content";
+            DWORD written{};
+            if (WriteFile(file, contents, sizeof(contents) - 1, &written, nullptr) == FALSE ||
+                written != sizeof(contents) - 1) {
+                CloseHandle(file);
+                return 0;
+            }
+        }
         CloseHandle(file);
     }
     if (info->Instance == reinterpret_cast<void *>(44)) {

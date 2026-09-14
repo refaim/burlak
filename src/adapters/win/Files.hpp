@@ -24,6 +24,7 @@ namespace burlak::adapters::win
                                                                            bool directory) override;
         [[nodiscard]] bool nameBefore(std::wstring_view left, std::wstring_view right) const override;
         [[nodiscard]] std::expected<void, core::Error> removeTree(std::wstring_view path) override;
+        [[nodiscard]] std::expected<void, core::Error> touch(std::wstring_view path) override;
         [[nodiscard]] core::AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
                                                             std::uint32_t sourceProcess) override;
         void sweep() override;

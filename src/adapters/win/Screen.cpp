@@ -96,6 +96,8 @@ namespace burlak::adapters::win
         const auto console = calls_.getConsoleWindow();
         CONSOLE_FONT_INFO font{};
         POINT fontOrigin{};
+        // This is Far's own pixel-to-cell basis: console::fix_wheel_coordinates uses ScreenToClient on the
+        // console window and CONSOLE_FONT_INFO::dwFontSize (Far source: far/console.cpp).
         if (output != INVALID_HANDLE_VALUE && host && host->handle == reinterpret_cast<core::NativeWindow>(console) &&
             calls_.getCurrentConsoleFont(output, FALSE, &font) && font.dwFontSize.X > 0 && font.dwFontSize.Y > 0 &&
             calls_.clientToScreen(console, &fontOrigin)) {

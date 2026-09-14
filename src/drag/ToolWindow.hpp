@@ -45,6 +45,7 @@ namespace burlak::drag
 
         [[nodiscard]] core::NativeWindow nativeWindow() const;
         [[nodiscard]] bool hasData() const;
+        void drop(core::Point point, bool shift);
 
       private:
         class State;

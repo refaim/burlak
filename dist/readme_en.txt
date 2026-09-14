@@ -13,6 +13,9 @@ How to use:
   Files and selections can also be dragged out of archive, FTP/SFTP, and
   other plugin panels; after release they are extracted as copies for the target,
   so these plugin-panel drags do not offer shortcuts.
+  Files dragged out of a plugin panel are extracted into %TEMP%\Burlak and
+  removed about ten minutes later, giving the receiving program time to read
+  them.
 
   Drag with the right button if you want the target to ask what to do:
   Explorer will offer to copy, move or make a shortcut. Telegram and the

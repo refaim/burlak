@@ -175,6 +175,7 @@ namespace
             const auto path = firstPath(data);
             placeholdersReady_.store(path && path->filename() == expectedPlaceholder_ &&
                                      std::filesystem::is_regular_file(*path) && std::filesystem::file_size(*path) == 0);
+            preferredCopy_.store(preferredEffect(data) == DROPEFFECT_COPY);
             *effect = DROPEFFECT_COPY;
             return S_OK;
         }
@@ -190,10 +191,11 @@ namespace
         HRESULT STDMETHODCALLTYPE Drop(IDataObject *data, DWORD, POINTL, DWORD *effect) override
         {
             const auto path = firstPath(data);
-            received_.store(path.has_value());
             if (path) {
+                receivedPath_ = *path;
                 extracted_.store(std::filesystem::exists(path->parent_path() / L"plugin-e2e.extracted"));
             }
+            received_.store(path.has_value());
             *effect = DROPEFFECT_COPY;
             return S_OK;
         }
@@ -217,7 +219,35 @@ namespace
             return extracted_.load();
         }
 
+        [[nodiscard]] bool preferredCopy() const
+        {
+            return preferredCopy_.load();
+        }
+
+        [[nodiscard]] std::filesystem::path receivedPath() const
+        {
+            return receivedPath_;
+        }
+
       private:
+        [[nodiscard]] static DWORD preferredEffect(IDataObject *data)
+        {
+            const auto registered = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
+            FORMATETC format{static_cast<CLIPFORMAT>(registered), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            STGMEDIUM medium{};
+            if (registered == 0 || data == nullptr || FAILED(data->GetData(&format, &medium))) {
+                return DROPEFFECT_NONE;
+            }
+            DWORD effect{DROPEFFECT_NONE};
+            const auto value = static_cast<const DWORD *>(GlobalLock(medium.hGlobal));
+            if (value != nullptr) {
+                effect = *value;
+                GlobalUnlock(medium.hGlobal);
+            }
+            ReleaseStgMedium(&medium);
+            return effect;
+        }
+
         [[nodiscard]] static std::optional<std::filesystem::path> firstPath(IDataObject *data)
         {
             FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
@@ -244,6 +274,8 @@ namespace
         std::atomic<bool> entered_{};
         std::atomic<bool> placeholdersReady_{};
         std::atomic<bool> extracted_{};
+        std::atomic<bool> preferredCopy_{};
+        std::filesystem::path receivedPath_;
     };
 
     LRESULT CALLBACK targetProcedure(HWND window, UINT message, WPARAM word, LPARAM number)
@@ -410,6 +442,24 @@ namespace
         std::filesystem::path path_;
     };
 
+    class TreeCleanup
+    {
+      public:
+        explicit TreeCleanup(std::filesystem::path path) : path_{std::move(path)}
+        {
+        }
+        ~TreeCleanup()
+        {
+            std::error_code ignored;
+            static_cast<void>(std::filesystem::remove_all(path_, ignored));
+        }
+        TreeCleanup(const TreeCleanup &) = delete;
+        TreeCleanup &operator=(const TreeCleanup &) = delete;
+
+      private:
+        std::filesystem::path path_;
+    };
+
     bool ownsDragPoint(HWND window)
     {
         RECT rect{};
@@ -483,12 +533,19 @@ namespace
 
         ~PluginRuntimeGuard()
         {
-            exit_(nullptr);
-            pluginPanel = false;
+            stop();
         }
 
         PluginRuntimeGuard(const PluginRuntimeGuard &) = delete;
         PluginRuntimeGuard &operator=(const PluginRuntimeGuard &) = delete;
+
+        void stop()
+        {
+            if (const auto exit = std::exchange(exit_, nullptr)) {
+                exit(nullptr);
+                pluginPanel = false;
+            }
+        }
 
       private:
         decltype(&ExitFARW) exit_;
@@ -649,6 +706,13 @@ TEST_SUITE("e2e")
         auto startupInfo = pluginStartup();
         startup(&startupInfo);
         PluginRuntimeGuard runtime{exit};
+        const auto agedRun = std::filesystem::temp_directory_path() / L"Burlak" /
+                             (std::to_wstring(GetCurrentProcessId()) + L"-e2e-aged");
+        TreeCleanup agedCleanup{agedRun};
+        std::filesystem::create_directories(agedRun);
+        std::ofstream{agedRun / L"stale.txt"} << "stale";
+        std::filesystem::last_write_time(agedRun, std::filesystem::file_time_type::clock::now() -
+                                                      burlak::core::extractionRunGracePeriod - std::chrono::minutes{1});
 
         MouseButtonGuard button;
         button.press();
@@ -666,6 +730,7 @@ TEST_SUITE("e2e")
         ProcessSynchroEventInfo event{};
         event.Event = SE_COMMONSYNCHRO;
         CHECK(synchro(&event) == 0);
+        CHECK_FALSE(std::filesystem::exists(agedRun));
         REQUIRE(pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }));
 
         const POINT targetPoint = inside(targetWindowGuard.get());
@@ -680,12 +745,21 @@ TEST_SUITE("e2e")
             return;
         }
         CHECK(target.placeholdersReady());
+        CHECK(target.preferredCopy());
 
         button.release();
         REQUIRE(pumpUntil([] { return synchroRequests.load() >= 2; }));
         CHECK(synchro(&event) == 0);
         REQUIRE(pumpUntil([&target] { return target.received(); }));
+        const auto retainedPath = target.receivedPath();
+        // ExitFARW joins the tool thread after SHDoDragDrop has unwound, so the retained-run checks cannot race
+        // ToolWindow::clearDrag (see Composition::Runtime::stop and ToolWindow::State::stop).
+        runtime.stop();
         CHECK(target.extracted());
+        TreeCleanup retainedCleanup{retainedPath.parent_path()};
+        CHECK(std::filesystem::is_regular_file(retainedPath));
+        CHECK(std::filesystem::file_size(retainedPath) == 7);
+        CHECK(std::filesystem::exists(retainedPath.parent_path() / L"plugin-e2e.extracted"));
         CHECK(synchroRequests.load() == 2);
     }
 

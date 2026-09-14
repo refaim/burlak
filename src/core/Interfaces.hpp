@@ -72,7 +72,7 @@ namespace burlak::core
         };
 
         [[nodiscard]] virtual std::expected<PreparedDrag, Error> makeDataObject(
-            std::span<const std::wstring> paths) = 0;
+            std::span<const std::wstring> paths, std::optional<Effect> preferredEffect = std::nullopt) = 0;
         [[nodiscard]] virtual DragLoopOutcome runDrag(NativeWindow owner, DragData &data, std::uintptr_t source,
                                                       bool allowLink) = 0;
         [[nodiscard]] virtual std::expected<void, Error> copy(std::span<const std::wstring> paths,
@@ -88,6 +88,7 @@ namespace burlak::core
                                                                              bool directory) = 0;
         [[nodiscard]] virtual bool nameBefore(std::wstring_view left, std::wstring_view right) const = 0;
         [[nodiscard]] virtual std::expected<void, Error> removeTree(std::wstring_view path) = 0;
+        [[nodiscard]] virtual std::expected<void, Error> touch(std::wstring_view path) = 0;
         [[nodiscard]] virtual AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
                                                               std::uint32_t sourceProcess) = 0;
         virtual void sweep() = 0;

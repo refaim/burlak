@@ -102,6 +102,8 @@ namespace burlak::tests
         std::optional<std::wstring> rejectedName;
         std::vector<std::pair<std::wstring, bool>> placeholders;
         std::vector<std::wstring> removed;
+        std::vector<std::wstring> touched;
+        std::expected<void, core::Error> touchResult{};
         std::vector<std::vector<std::wstring>> peerPaths;
         std::vector<std::uint32_t> peerProcesses;
         std::optional<core::AdoptedPeerPaths> adoptedResult;
@@ -127,6 +129,12 @@ namespace burlak::tests
         {
             removed.emplace_back(path);
             return {};
+        }
+
+        [[nodiscard]] std::expected<void, core::Error> touch(std::wstring_view path) override
+        {
+            touched.emplace_back(path);
+            return touchResult;
         }
 
         [[nodiscard]] core::AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
@@ -171,7 +179,8 @@ namespace burlak::tests
         std::vector<std::wstring> destinations;
         std::vector<core::NativeWindow> owners;
 
-        [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(std::span<const std::wstring>) override
+        [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(std::span<const std::wstring>,
+                                                                              std::optional<core::Effect>) override
         {
             return std::unexpected(core::Error::Unavailable);
         }

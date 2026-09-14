@@ -2,6 +2,8 @@
 
 #include <doctest/doctest.h>
 
+#include <chrono>
+
 namespace burlak::core
 {
 
@@ -280,18 +282,55 @@ namespace burlak::core
             CHECK_FALSE(allPathsAdvertised(2, 1));
         }
 
-        TEST_CASE("sweep policy removes only old runs whose owners are dead")
+        TEST_CASE("only placeholder-backed drags prefer copy")
         {
-            CHECK(shouldSweepRun(L"17-old", false, true));
-            CHECK_FALSE(shouldSweepRun(L"17-old", false, false));
-            CHECK_FALSE(shouldSweepRun(L"17-old", true, true));
-            CHECK_FALSE(shouldSweepRun(L"other", false, true));
-            CHECK_FALSE(shouldSweepRun(L"17", false, true));
-            CHECK_FALSE(shouldSweepRun(L"17-", false, true));
-            CHECK_FALSE(shouldSweepRun(L"-1", false, true));
-            CHECK_FALSE(shouldSweepRun(L"/-1", false, true));
-            CHECK_FALSE(shouldSweepRun(L"x-1", false, true));
-            CHECK_FALSE(shouldSweepRun(L"42949672960-1", false, true));
+            CHECK(preferredDropEffect(true) == std::optional{Effect::Copy});
+            CHECK_FALSE(preferredDropEffect(false).has_value());
+        }
+
+        TEST_CASE("console replay offsets window rows into the console buffer")
+        {
+            CHECK(consoleRowOffset(50, 0, 49) == 0);
+            CHECK(consoleRowOffset(9001, 0, 49) == 8951);
+            CHECK(consoleRowOffset(0, 0, 49) == std::unexpected(Error::Unavailable));
+            CHECK(consoleRowOffset(-1, 0, 49) == std::unexpected(Error::Unavailable));
+            CHECK(consoleRowOffset(50, 10, 9) == std::unexpected(Error::Unavailable));
+            CHECK(consoleRowOffset(49, 0, 49) == std::unexpected(Error::Unavailable));
+        }
+
+        TEST_CASE("sweep policy removes old own runs and old runs whose owners are dead")
+        {
+            CHECK_FALSE(shouldSweepRun(true, true, false));
+            CHECK_FALSE(shouldSweepRun(true, false, false));
+            CHECK(shouldSweepRun(true, true, true));
+            CHECK(shouldSweepRun(true, false, true));
+            CHECK_FALSE(shouldSweepRun(false, true, false));
+            CHECK_FALSE(shouldSweepRun(false, false, false));
+            CHECK_FALSE(shouldSweepRun(false, true, true));
+            CHECK(shouldSweepRun(false, false, true));
+            CHECK(extractionRunGracePeriod == std::chrono::minutes{10});
+
+            CHECK(runOwner(L"17-old") == 17);
+            CHECK_FALSE(runOwner(L"other").has_value());
+            CHECK_FALSE(runOwner(L"17").has_value());
+            CHECK_FALSE(runOwner(L"17-").has_value());
+            CHECK_FALSE(runOwner(L"-1").has_value());
+            CHECK_FALSE(runOwner(L"/-1").has_value());
+            CHECK_FALSE(runOwner(L"x-1").has_value());
+            CHECK_FALSE(runOwner(L"42949672960-1").has_value());
+        }
+
+        TEST_CASE("only a completed drop with an extracted payload retains its run")
+        {
+            constexpr std::int32_t dropped = 0x00040100;
+            constexpr std::int32_t cancelled = 0x00040101;
+            constexpr std::int32_t failed = static_cast<std::int32_t>(0x80004005);
+            CHECK(retainExtractedRun(true, {dropped, 1}, dropped));
+            CHECK(retainExtractedRun(true, {dropped, 2}, dropped));
+            CHECK_FALSE(retainExtractedRun(false, {dropped, 1}, dropped));
+            CHECK_FALSE(retainExtractedRun(true, {dropped, 0}, dropped));
+            CHECK_FALSE(retainExtractedRun(true, {cancelled, 1}, dropped));
+            CHECK_FALSE(retainExtractedRun(true, {failed, 1}, dropped));
         }
 
         TEST_CASE("window placement follows the host and always demotes before ordinary placement")

@@ -76,11 +76,14 @@ namespace burlak::drag
             int dragCalls{};
             bool allowedLink{};
             std::uintptr_t sourceHandle{};
+            core::DragLoopOutcome dragOutcome{};
+            std::optional<core::Effect> preferredEffect;
             std::function<void(core::NativeWindow)> duringDrag;
 
             [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
-                std::span<const std::wstring>) override
+                std::span<const std::wstring>, std::optional<core::Effect> preferred) override
             {
+                preferredEffect = preferred;
                 if (!prepares) {
                     return std::unexpected(core::Error::NoSelection);
                 }
@@ -96,7 +99,7 @@ namespace burlak::drag
                 if (duringDrag) {
                     duringDrag(owner);
                 }
-                return {};
+                return dragOutcome;
             }
 
             [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring>, std::wstring_view,
@@ -157,11 +160,14 @@ namespace burlak::drag
             int calls{};
             int cleanups{};
             int retains{};
+            bool succeeds{true};
+            bool touched{};
+            std::function<void()> duringRetain;
 
             [[nodiscard]] bool extract() override
             {
                 ++calls;
-                return true;
+                return succeeds;
             }
 
             void cleanup() override
@@ -171,7 +177,11 @@ namespace burlak::drag
 
             void retain() override
             {
+                if (duringRetain) {
+                    duringRetain();
+                }
                 ++retains;
+                touched = true;
             }
         };
 
@@ -513,6 +523,7 @@ namespace burlak::drag
             auto context = dropContext();
             context.host = core::HostWindow{42, {0, 0, 1, 1}, false};
             CHECK(tool.prepare(paths, core::Button::Left, true, context));
+            CHECK(shell.preferredEffect == core::Effect::Copy);
             CHECK(peers.announcements == 1);
             CHECK(peers.source == tool.nativeWindow());
             CHECK(peers.target == peers.broadcastTarget());
@@ -735,6 +746,121 @@ namespace burlak::drag
             CHECK(peers.sends == 1);
             CHECK(extraction.cleanups == 0);
             CHECK(extraction.retains == 1);
+            tool.stop();
+        }
+
+        TEST_CASE("ordinary plugin-panel drag outcomes route extracted runs to retention or cleanup")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
+            screen.point = core::Point{10, 20};
+            screen.root = 90;
+            Input input;
+            Shell shell;
+            DropSession dropSession;
+            Extraction extraction;
+            Peers peers;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+            HRESULT expectedQuery{DRAGDROP_S_DROP};
+            bool escape{};
+            int expectedExtractions{1};
+            int expectedRetains{1};
+            int expectedCleanups{};
+
+            SUBCASE("completed external copy")
+            {
+                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_COPY};
+            }
+            SUBCASE("completed external move")
+            {
+                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_MOVE};
+            }
+            SUBCASE("drop reported no effect")
+            {
+                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_NONE};
+                expectedRetains = 0;
+                expectedCleanups = 1;
+            }
+            SUBCASE("Escape cancelled before extraction")
+            {
+                escape = true;
+                expectedQuery = DRAGDROP_S_CANCEL;
+                shell.dragOutcome = {DRAGDROP_S_CANCEL, DROPEFFECT_NONE};
+                expectedExtractions = 0;
+                expectedRetains = 0;
+                expectedCleanups = 1;
+            }
+            SUBCASE("extraction failed")
+            {
+                extraction.succeeds = false;
+                expectedQuery = DRAGDROP_S_CANCEL;
+                shell.dragOutcome = {DRAGDROP_S_CANCEL, DROPEFFECT_NONE};
+                expectedRetains = 0;
+                expectedCleanups = 1;
+            }
+            SUBCASE("own tool-window drop never extracted")
+            {
+                screen.root = tool.nativeWindow();
+                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_COPY};
+                expectedExtractions = 0;
+                expectedRetains = 0;
+                expectedCleanups = 1;
+            }
+
+            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            REQUIRE(tool.showAndArm());
+            shell.duringDrag = [&](core::NativeWindow) {
+                auto &source = *reinterpret_cast<IDropSource *>(shell.sourceHandle);
+                CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(escape, 0) == expectedQuery);
+            };
+
+            SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
+            CHECK(extraction.calls == expectedExtractions);
+            CHECK(extraction.retains == expectedRetains);
+            CHECK(extraction.cleanups == expectedCleanups);
+            tool.stop();
+        }
+
+        TEST_CASE("a completed drag stays active until its extracted run is retained and touched")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
+            screen.point = core::Point{10, 20};
+            screen.root = 90;
+            Input input;
+            Shell shell;
+            shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_COPY};
+            DropSession dropSession;
+            Extraction extraction;
+            Peers peers;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            REQUIRE(tool.showAndArm());
+            shell.duringDrag = [&shell](core::NativeWindow) {
+                auto &source = *reinterpret_cast<IDropSource *>(shell.sourceHandle);
+                CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_DROP);
+            };
+            bool newGestureAccepted{};
+            extraction.duringRetain = [&] { newGestureAccepted = !tool.active(); };
+
+            SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
+
+            CHECK_FALSE(newGestureAccepted);
+            CHECK(extraction.retains == 1);
+            CHECK(extraction.touched);
+            CHECK_FALSE(tool.active());
             tool.stop();
         }
 

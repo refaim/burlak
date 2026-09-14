@@ -137,10 +137,11 @@ namespace burlak::adapters::win
             CloseHandle(lock);
         }
 
-        TEST_CASE("sweep removes only old runs whose owner is dead")
+        TEST_CASE("sweep removes old own and dead-owner runs but keeps every young or live foreign run")
         {
             DirectoryGuard root{testRoot()};
             std::filesystem::create_directories(root.path() / L"700-old");
+            std::filesystem::create_directories(root.path() / L"700-recent");
             std::filesystem::create_directories(root.path() / L"701-old");
             std::filesystem::create_directories(root.path() / L"702-old");
             std::filesystem::create_directories(root.path() / L"702-recent");
@@ -156,13 +157,29 @@ namespace burlak::adapters::win
             Files files{root.path(), 700, fakeProcessAlive};
             files.sweep();
 
-            CHECK(std::filesystem::exists(root.path() / L"700-old"));
+            CHECK_FALSE(std::filesystem::exists(root.path() / L"700-old"));
+            CHECK(std::filesystem::exists(root.path() / L"700-recent"));
             CHECK(std::filesystem::exists(root.path() / L"701-old"));
             CHECK_FALSE(std::filesystem::exists(root.path() / L"702-old"));
             CHECK(std::filesystem::exists(root.path() / L"702-recent"));
             CHECK(std::filesystem::exists(root.path() / L"noise"));
             CHECK(std::filesystem::exists(root.path() / L"703-file"));
             CHECK(checkedProcesses == std::vector<std::uint32_t>{701, 702, 702});
+        }
+
+        TEST_CASE("touch restarts a real run directory's grace clock")
+        {
+            DirectoryGuard root{testRoot()};
+            const auto run = root.path() / L"700-old";
+            std::filesystem::create_directories(run);
+            const auto old = std::filesystem::file_time_type::clock::now() - std::chrono::minutes{11};
+            std::filesystem::last_write_time(run, old);
+            const auto before = std::filesystem::last_write_time(run);
+            Files files{root.path(), 700, fakeProcessAlive};
+
+            CHECK(files.touch(run.wstring()).has_value());
+            CHECK(std::filesystem::last_write_time(run) > before);
+            CHECK(files.touch((root.path() / L"missing").wstring()) == std::unexpected(core::Error::Unavailable));
         }
 
         TEST_CASE("peer extraction runs transfer by directory rename and ordinary paths stay untouched")

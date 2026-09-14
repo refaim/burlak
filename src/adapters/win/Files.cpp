@@ -131,6 +131,14 @@ namespace burlak::adapters::win
         return core::expectedOutcome(!error, core::Error::Unavailable);
     }
 
+    std::expected<void, core::Error> Files::touch(std::wstring_view path)
+    {
+        std::error_code error;
+        std::filesystem::last_write_time(std::filesystem::path{path}, std::filesystem::file_time_type::clock::now(),
+                                         error);
+        return core::expectedOutcome(!error, core::Error::Unavailable);
+    }
+
     core::AdoptedPeerPaths Files::adoptPeerPaths(std::span<const std::wstring> paths, std::uint32_t sourceProcess)
     {
         core::AdoptedPeerPaths unchanged{.paths = {paths.begin(), paths.end()}, .cleanupDirectory = std::nullopt};
@@ -183,13 +191,17 @@ namespace burlak::adapters::win
             if (!owner) {
                 continue;
             }
-            const bool alive = *owner == process_ || processProbe_(*owner);
+            const bool ownRun = *owner == process_;
+            const bool alive = ownRun || processProbe_(*owner);
             const auto written = entry->last_write_time(error);
-            const auto cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::minutes{10};
+            const auto cutoff = std::filesystem::file_time_type::clock::now() - core::extractionRunGracePeriod;
             const std::array ages{written <= cutoff, false};
             const bool oldEnough = ages[static_cast<std::size_t>(static_cast<bool>(error))];
             error.clear();
-            if (core::shouldSweepRun(entry->path().filename().wstring(), alive, oldEnough)) {
+            if (core::shouldSweepRun(ownRun, alive, oldEnough)) {
+                // The grace period lets normal asynchronous sends finish. A target that still holds a file open
+                // keeps that file when remove_all reports sharing failure; younger runs survive Far exit for the
+                // next startup sweep, bounding successful-drag storage to roughly the last ten minutes at a sweep.
                 static_cast<void>(std::filesystem::remove_all(entry->path(), error));
                 error.clear();
             }
