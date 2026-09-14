@@ -15,8 +15,11 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <span>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -34,8 +37,11 @@ namespace
     class TemporaryDropFiles final
     {
       public:
+        // The shell hands back canonical long names through CF_HDROP whatever spelling it was given, and the
+        // runner's %TEMP% is an 8.3 short path: the root is canonicalised so the strings the test builds are the
+        // strings the receiver is expected to copy.
         TemporaryDropFiles()
-            : root_{std::filesystem::temp_directory_path() /
+            : root_{std::filesystem::canonical(std::filesystem::temp_directory_path()) /
                     (L"burlak-plugin-drop-" + std::to_wstring(GetCurrentProcessId()))},
               paths_{root_ / L"one.txt", root_ / L"two.txt"}
         {
@@ -55,6 +61,16 @@ namespace
         [[nodiscard]] std::vector<std::wstring> paths() const
         {
             return {paths_[0].wstring(), paths_[1].wstring()};
+        }
+
+        [[nodiscard]] static std::vector<std::wstring> canonical(std::span<const std::wstring> paths)
+        {
+            std::vector<std::wstring> result;
+            for (const auto &path : paths) {
+                std::error_code ignored;
+                result.push_back(std::filesystem::canonical(path, ignored).wstring());
+            }
+            return result;
         }
 
       private:
@@ -725,7 +741,8 @@ TEST_SUITE("plugin exports")
         // The popup must be owned by the tool window of this thread: TrackPopupMenu refuses the host, which belongs
         // to conhost or Windows Terminal, and would otherwise cancel every right-button drop.
         CHECK(menu.owner == (rightButton ? std::optional{tool} : std::nullopt));
-        CHECK(shell.paths == paths);
+        // The receiver copies exactly the paths the data object names; the shell names them canonically.
+        CHECK(TemporaryDropFiles::canonical(shell.paths) == TemporaryDropFiles::canonical(paths));
         CHECK(shell.destination == receiveDirectory);
         CHECK(shell.effect == (moving ? burlak::core::Effect::Move : burlak::core::Effect::Copy));
         CHECK(shell.owner == 99);

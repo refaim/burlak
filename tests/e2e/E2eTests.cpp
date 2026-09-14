@@ -556,6 +556,72 @@ namespace
         HANDLE event_{};
     };
 
+    // Forwards to the real Session and counts the receive calls OLE makes on the tool thread, so the test knows
+    // whether OLE ever entered the overlay (its hover asks receiveEffect) without asserting on that thread.
+    class ObservedDropSession final : public burlak::core::IDropSession
+    {
+      public:
+        explicit ObservedDropSession(burlak::core::Session &session) : session_{session}
+        {
+        }
+
+        mutable std::atomic<int> hovers{};
+        std::atomic<int> drops{};
+
+        void prepare(burlak::core::DropContext context) override
+        {
+            session_.prepare(std::move(context));
+        }
+        void endSource() override
+        {
+            session_.endSource();
+        }
+        [[nodiscard]] burlak::core::Effect effect(burlak::core::Point point, bool shift) const override
+        {
+            return session_.effect(point, shift);
+        }
+        [[nodiscard]] burlak::core::Effect drop(burlak::core::Point point, bool shift) override
+        {
+            return session_.drop(point, shift);
+        }
+        [[nodiscard]] bool requestReceiveSnapshot(burlak::core::Point point) override
+        {
+            return session_.requestReceiveSnapshot(point);
+        }
+        [[nodiscard]] bool requestReceiveRefresh(burlak::core::Point point) override
+        {
+            return session_.requestReceiveRefresh(point);
+        }
+        void prepareReceive(burlak::core::ReceiveSnapshot snapshot) override
+        {
+            session_.prepareReceive(std::move(snapshot));
+        }
+        void cancelReceive() override
+        {
+            session_.cancelReceive();
+        }
+        [[nodiscard]] burlak::core::Effect receiveEffect(burlak::core::Point point, bool shift,
+                                                         burlak::core::AllowedEffects allowed) const override
+        {
+            ++hovers;
+            return session_.receiveEffect(point, shift, allowed);
+        }
+        [[nodiscard]] burlak::core::NativeWindow receiveOwner() const override
+        {
+            return session_.receiveOwner();
+        }
+        [[nodiscard]] burlak::core::ReceiveDropOutcome receiveDrop(std::span<const std::wstring> paths,
+                                                                   burlak::core::Point point,
+                                                                   burlak::core::Effect effect) override
+        {
+            ++drops;
+            return session_.receiveDrop(paths, point, effect);
+        }
+
+      private:
+        burlak::core::Session &session_;
+    };
+
     class RegistrationGuard
     {
       public:
@@ -1016,10 +1082,16 @@ TEST_SUITE("e2e")
         ReceiveMenu menu;
         NoExtraction extraction;
         burlak::core::Session session{panels, host, screen, input, files, shell};
+        ObservedDropSession observed{session};
         burlak::adapters::shell::DropData dropData;
-        burlak::drag::ToolWindow tool{screen, input, shell, dropData, session, extraction, files, properties, menu};
+        burlak::drag::ToolWindow tool{screen, input, shell, dropData, observed, extraction, files, properties, menu};
         REQUIRE(tool.start());
 
+        if (!ownsDragPoint(sourceWindow.get())) {
+            std::fputs("SKIP: real OLE receive lost its owned cursor point or a mouse button is down\n", stderr);
+            tool.stop();
+            return;
+        }
         MouseButtonGuard button;
         const POINT press = inside(sourceWindow.get());
         REQUIRE(SetCursorPos(press.x, press.y) != FALSE);
@@ -1050,43 +1122,67 @@ TEST_SUITE("e2e")
                                         burlak::core::Button::Left,
                                         reinterpret_cast<burlak::core::NativeWindow>(sourceWindow.get()),
                                         false};
-        std::jthread release{[&button] {
-            std::this_thread::sleep_for(std::chrono::milliseconds{100});
-            mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
-            mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
-            button.release();
+        // Neither helper thread asserts: a doctest assertion off the main thread would throw across the thread and
+        // terminate the process. Each records what it saw and any exception, and the main thread checks afterwards.
+        std::exception_ptr releaseFailure;
+        std::atomic<bool> entered{false};
+        std::jthread release{[&] {
+            try {
+                // OLE hit-tests on mouse movement; release only once its hover has reached the overlay (or after a
+                // bounded wait), otherwise the drop lands nowhere and the test can only warn.
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+                while (observed.hovers.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+                    mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+                    mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
+                    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+                }
+                entered.store(observed.hovers.load() > 0);
+                button.release();
+            } catch (...) {
+                releaseFailure = std::current_exception();
+                button.release();
+            }
         }};
         // Stand in for Far's thread for the drag's duration: the tool thread's Drop posts a refresh synchro and waits
         // pumping COM, so nothing services it here unless another thread runs session.synchro() and forwards the
         // refresh to the tool, exactly as the composition does. Without it the refresh wait would stall to its
         // timeout, Drop would answer NONE, and the copy and redraw assertions could not pass where OLE enters.
+        std::exception_ptr farFailure;
         std::atomic<bool> stop{false};
         std::jthread farThread{[&] {
-            while (!stop.load()) {
-                static_cast<void>(WaitForSingleObject(host.event(), 5));
-                static_cast<void>(session.synchro());
-                if (const auto refresh = session.takeReceiveRefresh()) {
-                    tool.completeReceiveRefresh(*refresh);
+            try {
+                while (!stop.load()) {
+                    static_cast<void>(WaitForSingleObject(host.event(), 5));
+                    static_cast<void>(session.synchro());
+                    if (const auto refresh = session.takeReceiveRefresh()) {
+                        tool.completeReceiveRefresh(*refresh);
+                    }
                 }
+            } catch (...) {
+                farFailure = std::current_exception();
             }
         }};
         const auto result = burlak::adapters::shell::runDrag(sourceWindow.get(), *data->data.Get(), source, false,
                                                              burlak::adapters::shell::systemShellCalls());
         release.join();
-        if (result.status != DRAGDROP_S_DROP) {
-            stop.store(true);
-            farThread.join();
+        stop.store(true);
+        farThread.join();
+        CHECK_FALSE(static_cast<bool>(releaseFailure));
+        CHECK_FALSE(static_cast<bool>(farFailure));
+        if (!entered.load()) {
+            // Desktop availability is a registration-time skip; a validated runner can still fail to wake OLE,
+            // which is an observed desktop outcome and therefore remains a visible runtime warning.
             WARN_MESSAGE(false, "OLE did not enter Burlak's receive overlay");
             tool.stop();
             return;
         }
         // The refresh synchro was serviced by the stand-in while Drop waited; the redraw synchro is posted just
-        // before Drop returns. Stop the stand-in and drain any redraw it had not yet consumed on this thread, so the
-        // final assertions do not race the fake panels.
-        stop.store(true);
-        farThread.join();
+        // before Drop returns. The stand-in is stopped, so drain any redraw it had not yet consumed on this thread and
+        // the final assertions do not race the fake panels.
         static_cast<void>(session.synchro());
+        CHECK(result.status == DRAGDROP_S_DROP);
         CHECK(result.effect == DROPEFFECT_COPY);
+        CHECK(observed.drops == 1);
         CHECK(std::filesystem::is_regular_file(destination / sourcePath.filename()));
         // snapshot (before the drag), drop-time refresh, and post-copy redraw.
         CHECK(host.synchros == 3);
