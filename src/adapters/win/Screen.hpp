@@ -12,8 +12,9 @@ namespace burlak::adapters::win
         decltype(&GetCursorPos) getCursorPos;
         decltype(&GetAsyncKeyState) getAsyncKeyState;
         decltype(&GetConsoleWindow) getConsoleWindow;
-        decltype(&GetForegroundWindow) getForegroundWindow;
+        decltype(&GetWindow) getWindow;
         decltype(&WindowFromPoint) windowFromPoint;
+        decltype(&GetAncestor) getAncestor;
         decltype(&GetWindowRect) getWindowRect;
         decltype(&GetClientRect) getClientRect;
         decltype(&IsWindowVisible) isWindowVisible;
@@ -43,8 +44,8 @@ namespace burlak::adapters::win
     };
 
     [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point point, core::NativeWindow console,
-                                                               core::NativeWindow foreground);
+                                                               core::NativeWindow owner);
     [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point point, core::NativeWindow console,
-                                                               core::NativeWindow foreground, const ScreenCalls &calls);
+                                                               core::NativeWindow owner, const ScreenCalls &calls);
 
 } // namespace burlak::adapters::win

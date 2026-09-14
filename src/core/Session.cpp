@@ -35,6 +35,21 @@ namespace burlak::core
                    panel->handle == recipe.panel && panel->owner == recipe.owner;
         }
 
+        [[nodiscard]] std::wstring refusalText(PeerDropRefusal refusal)
+        {
+            constexpr std::array reasons{
+                L"the current window is not the panels",    L"the console geometry is unavailable",
+                L"the Far host window is unavailable",      L"the point is not on a panel item row",
+                L"the destination is not a file panel",     L"the destination panel has no real directory",
+                L"the destination directory is unavailable"};
+            return reasons.at(static_cast<std::size_t>(refusal));
+        }
+
+        void reportPeerRefusal(IFarHost &host, std::wstring reason)
+        {
+            report(host, L"Burlak: drop here is not possible: " + std::move(reason));
+        }
+
         [[nodiscard]] bool extractRecipe(IPanels &panels, IFarHost &host, const ExtractionRecipe &recipe,
                                          std::wstring_view requestedDirectory)
         {
@@ -76,8 +91,8 @@ namespace burlak::core
 
     } // namespace
 
-    Session::Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input, IFiles &files)
-        : panels_{panels}, host_{host}, screen_{screen}, input_{input}, files_{files}
+    Session::Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input, IFiles &files, IShell &shell)
+        : panels_{panels}, host_{host}, screen_{screen}, input_{input}, files_{files}, shell_{shell}
     {
     }
 
@@ -184,6 +199,17 @@ namespace burlak::core
         return decision.effect;
     }
 
+    void Session::receivePeerDrop(Drop drop)
+    {
+        {
+            const std::lock_guard lock{pendingMutex_};
+            // The protocol accepts any sender process: it can only name source paths and request a copy into the
+            // real directory currently displayed by this Far, which is revalidated on Far's own thread below.
+            pendingPeerDrop_ = std::move(drop);
+        }
+        host_.postSynchro();
+    }
+
     bool Session::requestExtraction()
     {
         std::unique_lock lock{pendingMutex_};
@@ -202,10 +228,16 @@ namespace burlak::core
     {
         std::optional<std::wstring> extraction;
         std::optional<PendingDrop> pending;
+        std::optional<Drop> peerDrop;
         {
             const std::lock_guard lock{pendingMutex_};
             extraction = std::exchange(pendingExtraction_, std::nullopt);
-            pending = std::exchange(pendingDrop_, std::nullopt);
+            if (!extraction) {
+                peerDrop = std::exchange(pendingPeerDrop_, std::nullopt);
+                if (!peerDrop) {
+                    pending = std::exchange(pendingDrop_, std::nullopt);
+                }
+            }
         }
         if (extraction) {
             const std::lock_guard lock{pendingMutex_};
@@ -218,6 +250,30 @@ namespace burlak::core
                     });
                 })
                 .value_or(false);
+        }
+        if (peerDrop) {
+            const auto host = screen_.hostWindowAt(peerDrop->at);
+            if (!host) {
+                reportPeerRefusal(host_, refusalText(PeerDropRefusal::HostUnavailable));
+                return std::nullopt;
+            }
+            const auto geometry = screen_.cellGeometryAt(peerDrop->at);
+            const PeerReceiveContext context{
+                .panelsWindow = panels_.currentWindowIsPanels(),
+                .panels = {panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)},
+                .directories = {panels_.directory(PanelSide::Active), panels_.directory(PanelSide::Passive)},
+                .geometry = geometry ? std::optional{*geometry} : std::nullopt};
+            const auto destination = peerDropPolicy_.destination(context, peerDrop->at);
+            if (!destination) {
+                reportPeerRefusal(host_, refusalText(destination.error()));
+                return std::nullopt;
+            }
+            if (!shell_.copy(peerDrop->paths, destination->directory, peerDrop->effect, host->handle)) {
+                reportPeerRefusal(host_, L"the shell copy failed");
+                return std::nullopt;
+            }
+            panels_.updateAndRedraw(destination->side);
+            return std::nullopt;
         }
         if (!pending) {
             return std::nullopt;

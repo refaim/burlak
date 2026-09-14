@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace burlak::core
@@ -222,8 +223,21 @@ namespace burlak::core
     struct Peer
     {
         NativeWindow window{};
+        NativeWindow host{};
         std::uint64_t lastFocus{};
         std::uint32_t process{};
+
+        auto operator<=>(const Peer &) const = default;
+    };
+
+    struct PeerHello
+    {
+        std::uint32_t process{};
+        NativeWindow tool{};
+        NativeWindow host{};
+        std::uint64_t lastFocus{};
+
+        auto operator<=>(const PeerHello &) const = default;
     };
 
     struct Drop
@@ -231,7 +245,11 @@ namespace burlak::core
         std::vector<std::wstring> paths;
         Point at{};
         Effect effect{Effect::None};
+
+        auto operator<=>(const Drop &) const = default;
     };
+
+    using PeerPayload = std::variant<PeerHello, Drop>;
 
     enum class Error : std::uint8_t
     {

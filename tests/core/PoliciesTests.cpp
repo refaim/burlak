@@ -10,21 +10,30 @@ namespace burlak::core
         TEST_CASE("release policy cancels Escape and otherwise continues or drops")
         {
             ReleasePolicy policy;
-            CHECK(policy.query(Button::Left, true, true, false, Effect::Copy, false, false) == DragAction::Cancel);
-            CHECK(policy.query(Button::Left, false, false, true, Effect::Copy, false, false) == DragAction::Drop);
-            CHECK(policy.query(Button::Left, false, true, false, Effect::Copy, false, false) == DragAction::Continue);
-            CHECK(policy.query(Button::Right, false, true, false, Effect::Copy, false, false) == DragAction::Drop);
-            CHECK(policy.query(Button::Right, false, false, true, Effect::Copy, false, false) == DragAction::Continue);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::None, false, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, true, true, false, Effect::Copy, false, false, true) ==
+                  DragAction::Cancel);
+            CHECK(policy.query(Button::Left, false, false, true, Effect::Copy, false, false, false) ==
+                  DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, true, false, Effect::Copy, false, false, true) ==
+                  DragAction::Continue);
+            CHECK(policy.query(Button::Right, false, true, false, Effect::Copy, false, false, false) ==
+                  DragAction::Drop);
+            CHECK(policy.query(Button::Right, false, false, true, Effect::Copy, false, false, true) ==
+                  DragAction::Continue);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::None, false, false, true) ==
+                  DragAction::Drop);
         }
 
         TEST_CASE("release policy extracts accepted plugin payloads except over the own tool window")
         {
             ReleasePolicy policy;
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false) ==
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false, false) ==
                   DragAction::ExtractThenDrop);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Move, true, true) == DragAction::Drop);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Link, false, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Move, true, true, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Link, false, false, false) ==
+                  DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false, true) ==
+                  DragAction::HandToPeer);
         }
 
         TEST_CASE("release feedback prefers move, then copy, then link, then none")

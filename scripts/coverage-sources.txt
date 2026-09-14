@@ -7,8 +7,12 @@ executable src/adapters/shell/Shell.cpp
 declarations-only src/adapters/shell/Shell.hpp
 executable src/adapters/win/Input.cpp
 declarations-only src/adapters/win/Input.hpp
+executable src/adapters/win/Focus.cpp
+declarations-only src/adapters/win/Focus.hpp
 executable src/adapters/win/Files.cpp
 declarations-only src/adapters/win/Files.hpp
+executable src/adapters/win/Peers.cpp
+declarations-only src/adapters/win/Peers.hpp
 executable src/adapters/win/Screen.cpp
 declarations-only src/adapters/win/Screen.hpp
 executable src/core/DragPlan.cpp
@@ -20,6 +24,10 @@ declarations-only src/core/Gesture.hpp
 executable src/core/Interfaces.hpp
 executable src/core/Policies.cpp
 executable src/core/Policies.hpp
+executable src/core/Peers.cpp
+declarations-only src/core/Peers.hpp
+executable src/core/PeerWire.cpp
+declarations-only src/core/PeerWire.hpp
 executable src/core/Session.cpp
 declarations-only src/core/Session.hpp
 executable src/core/Types.hpp

@@ -29,9 +29,9 @@ namespace burlak::drag
     {
       public:
         ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
-                   core::IExtraction &extraction);
+                   core::IExtraction &extraction, core::IPeers &peers);
         ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
-                   core::IExtraction &extraction, const ToolWindowCalls &calls);
+                   core::IExtraction &extraction, core::IPeers &peers, const ToolWindowCalls &calls);
         ~ToolWindow();
 
         [[nodiscard]] bool start() override;

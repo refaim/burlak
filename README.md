@@ -6,6 +6,7 @@ browser upload box, Explorer, a chat window.
 Hold the left mouse button on a panel item, move a few cells, drop it wherever you like.
 Ordinary clicks keep working as before.
 Drop onto Far's other panel to copy there; hold Shift to move instead, including to or from plugin panels.
+To drop into another Far, both Fars need Burlak; if several Fars share one Windows Terminal window, the drop goes to the tab that most recently had focus.
 Files and selections can also be dragged out of archive, FTP/SFTP, and other plugin panels;
 after release they are extracted as copies for the target, so these plugin-panel drags do not offer shortcuts.
 

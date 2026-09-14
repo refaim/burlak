@@ -1,5 +1,6 @@
 #include "drag/ToolWindow.hpp"
 
+#include "core/Peers.hpp"
 #include "core/Policies.hpp"
 #include "drag/DragSource.hpp"
 #include "drag/DropTarget.hpp"
@@ -76,9 +77,9 @@ namespace burlak::drag
     {
       public:
         State(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
-              core::IExtraction &extraction, const ToolWindowCalls &calls)
+              core::IExtraction &extraction, core::IPeers &peers, const ToolWindowCalls &calls)
             : screen_{screen}, input_{input}, shell_{shell}, dropSession_{dropSession}, extraction_{extraction},
-              calls_{calls}, dropTarget_{dropSession_}
+              peers_{peers}, calls_{calls}, dropTarget_{dropSession_}
         {
         }
 
@@ -215,6 +216,7 @@ namespace burlak::drag
             if (window != nullptr) {
                 static_cast<void>(SetLayeredWindowAttributes(window, 0, 1, LWA_ALPHA));
                 window_.store(reinterpret_cast<core::NativeWindow>(window));
+                static_cast<void>(peers_.allowMessages(reinterpret_cast<core::NativeWindow>(window)));
                 static_cast<void>(RegisterDragDrop(window, &dropTarget_));
                 registration.reset(window);
             }
@@ -248,6 +250,25 @@ namespace burlak::drag
 
         LRESULT handleMessage(HWND window, UINT message, WPARAM word, LPARAM number)
         {
+            if (message == peers_.announcementMessage()) {
+                if (static_cast<std::uint32_t>(word) != peers_.processId()) {
+                    static_cast<void>(peers_.reply(static_cast<core::NativeWindow>(number),
+                                                   reinterpret_cast<core::NativeWindow>(window)));
+                }
+                return 1;
+            }
+            if (message == WM_COPYDATA) {
+                const auto payload = peers_.receive(number);
+                if (!payload) {
+                    return 0;
+                }
+                if (std::holds_alternative<core::PeerHello>(*payload)) {
+                    registry_.add(std::get<core::PeerHello>(*payload), peers_.now());
+                } else {
+                    dropSession_.receivePeerDrop(std::get<core::Drop>(*payload));
+                }
+                return 1;
+            }
             switch (message) {
             case prepareDragMessage: {
                 const auto &payload = *reinterpret_cast<const PreparePayload *>(number);
@@ -260,8 +281,13 @@ namespace burlak::drag
                 }
                 button_ = payload.button;
                 needsExtraction_ = payload.needsExtraction;
+                paths_.assign(payload.paths.begin(), payload.paths.end());
+                ownHost_ = payload.context.host.transform([](const core::HostWindow &host) { return host.handle; })
+                               .value_or(0);
                 dropSession_.prepare(payload.context);
                 data_ = std::move(prepared->data);
+                registry_.clear();
+                peers_.announce(reinterpret_cast<core::NativeWindow>(window), peers_.broadcastTarget());
                 return 1;
             }
             case startDragMessage:
@@ -325,17 +351,25 @@ namespace burlak::drag
             if (!data_ || active_.exchange(true)) {
                 return;
             }
-            DragSource source{
-                releasePolicy_,  screen_, extraction_, button_, reinterpret_cast<core::NativeWindow>(window),
-                needsExtraction_};
+            DragSource source{releasePolicy_,
+                              screen_,
+                              extraction_,
+                              peers_,
+                              registry_,
+                              button_,
+                              reinterpret_cast<core::NativeWindow>(window),
+                              ownHost_,
+                              needsExtraction_,
+                              paths_};
             // A target may report Move after taking the extracted placeholders; GetFilesW is always non-moving,
             // so the archive or remote panel remains untouched.
             static_cast<void>(shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
                                              reinterpret_cast<std::uintptr_t>(&source), !needsExtraction_));
+            source.completePeerHandoff();
             active_.store(false);
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);
-            clearDrag();
+            clearDrag(source.peerHandoff());
         }
 
         void disarm(HWND window)
@@ -349,12 +383,16 @@ namespace burlak::drag
             clearDrag();
         }
 
-        void clearDrag()
+        void clearDrag(bool preserveExtraction = false)
         {
             data_.reset();
-            if (std::exchange(needsExtraction_, false)) {
+            paths_.clear();
+            ownHost_ = 0;
+            if (std::exchange(needsExtraction_, false) && !preserveExtraction) {
                 extraction_.cleanup();
             }
+            // A peer only queues Far-thread work before WM_COPYDATA returns. Keeping extracted files until the
+            // session's next cleanup prevents the source from deleting them before that Far can start its copy.
         }
 
         core::IScreen &screen_;
@@ -362,6 +400,7 @@ namespace burlak::drag
         core::IShell &shell_;
         core::IDropSession &dropSession_;
         core::IExtraction &extraction_;
+        core::IPeers &peers_;
         const ToolWindowCalls &calls_;
         UniqueHandle thread_;
         UniqueHandle readiness_;
@@ -371,20 +410,24 @@ namespace burlak::drag
         std::atomic<bool> stopRequested_{};
         core::Button button_{core::Button::Left};
         bool needsExtraction_{};
+        core::NativeWindow ownHost_{};
+        std::vector<std::wstring> paths_;
         std::unique_ptr<core::IShell::DragData> data_;
         core::ReleasePolicy releasePolicy_;
+        core::PeerRegistry registry_;
         DropTarget dropTarget_;
     };
 
     ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           core::IDropSession &dropSession, core::IExtraction &extraction)
-        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, systemCalls)}
+                           core::IDropSession &dropSession, core::IExtraction &extraction, core::IPeers &peers)
+        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, peers, systemCalls)}
     {
     }
 
     ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           core::IDropSession &dropSession, core::IExtraction &extraction, const ToolWindowCalls &calls)
-        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, calls)}
+                           core::IDropSession &dropSession, core::IExtraction &extraction, core::IPeers &peers,
+                           const ToolWindowCalls &calls)
+        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, peers, calls)}
     {
     }
 

@@ -14,7 +14,8 @@ namespace burlak::core
         Continue,
         Drop,
         Cancel,
-        ExtractThenDrop
+        ExtractThenDrop,
+        HandToPeer
     };
 
     class IReleasePolicy
@@ -22,7 +23,8 @@ namespace burlak::core
       public:
         virtual ~IReleasePolicy() = default;
         [[nodiscard]] virtual DragAction query(Button button, bool escapePressed, bool leftDown, bool rightDown,
-                                               Effect lastEffect, bool needsExtraction, bool overOwnWindow) const = 0;
+                                               Effect lastEffect, bool needsExtraction, bool overOwnWindow,
+                                               bool peer) const = 0;
         [[nodiscard]] virtual Effect feedback(bool move, bool copy, bool link) const = 0;
     };
 
@@ -30,7 +32,8 @@ namespace burlak::core
     {
       public:
         [[nodiscard]] DragAction query(Button button, bool escapePressed, bool leftDown, bool rightDown,
-                                       Effect lastEffect, bool needsExtraction, bool overOwnWindow) const override;
+                                       Effect lastEffect, bool needsExtraction, bool overOwnWindow,
+                                       bool peer) const override;
         [[nodiscard]] Effect feedback(bool move, bool copy, bool link) const override;
     };
 

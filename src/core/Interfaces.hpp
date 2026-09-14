@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Peers.hpp"
 #include "core/Types.hpp"
 
 #include <expected>
@@ -75,7 +76,8 @@ namespace burlak::core
         [[nodiscard]] virtual DragLoopOutcome runDrag(NativeWindow owner, DragData &data, std::uintptr_t source,
                                                       bool allowLink) = 0;
         [[nodiscard]] virtual std::expected<void, Error> copy(std::span<const std::wstring> paths,
-                                                              std::wstring_view destination, Effect effect) = 0;
+                                                              std::wstring_view destination, Effect effect,
+                                                              NativeWindow owner) = 0;
     };
 
     class IFiles
@@ -92,9 +94,16 @@ namespace burlak::core
     class IPeers
     {
       public:
-        virtual void announce() = 0;
-        [[nodiscard]] virtual std::vector<Peer> peers() = 0;
+        [[nodiscard]] virtual std::uint32_t announcementMessage() const = 0;
+        [[nodiscard]] virtual std::uint32_t processId() const = 0;
+        [[nodiscard]] virtual std::uint64_t now() const = 0;
+        [[nodiscard]] virtual NativeWindow broadcastTarget() const = 0;
+        [[nodiscard]] virtual bool allowMessages(NativeWindow tool) = 0;
+        virtual void announce(NativeWindow source, NativeWindow target) = 0;
+        [[nodiscard]] virtual bool reply(NativeWindow target, NativeWindow tool) = 0;
+        [[nodiscard]] virtual std::optional<PeerPayload> receive(std::intptr_t nativePayload) = 0;
         [[nodiscard]] virtual std::expected<void, Error> send(const Peer &peer, const Drop &drop) = 0;
+        [[nodiscard]] virtual PeerMenuChoice menu(NativeWindow owner, Point point) = 0;
     };
 
     class IDragTool
@@ -131,6 +140,7 @@ namespace burlak::core
         virtual void prepare(DropContext context) = 0;
         [[nodiscard]] virtual Effect effect(Point point, bool shift) const = 0;
         [[nodiscard]] virtual Effect drop(Point point, bool shift) = 0;
+        virtual void receivePeerDrop(Drop drop) = 0;
     };
 
 } // namespace burlak::core

@@ -29,6 +29,8 @@ namespace burlak::adapters::shell
         HRESULT (*bindDataObject)(IShellItemArray &array, IDataObject **data);
         decltype(&SHDoDragDrop) doDragDrop;
         HRESULT (*createOperation)(IFileOperation **operation);
+        HRESULT (*setOwner)(IFileOperation &operation, HWND owner);
+        HRESULT (*setFlags)(IFileOperation &operation, DWORD flags);
         HRESULT (*createItem)(PCWSTR path, IShellItem **item);
         HRESULT (*copyItem)(IFileOperation &operation, IShellItem &source, IShellItem &destination);
         HRESULT (*moveItem)(IFileOperation &operation, IShellItem &source, IShellItem &destination);
@@ -54,8 +56,8 @@ namespace burlak::adapters::shell
         [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source,
                                                     bool allowLink) override;
         [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring> paths,
-                                                            std::wstring_view destination,
-                                                            core::Effect effect) override;
+                                                            std::wstring_view destination, core::Effect effect,
+                                                            core::NativeWindow owner) override;
 
       private:
         const ShellCalls &calls_;

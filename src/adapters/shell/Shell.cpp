@@ -53,6 +53,16 @@ namespace burlak::adapters::shell
             return SHCreateItemFromParsingName(path, nullptr, IID_PPV_ARGS(item));
         }
 
+        HRESULT setOwner(IFileOperation &operation, HWND owner)
+        {
+            return operation.SetOwnerWindow(owner);
+        }
+
+        HRESULT setFlags(IFileOperation &operation, DWORD flags)
+        {
+            return operation.SetOperationFlags(flags);
+        }
+
         HRESULT copyItem(IFileOperation &operation, IShellItem &source, IShellItem &destination)
         {
             return operation.CopyItem(&source, &destination, nullptr, nullptr);
@@ -78,6 +88,8 @@ namespace burlak::adapters::shell
                                bindDataObject,
                                SHDoDragDrop,
                                createOperation,
+                               setOwner,
+                               setFlags,
                                createItem,
                                copyItem,
                                moveItem,
@@ -159,16 +171,20 @@ namespace burlak::adapters::shell
     }
 
     std::expected<void, core::Error> Shell::copy(std::span<const std::wstring> paths, std::wstring_view destination,
-                                                 core::Effect effect)
+                                                 core::Effect effect, core::NativeWindow owner)
     {
-        if (effect == core::Effect::None) {
+        if (effect != core::Effect::Copy && effect != core::Effect::Move) {
             return std::unexpected(core::Error::ForeignCallFailed);
         }
         Microsoft::WRL::ComPtr<IFileOperation> operation;
         if (FAILED(calls_.createOperation(operation.GetAddressOf()))) {
             return std::unexpected(core::Error::Unavailable);
         }
-        static_cast<void>(operation->SetOperationFlags(FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI));
+        constexpr DWORD flags = FOF_ALLOWUNDO | FOFX_SHOWELEVATIONPROMPT;
+        if (FAILED(calls_.setOwner(*operation.Get(), reinterpret_cast<HWND>(owner))) ||
+            FAILED(calls_.setFlags(*operation.Get(), flags))) {
+            return std::unexpected(core::Error::Unavailable);
+        }
 
         Microsoft::WRL::ComPtr<IShellItem> destinationItem;
         const std::wstring destinationText{destination};

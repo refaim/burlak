@@ -20,10 +20,12 @@ namespace burlak::drag
           public:
             std::optional<core::HostWindow> host;
             bool down{true};
+            std::optional<core::Point> point;
+            core::NativeWindow root{};
 
             [[nodiscard]] std::optional<core::Point> cursor() override
             {
-                return {};
+                return point;
             }
 
             [[nodiscard]] bool buttonDown(core::Button) override
@@ -33,7 +35,7 @@ namespace burlak::drag
 
             [[nodiscard]] core::NativeWindow windowAt(core::Point) override
             {
-                return 0;
+                return root;
             }
 
             [[nodiscard]] std::optional<core::HostWindow> hostWindow() override
@@ -73,6 +75,7 @@ namespace burlak::drag
             std::size_t parsedPaths{1};
             int dragCalls{};
             bool allowedLink{};
+            std::uintptr_t sourceHandle{};
             std::function<void(core::NativeWindow)> duringDrag;
 
             [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(
@@ -84,11 +87,12 @@ namespace burlak::drag
                 return PreparedDrag{.data = std::make_unique<Data>(), .parsedPaths = parsedPaths};
             }
 
-            [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &, std::uintptr_t,
+            [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &, std::uintptr_t source,
                                                         bool allowLink) override
             {
                 ++dragCalls;
                 allowedLink = allowLink;
+                sourceHandle = source;
                 if (duringDrag) {
                     duringDrag(owner);
                 }
@@ -96,7 +100,7 @@ namespace burlak::drag
             }
 
             [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring>, std::wstring_view,
-                                                                core::Effect) override
+                                                                core::Effect, core::NativeWindow) override
             {
                 return {};
             }
@@ -124,6 +128,7 @@ namespace burlak::drag
         {
           public:
             std::optional<core::DropContext> context;
+            std::vector<core::Drop> peerDrops;
 
             void prepare(core::DropContext prepared) override
             {
@@ -136,6 +141,11 @@ namespace burlak::drag
             [[nodiscard]] core::Effect drop(core::Point, bool) override
             {
                 return core::Effect::None;
+            }
+
+            void receivePeerDrop(core::Drop drop) override
+            {
+                peerDrops.push_back(std::move(drop));
             }
         };
 
@@ -154,6 +164,65 @@ namespace burlak::drag
             void cleanup() override
             {
                 ++cleanups;
+            }
+        };
+
+        class Peers final : public core::IPeers
+        {
+          public:
+            int allowed{};
+            int announcements{};
+            int replies{};
+            int sends{};
+            core::NativeWindow source{};
+            core::NativeWindow target{};
+            std::optional<core::PeerPayload> payload;
+            core::PeerMenuChoice choice{core::PeerMenuChoice::Cancel};
+
+            [[nodiscard]] std::uint32_t announcementMessage() const override
+            {
+                return WM_APP + 77;
+            }
+            [[nodiscard]] std::uint32_t processId() const override
+            {
+                return 10;
+            }
+            [[nodiscard]] std::uint64_t now() const override
+            {
+                return 100;
+            }
+            [[nodiscard]] core::NativeWindow broadcastTarget() const override
+            {
+                return 99;
+            }
+            [[nodiscard]] bool allowMessages(core::NativeWindow) override
+            {
+                ++allowed;
+                return true;
+            }
+            void announce(core::NativeWindow announcedSource, core::NativeWindow announcedTarget) override
+            {
+                ++announcements;
+                source = announcedSource;
+                target = announcedTarget;
+            }
+            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow) override
+            {
+                ++replies;
+                return true;
+            }
+            [[nodiscard]] std::optional<core::PeerPayload> receive(std::intptr_t) override
+            {
+                return std::exchange(payload, std::nullopt);
+            }
+            [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &, const core::Drop &) override
+            {
+                ++sends;
+                return {};
+            }
+            [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow, core::Point) override
+            {
+                return choice;
             }
         };
 
@@ -381,16 +450,24 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
+            Peers peers;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
 
             CHECK(tool.start());
             CHECK(tool.start());
             REQUIRE(tool.nativeWindow() != 0);
+            CHECK(peers.allowed == 1);
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            CHECK(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            auto context = dropContext();
+            context.host = core::HostWindow{42, {0, 0, 1, 1}, false};
+            CHECK(tool.prepare(paths, core::Button::Left, true, context));
+            CHECK(peers.announcements == 1);
+            CHECK(peers.source == tool.nativeWindow());
+            CHECK(peers.target == peers.broadcastTarget());
             CHECK(tool.hasData());
             CHECK(dropSession.context->press == core::Cell{5, 5});
+            CHECK(dropSession.context->host->handle == 42);
             CHECK(tool.showAndArm());
             CHECK(headlessWindow.visible);
             CHECK(headlessWindow.placements == 2);
@@ -413,6 +490,81 @@ namespace burlak::drag
             CHECK((joinWaitFlags & COWAIT_DISPATCH_WINDOW_MESSAGES) != 0);
         }
 
+        TEST_CASE("the tool window routes foreign announcements, hellos, drops, and malformed copy data")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            Input input;
+            Shell shell;
+            DropSession dropSession;
+            Extraction extraction;
+            Peers peers;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+
+            CHECK(SendMessageW(window, peers.announcementMessage(), peers.processId(), 123) == 1);
+            CHECK(peers.replies == 0);
+            CHECK(SendMessageW(window, peers.announcementMessage(), peers.processId() + 1, 123) == 1);
+            CHECK(peers.replies == 1);
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, 0) == 0);
+
+            std::byte wire{};
+            COPYDATASTRUCT copy{.dwData = 1, .cbData = 1, .lpData = &wire};
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
+            peers.payload = core::PeerHello{.process = 2, .tool = 3, .host = 4, .lastFocus = 5};
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
+            CHECK(dropSession.peerDrops.empty());
+            const core::Drop drop{.paths = {L"C:\\one.txt"}, .at = {6, 7}, .effect = core::Effect::Move};
+            peers.payload = drop;
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
+            REQUIRE(dropSession.peerDrops.size() == 1);
+            CHECK(dropSession.peerDrops[0].paths == drop.paths);
+            CHECK(dropSession.peerDrops[0].at == drop.at);
+            CHECK(dropSession.peerDrops[0].effect == drop.effect);
+
+            tool.stop();
+        }
+
+        TEST_CASE("a successful plugin-panel peer handoff retains extracted files for the receiving synchro")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
+            screen.point = core::Point{10, 20};
+            screen.root = 90;
+            Input input;
+            Shell shell;
+            DropSession dropSession;
+            Extraction extraction;
+            Peers peers;
+            peers.choice = core::PeerMenuChoice::Copy;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            REQUIRE(tool.start());
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+            REQUIRE(tool.prepare(paths, core::Button::Right, true, dropContext()));
+
+            std::byte wire{};
+            COPYDATASTRUCT copy{.dwData = 1, .cbData = 1, .lpData = &wire};
+            peers.payload = core::PeerHello{.process = 2, .tool = 91, .host = 90, .lastFocus = 5};
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            REQUIRE(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
+            REQUIRE(tool.showAndArm());
+            shell.duringDrag = [&peers, &shell](core::NativeWindow) {
+                auto &source = *reinterpret_cast<IDropSource *>(shell.sourceHandle);
+                CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                CHECK(peers.sends == 0);
+            };
+
+            SendMessageW(window, WM_RBUTTONDOWN, 0, 0);
+            CHECK(peers.sends == 1);
+            CHECK(extraction.cleanups == 0);
+            tool.stop();
+        }
+
         TEST_CASE("shutdown still joins the tool thread when its pumping wait reports an unusable result")
         {
             resetHeadlessWindow();
@@ -430,8 +582,9 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
+            Peers peers;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
             REQUIRE(tool.start());
 
             tool.stop();
@@ -452,12 +605,13 @@ namespace burlak::drag
                 Shell shell;
                 DropSession dropSession;
                 Extraction extraction;
+                Peers peers;
                 auto calls = systemToolWindowCalls();
                 calls.createThread = createDelayedThread;
                 calls.sleep = countSleep;
                 calls.createWindow = countFailedWindow;
                 calls.coWait = releaseDelayedThread;
-                ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+                ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
 
                 CHECK_FALSE(tool.start());
                 CHECK(delayedThread.sleeps == 200);
@@ -481,7 +635,8 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
-            ToolWindow tool{screen, input, shell, dropSession, extraction};
+            Peers peers;
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
             REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
@@ -499,7 +654,8 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
-            ToolWindow tool{screen, input, shell, dropSession, extraction};
+            Peers peers;
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers};
             REQUIRE(tool.start());
             CHECK_FALSE(tool.showAndArm());
             SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_LBUTTONDOWN, 0, 0);
@@ -530,7 +686,8 @@ namespace burlak::drag
             shell.parsedPaths = 1;
             DropSession dropSession;
             Extraction extraction;
-            ToolWindow tool{screen, input, shell, dropSession, extraction};
+            Peers peers;
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
 
@@ -549,8 +706,9 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
+            Peers peers;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
             REQUIRE(tool.prepare(paths, core::Button::Right, true, dropContext()));
@@ -593,21 +751,22 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
+            Peers peers;
 
             auto calls = systemToolWindowCalls();
             calls.createEvent = failCreateEvent;
-            ToolWindow noReadinessEvent{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow noReadinessEvent{screen, input, shell, dropSession, extraction, peers, calls};
             CHECK_FALSE(noReadinessEvent.start());
 
             calls = systemToolWindowCalls();
             calls.createThread = failCreateThread;
-            ToolWindow noThread{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow noThread{screen, input, shell, dropSession, extraction, peers, calls};
             CHECK_FALSE(noThread.start());
 
             calls = systemToolWindowCalls();
             calls.createWindow = failCreateWindow;
             calls.sleep = shortSleep;
-            ToolWindow noWindow{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow noWindow{screen, input, shell, dropSession, extraction, peers, calls};
             CHECK_FALSE(noWindow.start());
             noWindow.stop();
         }
@@ -621,9 +780,10 @@ namespace burlak::drag
             Shell shell;
             DropSession dropSession;
             Extraction extraction;
+            Peers peers;
             auto calls = headlessCalls();
             calls.isWindowVisible = reportInvisible;
-            ToolWindow tool{screen, input, shell, dropSession, extraction, calls};
+            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
             REQUIRE(tool.start());
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
             REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));

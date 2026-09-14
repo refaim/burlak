@@ -3,7 +3,9 @@
 #include "adapters/far/FarApi.hpp"
 #include "adapters/shell/Shell.hpp"
 #include "adapters/win/Files.hpp"
+#include "adapters/win/Focus.hpp"
 #include "adapters/win/Input.hpp"
+#include "adapters/win/Peers.hpp"
 #include "adapters/win/Screen.hpp"
 #include "core/Session.hpp"
 #include "drag/ExtractionWait.hpp"
@@ -17,12 +19,17 @@ namespace burlak::plugin
     class Composition::Runtime
     {
       public:
-        explicit Runtime(const PluginStartupInfo &startupInfo)
-            : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_}, gesture_{panels_, host_},
-              session_{panels_, host_, screen_, input_, files_}, extraction_{session_},
-              tool_{screen_, input_, shell_, session_, extraction_}
+        Runtime(const PluginStartupInfo &startupInfo,
+                const std::optional<std::reference_wrapper<core::IScreen>> &screenOverride,
+                const std::optional<std::reference_wrapper<core::IShell>> &shellOverride)
+            : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_},
+              screen_{screenOverride ? screenOverride->get() : static_cast<core::IScreen &>(realScreen_)},
+              shell_{shellOverride ? shellOverride->get() : static_cast<core::IShell &>(realShell_)},
+              gesture_{panels_, host_}, session_{panels_, host_, screen_, input_, files_, shell_},
+              extraction_{session_}, peers_{focus_}, tool_{screen_, input_, shell_, session_, extraction_, peers_}
         {
             files_.sweep();
+            static_cast<void>(tool_.start());
         }
 
         [[nodiscard]] core::Verdict feed(const core::MouseEvent &event)
@@ -42,6 +49,21 @@ namespace burlak::plugin
             completion.complete(session_.synchro());
         }
 
+        void recordFocus()
+        {
+            focus_.record();
+        }
+
+        [[nodiscard]] std::uint64_t lastFocus() const
+        {
+            return focus_.last();
+        }
+
+        [[nodiscard]] core::NativeWindow toolWindow() const
+        {
+            return tool_.nativeWindow();
+        }
+
         void stop()
         {
             extraction_.cancel();
@@ -54,12 +76,16 @@ namespace burlak::plugin
         adapters::far_api::FarPanels panels_;
         adapters::far_api::FarHost host_;
         adapters::win::Files files_;
-        adapters::win::Screen screen_;
+        adapters::win::Screen realScreen_;
         adapters::win::Input input_;
-        adapters::shell::Shell shell_;
+        adapters::shell::Shell realShell_;
+        adapters::win::Focus focus_;
+        core::IScreen &screen_;
+        core::IShell &shell_;
         core::Gesture gesture_;
         core::Session session_;
         drag::ExtractionWait extraction_;
+        adapters::win::Peers peers_;
         drag::ToolWindow tool_;
     };
 
@@ -73,7 +99,7 @@ namespace burlak::plugin
     void Composition::setStartupInfo(const PluginStartupInfo &info)
     {
         reset();
-        runtime_ = std::make_unique<Runtime>(info);
+        runtime_ = std::make_unique<Runtime>(info, screenOverride_, shellOverride_);
     }
 
     void Composition::reset()
@@ -85,6 +111,37 @@ namespace burlak::plugin
     core::Verdict Composition::feed(const core::MouseEvent &event)
     {
         return runtime_ ? runtime_->feed(event) : core::Verdict{};
+    }
+
+    void Composition::recordFocus()
+    {
+        if (runtime_) {
+            runtime_->recordFocus();
+        }
+    }
+
+    std::uint64_t Composition::lastFocus() const
+    {
+        return runtime_ ? runtime_->lastFocus() : 0;
+    }
+
+    core::NativeWindow Composition::toolWindow() const
+    {
+        return runtime_ ? runtime_->toolWindow() : 0;
+    }
+
+    void Composition::usePeerDropAdapters(core::IScreen &screen, core::IShell &shell)
+    {
+        reset();
+        screenOverride_ = screen;
+        shellOverride_ = shell;
+    }
+
+    void Composition::useDefaultAdapters()
+    {
+        reset();
+        screenOverride_.reset();
+        shellOverride_.reset();
     }
 
     void Composition::synchro()

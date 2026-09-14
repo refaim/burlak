@@ -87,7 +87,19 @@ namespace
         intptr_t result{};
         void run()
         {
-            if (info == nullptr || info->Rec.EventType != MOUSE_EVENT) {
+            if (info == nullptr) {
+                return;
+            }
+            if (info->Rec.EventType == FOCUS_EVENT) {
+                if (info->Rec.Event.FocusEvent.bSetFocus != FALSE) {
+                    // GetInputRecordImpl keeps the FOCUS_EVENT record while ProcessFocusEvent returns
+                    // KEY_GOTFOCUS / KEY_KILLFOCUS, and GetInputRecord then offers it to ProcessConsoleInput
+                    // (Far source: far/keyboard.cpp, ProcessFocusEvent and GetInputRecord).
+                    burlak::plugin::composition().recordFocus();
+                }
+                return;
+            }
+            if (info->Rec.EventType != MOUSE_EVENT) {
                 return;
             }
             const auto verdict = burlak::plugin::composition().feed(toCore(info->Rec.Event.MouseEvent));

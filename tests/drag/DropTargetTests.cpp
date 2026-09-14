@@ -45,6 +45,10 @@ namespace burlak::drag
                 ++drops;
                 return dropped;
             }
+
+            void receivePeerDrop(core::Drop) override
+            {
+            }
         };
 
         class Screen final : public core::IScreen
@@ -255,7 +259,8 @@ namespace burlak::drag
             Input input;
             tests::Host host;
             tests::Files files;
-            core::Session session{panels, host, screen, input, files};
+            tests::Shell shell;
+            core::Session session{panels, host, screen, input, files, shell};
             Tool tool{session};
             REQUIRE(session.begin(tool, core::DragStart{core::Button::Left, {5, 5}}));
             REQUIRE(tool.data.Get() != nullptr);

@@ -19,6 +19,7 @@ namespace burlak::tests
         std::array<std::vector<core::Item>, 2> items{};
         std::array<std::optional<std::wstring>, 2> directories{};
         bool panelsWindow{true};
+        std::vector<core::PanelSide> updates;
 
         [[nodiscard]] std::optional<core::PanelInfo> panel(core::PanelSide side) override
         {
@@ -40,8 +41,9 @@ namespace burlak::tests
             return panelsWindow;
         }
 
-        void updateAndRedraw(core::PanelSide) override
+        void updateAndRedraw(core::PanelSide side) override
         {
+            updates.push_back(side);
         }
 
       private:
@@ -135,6 +137,44 @@ namespace burlak::tests
         void sweep() override
         {
             ++sweeps;
+        }
+    };
+
+    class Shell final : public core::IShell
+    {
+      public:
+        class Data final : public DragData
+        {
+          public:
+            [[nodiscard]] std::uintptr_t nativeHandle() const override
+            {
+                return 0;
+            }
+        };
+
+        std::expected<void, core::Error> copyResult{};
+        std::vector<core::Drop> copies;
+        std::vector<std::wstring> destinations;
+        std::vector<core::NativeWindow> owners;
+
+        [[nodiscard]] std::expected<PreparedDrag, core::Error> makeDataObject(std::span<const std::wstring>) override
+        {
+            return std::unexpected(core::Error::Unavailable);
+        }
+
+        [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow, DragData &, std::uintptr_t, bool) override
+        {
+            return {};
+        }
+
+        [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring> paths,
+                                                            std::wstring_view destination, core::Effect effect,
+                                                            core::NativeWindow owner) override
+        {
+            copies.push_back(core::Drop{.paths = {paths.begin(), paths.end()}, .effect = effect});
+            destinations.emplace_back(destination);
+            owners.push_back(owner);
+            return copyResult;
         }
     };
 

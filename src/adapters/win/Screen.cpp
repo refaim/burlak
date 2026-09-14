@@ -10,10 +10,13 @@ namespace burlak::adapters::win
     namespace
     {
 
-        const ScreenCalls systemCalls{
-            GetCursorPos,          GetAsyncKeyState, GetConsoleWindow,          GetForegroundWindow, WindowFromPoint,
-            GetWindowRect,         GetClientRect,    IsWindowVisible,           GetWindowLongPtrW,   GetStdHandle,
-            GetCurrentConsoleFont, ClientToScreen,   GetConsoleScreenBufferInfo};
+        const ScreenCalls systemCalls{GetCursorPos,     GetAsyncKeyState,
+                                      GetConsoleWindow, GetWindow,
+                                      WindowFromPoint,  GetAncestor,
+                                      GetWindowRect,    GetClientRect,
+                                      IsWindowVisible,  GetWindowLongPtrW,
+                                      GetStdHandle,     GetCurrentConsoleFont,
+                                      ClientToScreen,   GetConsoleScreenBufferInfo};
 
         [[nodiscard]] std::optional<core::HostWindow> coveringWindow(core::NativeWindow native, core::Point point,
                                                                      const ScreenCalls &calls)
@@ -59,7 +62,8 @@ namespace burlak::adapters::win
 
     core::NativeWindow Screen::windowAt(core::Point point)
     {
-        return reinterpret_cast<core::NativeWindow>(calls_.windowFromPoint(POINT{point.x, point.y}));
+        const auto window = calls_.windowFromPoint(POINT{point.x, point.y});
+        return reinterpret_cast<core::NativeWindow>(window == nullptr ? nullptr : calls_.getAncestor(window, GA_ROOT));
     }
 
     std::optional<core::HostWindow> Screen::hostWindow()
@@ -73,8 +77,10 @@ namespace burlak::adapters::win
 
     std::optional<core::HostWindow> Screen::hostWindowAt(core::Point point)
     {
-        return win::hostWindowAt(point, reinterpret_cast<core::NativeWindow>(calls_.getConsoleWindow()),
-                                 reinterpret_cast<core::NativeWindow>(calls_.getForegroundWindow()), calls_);
+        const auto console = calls_.getConsoleWindow();
+        const auto owner = console == nullptr ? nullptr : calls_.getWindow(console, GW_OWNER);
+        return win::hostWindowAt(point, reinterpret_cast<core::NativeWindow>(console),
+                                 reinterpret_cast<core::NativeWindow>(owner), calls_);
     }
 
     std::expected<core::CellGeometry, core::Error> Screen::cellGeometry()
@@ -125,18 +131,18 @@ namespace burlak::adapters::win
     }
 
     std::optional<core::HostWindow> hostWindowAt(core::Point point, core::NativeWindow console,
-                                                 core::NativeWindow foreground)
+                                                 core::NativeWindow owner)
     {
-        return hostWindowAt(point, console, foreground, systemCalls);
+        return hostWindowAt(point, console, owner, systemCalls);
     }
 
     std::optional<core::HostWindow> hostWindowAt(core::Point point, core::NativeWindow console,
-                                                 core::NativeWindow foreground, const ScreenCalls &calls)
+                                                 core::NativeWindow owner, const ScreenCalls &calls)
     {
         if (const auto covered = coveringWindow(console, point, calls)) {
             return covered;
         }
-        return coveringWindow(foreground, point, calls);
+        return coveringWindow(owner, point, calls);
     }
 
 } // namespace burlak::adapters::win

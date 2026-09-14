@@ -24,9 +24,11 @@ namespace burlak::drag
             mutable core::Effect lastEffect{};
             mutable bool needsExtraction{};
             mutable bool overOwnWindow{};
+            mutable bool overPeer{};
 
             [[nodiscard]] core::DragAction query(core::Button value, bool escapePressed, bool leftDown, bool rightDown,
-                                                 core::Effect feedback, bool extraction, bool ownWindow) const override
+                                                 core::Effect feedback, bool extraction, bool ownWindow,
+                                                 bool peer) const override
             {
                 button = value;
                 escape = escapePressed;
@@ -35,6 +37,7 @@ namespace burlak::drag
                 lastEffect = feedback;
                 needsExtraction = extraction;
                 overOwnWindow = ownWindow;
+                overPeer = peer;
                 return action;
             }
 
@@ -97,16 +100,77 @@ namespace burlak::drag
             bool succeeds{true};
             int calls{};
             int cleanups{};
+            std::vector<std::string> *callLog{};
 
             [[nodiscard]] bool extract() override
             {
                 ++calls;
+                if (callLog != nullptr) {
+                    callLog->emplace_back("extract");
+                }
                 return succeeds;
             }
 
             void cleanup() override
             {
                 ++cleanups;
+            }
+        };
+
+        class Peers final : public core::IPeers
+        {
+          public:
+            std::uint64_t tick{100};
+            core::PeerMenuChoice choice{core::PeerMenuChoice::Copy};
+            std::vector<core::Drop> drops;
+            std::vector<std::string> *callLog{};
+            bool sendSucceeds{true};
+
+            [[nodiscard]] std::uint32_t announcementMessage() const override
+            {
+                return 1;
+            }
+            [[nodiscard]] std::uint32_t processId() const override
+            {
+                return 2;
+            }
+            [[nodiscard]] std::uint64_t now() const override
+            {
+                return tick;
+            }
+            [[nodiscard]] core::NativeWindow broadcastTarget() const override
+            {
+                return 3;
+            }
+            [[nodiscard]] bool allowMessages(core::NativeWindow) override
+            {
+                return true;
+            }
+            void announce(core::NativeWindow, core::NativeWindow) override
+            {
+            }
+            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow) override
+            {
+                return true;
+            }
+            [[nodiscard]] std::optional<core::PeerPayload> receive(std::intptr_t) override
+            {
+                return std::nullopt;
+            }
+            [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &, const core::Drop &drop) override
+            {
+                if (callLog != nullptr) {
+                    callLog->emplace_back("send");
+                }
+                drops.push_back(drop);
+                return sendSucceeds ? std::expected<void, core::Error>{} : std::unexpected(core::Error::Unavailable);
+            }
+            [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow, core::Point) override
+            {
+                if (callLog != nullptr) {
+                    callLog->emplace_back("menu");
+                }
+                return choice;
             }
         };
 
@@ -202,7 +266,9 @@ namespace burlak::drag
             Policy policy;
             Screen screen;
             Extraction extraction;
-            DragSource source{policy, screen, extraction, core::Button::Left, 7, false};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, {}};
             CHECK(source.QueryInterface(IID_IUnknown, nullptr) == E_POINTER);
 
             void *object{};
@@ -227,7 +293,9 @@ namespace burlak::drag
             Policy policy;
             Screen screen;
             Extraction extraction;
-            DragSource source{policy, screen, extraction, core::Button::Right, 7, true};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Right, 7, 8, true, {}};
             policy.action = core::DragAction::Cancel;
             CHECK(source.QueryContinueDrag(TRUE, MK_LBUTTON | MK_RBUTTON) == DRAGDROP_S_CANCEL);
             CHECK(policy.button == core::Button::Right);
@@ -247,7 +315,9 @@ namespace burlak::drag
             Policy policy;
             Screen screen;
             Extraction extraction;
-            DragSource source{policy, screen, extraction, core::Button::Left, 7, false};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, {}};
             policy.effect = core::Effect::Copy;
             CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
             CHECK(source.lastEffect() == core::Effect::Copy);
@@ -271,7 +341,9 @@ namespace burlak::drag
             Policy policy;
             Screen screen;
             Extraction extraction;
-            DragSource source{policy, screen, extraction, core::Button::Left, 7, true};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, {}};
             policy.effect = core::Effect::Link;
 
             CHECK(source.GiveFeedback(DROPEFFECT_LINK) == DRAGDROP_S_USEDEFAULTCURSORS);
@@ -288,7 +360,9 @@ namespace burlak::drag
             const ExtractionWaitCalls calls{createEvent, ResetEvent, SetEvent, CloseHandle, waitForExtraction};
             ExtractionWait extraction{host, calls};
             activeWait = &extraction;
-            DragSource source{policy, screen, extraction, core::Button::Left, 7, true};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, {}};
             REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
 
             waitOutcome = true;
@@ -355,7 +429,9 @@ namespace burlak::drag
             Screen screen;
             screen.window = 7;
             Extraction extraction;
-            DragSource source{policy, screen, extraction, core::Button::Left, 7, true};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, {}};
             REQUIRE(source.GiveFeedback(DROPEFFECT_MOVE) == DRAGDROP_S_USEDEFAULTCURSORS);
 
             CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_DROP);
@@ -368,19 +444,122 @@ namespace burlak::drag
             CHECK_FALSE(policy.overOwnWindow);
         }
 
-        TEST_CASE("a real-path release never queries the window beneath the cursor")
+        TEST_CASE("an accepted real-path release checks for a peer beneath the cursor")
         {
             Policy policy;
             policy.action = core::DragAction::Drop;
             policy.effect = core::Effect::Move;
             Screen screen;
             Extraction extraction;
-            DragSource source{policy, screen, extraction, core::Button::Left, 7, false};
+            Peers peers;
+            core::PeerRegistry registry;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, {}};
             REQUIRE(source.GiveFeedback(DROPEFFECT_MOVE) == DRAGDROP_S_USEDEFAULTCURSORS);
 
             CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_DROP);
             CHECK_FALSE(policy.needsExtraction);
-            CHECK(screen.cursorCalls == 0);
+            CHECK(screen.cursorCalls == 1);
+        }
+
+        TEST_CASE("peer release extracts, asks a right-drag choice, cancels OLE, and then sends")
+        {
+            core::ReleasePolicy policy;
+            Screen screen;
+            screen.window = 90;
+            Extraction extraction;
+            Peers peers;
+            core::PeerRegistry registry;
+            registry.add(core::PeerHello{.process = 9, .tool = 91, .host = 90, .lastFocus = 7}, peers.tick);
+            const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
+            std::vector<std::string> calls;
+            extraction.callLog = &calls;
+            peers.callLog = &calls;
+            DragSource source{policy, screen, extraction, peers, registry, core::Button::Right, 7, 8, true, paths};
+            REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+
+            CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+            calls.emplace_back("cancel");
+            CHECK(calls == std::vector<std::string>{"extract", "menu", "cancel"});
+            CHECK_FALSE(source.peerHandoff());
+            CHECK(peers.drops.empty());
+            source.completePeerHandoff();
+            CHECK(calls == std::vector<std::string>{"extract", "menu", "cancel", "send"});
+            CHECK(source.peerHandoff());
+            REQUIRE(peers.drops.size() == 1);
+            CHECK(peers.drops[0] == core::Drop{.paths = paths, .at = {10, 20}, .effect = core::Effect::Copy});
+        }
+
+        TEST_CASE("peer release maps Shift to move and cancellation or extraction failure never sends")
+        {
+            core::ReleasePolicy policy;
+            Screen screen;
+            screen.window = 90;
+            Peers peers;
+            core::PeerRegistry registry;
+            registry.add(core::PeerHello{.process = 9, .tool = 91, .host = 90}, peers.tick);
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+
+            SUBCASE("left Shift move")
+            {
+                Extraction extraction;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, MK_SHIFT) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                REQUIRE(peers.drops.size() == 1);
+                CHECK(peers.drops[0].effect == core::Effect::Move);
+            }
+            SUBCASE("left copy")
+            {
+                Extraction extraction;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                REQUIRE(peers.drops.size() == 1);
+                CHECK(peers.drops[0].effect == core::Effect::Copy);
+            }
+            SUBCASE("right menu cancellation")
+            {
+                Extraction extraction;
+                peers.choice = core::PeerMenuChoice::Cancel;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Right, 7, 8, false, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                CHECK(peers.drops.empty());
+                CHECK_FALSE(source.peerHandoff());
+            }
+            SUBCASE("extraction failure")
+            {
+                Extraction extraction;
+                extraction.succeeds = false;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Right, 7, 8, true, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                CHECK(peers.drops.empty());
+                CHECK_FALSE(source.peerHandoff());
+            }
+            SUBCASE("own host is never selected")
+            {
+                Extraction extraction;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 90, false, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_DROP);
+                CHECK(peers.drops.empty());
+                CHECK_FALSE(source.peerHandoff());
+            }
+            SUBCASE("send failure")
+            {
+                Extraction extraction;
+                peers.sendSucceeds = false;
+                DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, paths};
+                REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
+                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
+                source.completePeerHandoff();
+                CHECK_FALSE(source.peerHandoff());
+            }
         }
     }
 

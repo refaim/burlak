@@ -1,5 +1,7 @@
 #include "../Desktop.hpp"
 #include "adapters/shell/Shell.hpp"
+#include "adapters/win/Focus.hpp"
+#include "adapters/win/Peers.hpp"
 #include "adapters/win/Screen.hpp"
 #include "core/Policies.hpp"
 #include "drag/DragSource.hpp"
@@ -694,13 +696,20 @@ TEST_SUITE("e2e")
 
         burlak::core::ReleasePolicy policy;
         burlak::adapters::win::Screen screen;
+        burlak::adapters::win::Focus focus;
+        burlak::adapters::win::Peers peers{focus};
+        burlak::core::PeerRegistry registry;
         NoExtraction extraction;
         burlak::drag::DragSource source{policy,
                                         screen,
                                         extraction,
+                                        peers,
+                                        registry,
                                         burlak::core::Button::Left,
                                         reinterpret_cast<burlak::core::NativeWindow>(window.get()),
-                                        false};
+                                        reinterpret_cast<burlak::core::NativeWindow>(window.get()),
+                                        false,
+                                        paths};
         const auto dragResult = burlak::adapters::shell::runDrag(window.get(), *data->data.Get(), source, true,
                                                                  burlak::adapters::shell::systemShellCalls());
         REQUIRE(dragResult.status == DRAGDROP_S_DROP);

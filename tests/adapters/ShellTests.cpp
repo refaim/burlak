@@ -60,6 +60,31 @@ namespace burlak::adapters::shell
             return E_FAIL;
         }
 
+        HRESULT failOwner(IFileOperation &, HWND)
+        {
+            return E_FAIL;
+        }
+
+        HRESULT failFlags(IFileOperation &, DWORD)
+        {
+            return E_FAIL;
+        }
+
+        HWND recordedOwner{};
+        DWORD recordedFlags{};
+
+        HRESULT recordOwner(IFileOperation &, HWND owner)
+        {
+            recordedOwner = owner;
+            return S_OK;
+        }
+
+        HRESULT recordFlags(IFileOperation &, DWORD flags)
+        {
+            recordedFlags = flags;
+            return S_OK;
+        }
+
         HRESULT passQueue(IFileOperation &, IShellItem &, IShellItem &)
         {
             return S_OK;
@@ -83,6 +108,12 @@ namespace burlak::adapters::shell
         HRESULT reportAborted(IFileOperation &, BOOL *aborted)
         {
             *aborted = TRUE;
+            return S_OK;
+        }
+
+        HRESULT reportComplete(IFileOperation &, BOOL *aborted)
+        {
+            *aborted = FALSE;
             return S_OK;
         }
 
@@ -243,9 +274,11 @@ namespace burlak::adapters::shell
             const std::vector<std::wstring> paths{file.wstring()};
 
             Shell shell;
-            CHECK(shell.copy(paths, destination.wstring(), core::Effect::None) ==
+            CHECK(shell.copy(paths, destination.wstring(), core::Effect::None, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
-            CHECK(shell.copy(paths, destination.wstring(), core::Effect::Copy).has_value());
+            CHECK(shell.copy(paths, destination.wstring(), core::Effect::Link, 0) ==
+                  std::unexpected(core::Error::ForeignCallFailed));
+            CHECK(shell.copy(paths, destination.wstring(), core::Effect::Copy, 0).has_value());
             CHECK(std::filesystem::exists(destination / file.filename()));
 
             const auto moved = source / L"moved.txt";
@@ -253,14 +286,14 @@ namespace burlak::adapters::shell
                 std::ofstream stream{moved};
             }
             const std::vector<std::wstring> movedPaths{moved.wstring()};
-            CHECK(shell.copy(movedPaths, destination.wstring(), core::Effect::Move).has_value());
+            CHECK(shell.copy(movedPaths, destination.wstring(), core::Effect::Move, 0).has_value());
             CHECK(std::filesystem::exists(destination / moved.filename()));
             CHECK_FALSE(std::filesystem::exists(moved));
 
-            CHECK(shell.copy(paths, L"Z:\\missing-destination", core::Effect::Copy) ==
+            CHECK(shell.copy(paths, L"Z:\\missing-destination", core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::DirectoryUnavailable));
             const std::vector<std::wstring> missing{L"Z:\\missing-source\\file.txt"};
-            CHECK(shell.copy(missing, destination.wstring(), core::Effect::Copy) ==
+            CHECK(shell.copy(missing, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             std::filesystem::remove_all(root);
@@ -283,32 +316,54 @@ namespace burlak::adapters::shell
 
             auto calls = systemShellCalls();
             calls.createOperation = failCreateOperation;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::Unavailable));
 
             calls = systemShellCalls();
+            calls.setOwner = failOwner;
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
+                  std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.setFlags = failFlags;
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
+                  std::unexpected(core::Error::Unavailable));
+
+            calls = systemShellCalls();
+            calls.setOwner = recordOwner;
+            calls.setFlags = recordFlags;
+            calls.copyItem = passQueue;
+            calls.perform = passPerform;
+            calls.getAborted = reportComplete;
+            recordedOwner = nullptr;
+            recordedFlags = 0;
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 123).has_value());
+            CHECK(recordedOwner == reinterpret_cast<HWND>(123));
+            CHECK((recordedFlags & FOF_ALLOWUNDO) != 0);
+            CHECK((recordedFlags & FOFX_SHOWELEVATIONPROMPT) != 0);
+
+            calls = systemShellCalls();
             calls.copyItem = failQueue;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
             calls = systemShellCalls();
             calls.moveItem = failQueue;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Move) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Move, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             calls = systemShellCalls();
             calls.copyItem = passQueue;
             calls.perform = failPerform;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             calls = systemShellCalls();
             calls.copyItem = passQueue;
             calls.perform = passPerform;
             calls.getAborted = failAborted;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
             calls.getAborted = reportAborted;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             std::filesystem::remove_all(root);

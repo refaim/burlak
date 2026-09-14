@@ -46,7 +46,7 @@ namespace burlak::core
     } // namespace
 
     DragAction ReleasePolicy::query(Button button, bool escapePressed, bool leftDown, bool rightDown, Effect lastEffect,
-                                    bool needsExtraction, bool overOwnWindow) const
+                                    bool needsExtraction, bool overOwnWindow, bool peer) const
     {
         if (escapePressed) {
             return DragAction::Cancel;
@@ -54,6 +54,9 @@ namespace burlak::core
         const bool trackedDown = button == Button::Left ? leftDown : rightDown;
         if (trackedDown) {
             return DragAction::Continue;
+        }
+        if (lastEffect != Effect::None && peer) {
+            return DragAction::HandToPeer;
         }
         return lastEffect != Effect::None && needsExtraction && !overOwnWindow ? DragAction::ExtractThenDrop
                                                                                : DragAction::Drop;
