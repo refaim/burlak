@@ -1,6 +1,5 @@
 #include "drag/ToolWindow.hpp"
 
-#include "core/Peers.hpp"
 #include "core/Policies.hpp"
 #include "drag/DragSource.hpp"
 #include "drag/DropTarget.hpp"
@@ -8,6 +7,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -22,11 +22,15 @@ namespace burlak::drag
     namespace
     {
 
+        constexpr wchar_t toolClass[] = L"BurlakToolWindow";
         constexpr UINT prepareDragMessage = WM_USER + 0x101;
         constexpr UINT startDragMessage = WM_USER + 0x102;
         constexpr UINT abortDragMessage = WM_USER + 0x103;
         constexpr UINT hasDataMessage = WM_USER + 0x104;
+        constexpr UINT receiveSnapshotMessage = WM_USER + 0x105;
         constexpr UINT_PTR armTimer = 1;
+        constexpr UINT_PTR externalDragPollTimer = 2;
+        constexpr UINT_PTR extractionSweepTimer = 3;
         constexpr UINT armTimeoutMilliseconds = 1000;
         constexpr int startupPollAttempts = 200;
         constexpr DWORD startupPollMilliseconds = 5;
@@ -42,7 +46,9 @@ namespace burlak::drag
                                           ReleaseCapture,
                                           SetTimer,
                                           KillTimer,
-                                          CoWaitForMultipleHandles};
+                                          GetWindow,
+                                          CoWaitForMultipleHandles,
+                                          std::chrono::steady_clock::now};
 
         struct HandleCloser
         {
@@ -82,15 +88,34 @@ namespace burlak::drag
             core::DropContext context;
         };
 
+        enum class Mode : std::uint8_t
+        {
+            Idle,
+            SourcePrepared,
+            SourceArmed,
+            SourceDragging,
+            ReceivePending,
+            ReceiveArmed,
+            ReceiveEntered,
+            ReceiveDropping,
+            ReceiveRejected
+        };
+
+        [[nodiscard]] UINT milliseconds(std::chrono::milliseconds duration)
+        {
+            return static_cast<UINT>(duration.count());
+        }
+
     } // namespace
 
-    class ToolWindow::State
+    class ToolWindow::State final : public IReceiveLifecycle
     {
       public:
-        State(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropSession &dropSession,
-              core::IExtraction &extraction, core::IPeers &peers, const ToolWindowCalls &calls)
+        State(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropData &dropData,
+              core::IDropSession &dropSession, core::IExtraction &extraction, core::IFiles &files,
+              core::IWindowProperties &properties, core::IDropMenu &menu, const ToolWindowCalls &calls)
             : screen_{screen}, input_{input}, shell_{shell}, dropSession_{dropSession}, extraction_{extraction},
-              peers_{peers}, calls_{calls}, dropTarget_{dropSession_}
+              files_{files}, properties_{properties}, calls_{calls}, dropTarget_{dropSession_, dropData, menu, *this}
         {
         }
 
@@ -144,7 +169,7 @@ namespace burlak::drag
                 constexpr DWORD pumpFlags =
                     static_cast<DWORD>(COWAIT_DISPATCH_CALLS) | static_cast<DWORD>(COWAIT_DISPATCH_WINDOW_MESSAGES);
                 // OLE can still own cross-apartment target calls after Drop returns. Pumping until the tool thread
-                // has actually exited keeps State and its COM data alive throughout that unwind.
+                // exits keeps the state and COM data alive throughout that unwind.
                 const HRESULT status = calls_.coWait(pumpFlags, INFINITE, 1, &handle, &signalled);
                 if (status != S_OK || signalled != 0) {
                     static_cast<void>(WaitForSingleObject(handle, INFINITE));
@@ -183,7 +208,7 @@ namespace burlak::drag
 
         [[nodiscard]] bool active() const
         {
-            return active_.load();
+            return mode_.load() != Mode::Idle;
         }
 
         [[nodiscard]] core::NativeWindow nativeWindow() const
@@ -202,6 +227,122 @@ namespace burlak::drag
             DWORD effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
             static_cast<void>(dropTarget_.Drop(nullptr, keyStates[static_cast<std::size_t>(shift)],
                                                POINTL{point.x, point.y}, &effect));
+        }
+
+        [[nodiscard]] std::uint32_t dragEnter(std::uintptr_t dataObject, std::uint32_t keyState, core::Point point,
+                                              std::uint32_t allowedEffects)
+        {
+            DWORD effect = allowedEffects;
+            static_cast<void>(dropTarget_.DragEnter(reinterpret_cast<IDataObject *>(dataObject), keyState,
+                                                    POINTL{point.x, point.y}, &effect));
+            return effect;
+        }
+
+        void dragLeave()
+        {
+            static_cast<void>(dropTarget_.DragLeave());
+        }
+
+        [[nodiscard]] std::uint32_t drop(std::uintptr_t dataObject, std::uint32_t keyState, core::Point point,
+                                         std::uint32_t allowedEffects)
+        {
+            DWORD effect = allowedEffects;
+            static_cast<void>(dropTarget_.Drop(reinterpret_cast<IDataObject *>(dataObject), keyState,
+                                               POINTL{point.x, point.y}, &effect));
+            return effect;
+        }
+
+        void receiveSnapshot(core::ReceiveSnapshot snapshot)
+        {
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                receivePayload_ = std::move(snapshot);
+            }
+            static_cast<void>(calls_.sendMessage(windowHandle(), receiveSnapshotMessage, 0, 0));
+            const std::lock_guard lock{privateMessageMutex_};
+            receivePayload_.reset();
+        }
+
+        [[nodiscard]] bool receiveMode() const noexcept override
+        {
+            const auto mode = mode_.load();
+            return mode == Mode::ReceiveArmed || mode == Mode::ReceiveEntered || mode == Mode::ReceiveDropping;
+        }
+
+        [[nodiscard]] bool sourceMode() const noexcept override
+        {
+            // The same-Far replay is legitimate only inside our running OLE drag; the arm state precedes the loop
+            // and Idle follows it, so a Drop that arrives in either is refused.
+            return mode_.load() == Mode::SourceDragging;
+        }
+
+        [[nodiscard]] bool enterReceive() override
+        {
+            auto armed = Mode::ReceiveArmed;
+            receiveReleaseDeadline_.reset();
+            return mode_.compare_exchange_strong(armed, Mode::ReceiveEntered);
+        }
+
+        void leaveReceive() override
+        {
+            // The release deadline belongs to Entered alone: Armed hides on the next button-up poll instead, and
+            // enterReceive starts a fresh one, so nothing depends on whether the exchange took place.
+            auto entered = Mode::ReceiveEntered;
+            static_cast<void>(mode_.compare_exchange_strong(entered, Mode::ReceiveArmed));
+            receiveReleaseDeadline_.reset();
+        }
+
+        [[nodiscard]] bool beginReceiveDrop() override
+        {
+            auto entered = Mode::ReceiveEntered;
+            receiveReleaseDeadline_.reset();
+            return mode_.compare_exchange_strong(entered, Mode::ReceiveDropping);
+        }
+
+        [[nodiscard]] bool refreshReceive(core::Point point) override
+        {
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                receiveRefreshResult_.reset();
+            }
+            static_cast<void>(ResetEvent(readiness_.get()));
+            if (!dropSession_.requestReceiveRefresh(point)) {
+                return false;
+            }
+            HANDLE handle = readiness_.get();
+            DWORD signalled{};
+            constexpr DWORD pumpFlags =
+                static_cast<DWORD>(COWAIT_DISPATCH_CALLS) | static_cast<DWORD>(COWAIT_DISPATCH_WINDOW_MESSAGES);
+            const auto status =
+                calls_.coWait(pumpFlags, milliseconds(core::receiveDropTimeout), 1, &handle, &signalled);
+            if (status != S_OK || signalled != 0) {
+                return false;
+            }
+            const std::lock_guard lock{privateMessageMutex_};
+            return std::exchange(receiveRefreshResult_, std::nullopt).value_or(false);
+        }
+
+        void completeReceiveRefresh(bool matches)
+        {
+            {
+                const std::lock_guard lock{privateMessageMutex_};
+                receiveRefreshResult_ = matches;
+            }
+            static_cast<void>(SetEvent(readiness_.get()));
+        }
+
+        [[nodiscard]] core::NativeWindow menuOwner() const noexcept override
+        {
+            return window_.load();
+        }
+
+        void finishReceive() noexcept override
+        {
+            calls_.showWindow(windowHandle(), SW_HIDE);
+            dropSession_.cancelReceive();
+            trackedButton_.reset();
+            receiveReleaseDeadline_.reset();
+            mode_.store(Mode::Idle);
         }
 
       private:
@@ -236,6 +377,12 @@ namespace burlak::drag
             return std::exchange(preparePayload_, std::nullopt);
         }
 
+        [[nodiscard]] std::optional<core::ReceiveSnapshot> takeReceivePayload()
+        {
+            const std::lock_guard lock{privateMessageMutex_};
+            return std::exchange(receivePayload_, std::nullopt);
+        }
+
         [[nodiscard]] static bool validPrivateMessageParameters(WPARAM word, LPARAM number)
         {
             return word == 0 && number == 0;
@@ -249,11 +396,10 @@ namespace burlak::drag
         [[nodiscard]] DWORD threadMain()
         {
             MSG message{};
-            // PeekMessage creates the queue before the main thread can rely on PostThreadMessage for shutdown.
             static_cast<void>(PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE));
-            static_cast<void>(SetEvent(readiness_.get()));
             static_cast<void>(OleInitialize(nullptr));
             if (stopRequested_.load()) {
+                static_cast<void>(SetEvent(readiness_.get()));
                 OleUninitialize();
                 return 0;
             }
@@ -262,15 +408,13 @@ namespace burlak::drag
             windowClass.cbSize = sizeof(windowClass);
             windowClass.lpfnWndProc = windowProcedure;
             windowClass.hInstance = GetModuleHandleW(nullptr);
-            // IPeers exposes a view backed by a terminated class-name literal for these Win32 calls.
-            windowClass.lpszClassName =
-                peers_.toolWindowClass().data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
+            windowClass.lpszClassName = toolClass;
             static_cast<void>(RegisterClassExW(&windowClass));
 
-            UniqueWindow ownedWindow{calls_.createWindow(
-                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                peers_.toolWindowClass().data(), // NOLINT(bugprone-suspicious-stringview-data-usage)
-                nullptr, WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, windowClass.hInstance, this)};
+            const auto owner = reinterpret_cast<HWND>(screen_.hostWindowHandle());
+            UniqueWindow ownedWindow{calls_.createWindow(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, toolClass,
+                                                         nullptr, WS_POPUP, 0, 0, 1, 1, owner, nullptr,
+                                                         windowClass.hInstance, this)};
             const auto window = ownedWindow.get();
             DragDropRegistration registration;
             if (window != nullptr) {
@@ -278,14 +422,19 @@ namespace burlak::drag
                 window_.store(reinterpret_cast<core::NativeWindow>(window));
                 static_cast<void>(RegisterDragDrop(window, &dropTarget_));
                 registration.reset(window);
+                calls_.setTimer(window, externalDragPollTimer, milliseconds(core::externalDragPollInterval), nullptr);
+                calls_.setTimer(window, extractionSweepTimer, milliseconds(core::extractionSweepInterval), nullptr);
             }
+            static_cast<void>(SetEvent(readiness_.get()));
 
             while (GetMessageW(&message, nullptr, 0, 0) > 0) {
                 static_cast<void>(TranslateMessage(&message));
                 static_cast<void>(DispatchMessageW(&message));
             }
 
-            clearDrag();
+            calls_.killTimer(window, externalDragPollTimer);
+            calls_.killTimer(window, extractionSweepTimer);
+            clearForShutdown();
             registration.reset();
             ownedWindow.reset();
             window_.store(0);
@@ -313,201 +462,140 @@ namespace burlak::drag
 
         LRESULT handleMessage(HWND window, UINT message, WPARAM word, LPARAM number)
         {
-            if (peers_.isAnnouncementMessage(message)) {
-                const auto announcement = peers_.receiveAnnouncement(message, word, number);
-                if (!announcement || announcement->source.process == peers_.processId()) {
-                    return 1;
-                }
-                if (announcement->action == core::PeerAnnouncementAction::End) {
-                    incoming_.end(*announcement);
-                    return 1;
-                }
-                const auto nonce = peers_.newNonce();
-                if (!nonce || !incoming_.begin(*announcement, *nonce)) {
-                    return 0;
-                }
-                const auto reply = core::peerSendOutcome(peers_.reply(
-                    announcement->source, reinterpret_cast<core::NativeWindow>(window), announcement->nonce, *nonce));
-                // A timed-out Hello can still complete on the source thread, so only a definite failure revokes
-                // the receiver nonce; the matching end announcement clears indeterminate authorization normally.
-                if (reply == core::PeerSendOutcome::Failed) {
-                    incoming_.end(core::PeerAnnouncement{.action = core::PeerAnnouncementAction::End,
-                                                         .source = announcement->source,
-                                                         .nonce = announcement->nonce});
-                    return 0;
-                }
-                return 1;
-            }
-            if (message == WM_COPYDATA) {
-                auto envelope = peers_.receive(word, number);
-                if (!envelope) {
-                    return 0;
-                }
-                if (std::holds_alternative<core::PeerHello>(envelope->payload)) {
-                    return registry_.add(std::get<core::PeerHello>(envelope->payload), envelope->sender) ? 1 : 0;
-                }
-                auto accepted = incoming_.accept(envelope->sender, std::get<core::Drop>(std::move(envelope->payload)));
-                return accepted && dropSession_.receivePeerDrop(std::move(*accepted)) ? 1 : 0;
-            }
             switch (message) {
-            case prepareDragMessage: {
-                // A foreign sender can race a legitimate queued request, so parameters are checked against the
-                // private zero/zero shape before the state slot can be consumed.
-                if (!validPrivateMessageParameters(word, number)) {
-                    return 0;
-                }
-                auto payload = takePreparePayload();
-                // Predictable WM_USER messages can cross a same-integrity process boundary without pointer
-                // marshalling. Only a request placed in this process's mutex-protected slot is actionable.
-                if (!payload) {
-                    return 0;
-                }
-                clearDrag();
-                auto prepared =
-                    shell_.makeDataObject(payload->paths, core::preferredDropEffect(payload->needsExtraction));
-                // Far's eventual copy consumes its live selection, so every selected path must also be present in
-                // the OLE payload (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
-                if (!prepared || !core::allPathsAdvertised(payload->paths.size(), prepared->parsedPaths)) {
-                    return 0;
-                }
-                button_ = payload->button;
-                needsExtraction_ = payload->needsExtraction;
-                paths_ = std::move(payload->paths);
-                ownHost_ = payload->context.host.transform([](const core::HostWindow &host) { return host.handle; })
-                               .value_or(0);
-                dropSession_.prepare(std::move(payload->context));
-                data_ = std::move(prepared->data);
-                if (const auto nonce = peers_.newNonce()) {
-                    sourceNonce_ = *nonce;
-                    registry_.begin(*nonce);
-                    peers_.announce(reinterpret_cast<core::NativeWindow>(window), peers_.broadcastTarget(), *nonce);
-                }
-                return 1;
-            }
+            case prepareDragMessage:
+                return prepareSource(validPrivateMessageParameters(word, number));
             case startDragMessage:
-                if (!validPrivateMessageParameters(word, number)) {
-                    return 0;
-                }
-                if (!takePrivateRequest(startRequested_)) {
-                    return 0;
-                }
-                return showAndArm(window);
+                return validPrivateMessageParameters(word, number) && takePrivateRequest(startRequested_)
+                           ? showAndArm(window)
+                           : 0;
             case abortDragMessage:
-                if (!validPrivateMessageParameters(word, number)) {
-                    return 0;
+                if (validPrivateMessageParameters(word, number) && takePrivateRequest(abortRequested_)) {
+                    abortCurrent();
                 }
-                if (!takePrivateRequest(abortRequested_)) {
-                    return 0;
-                }
-                clearDrag();
                 return 0;
             case hasDataMessage:
-                if (!validPrivateMessageParameters(word, number)) {
-                    return 0;
-                }
-                if (!takePrivateRequest(hasDataRequested_)) {
-                    return 0;
-                }
-                return data_ ? 1 : 0;
+                return validPrivateMessageParameters(word, number) && takePrivateRequest(hasDataRequested_) && data_
+                           ? 1
+                           : 0;
+            case receiveSnapshotMessage:
+                return acceptReceiveSnapshot(window, validPrivateMessageParameters(word, number));
             case WM_LBUTTONDOWN:
             case WM_RBUTTONDOWN:
                 calls_.killTimer(window, armTimer);
                 runDrag(window);
                 return 0;
             case WM_TIMER:
-                if (word == armTimer) {
-                    disarm(window);
-                    return 0;
-                }
-                break;
+                handleTimer(window, word);
+                return 0;
             case WM_DESTROY:
                 calls_.showWindow(window, SW_HIDE);
                 return 0;
             default:
-                break;
+                return DefWindowProcW(window, message, word, number);
             }
-            return DefWindowProcW(window, message, word, number);
+        }
+
+        [[nodiscard]] LRESULT prepareSource(bool validParameters)
+        {
+            if (!validParameters) {
+                return 0;
+            }
+            auto payload = takePreparePayload();
+            if (!payload || mode_.load() != Mode::Idle) {
+                return 0;
+            }
+            auto prepared = shell_.makeDataObject(payload->paths, core::preferredDropEffect(payload->needsExtraction));
+            // Far's eventual copy consumes its live selection, so every selected path must also be advertised
+            // (Far source: far/filelist.cpp, FileList::ProcessCopyKeys).
+            if (!prepared || !core::allPathsAdvertised(payload->paths.size(), prepared->parsedPaths)) {
+                return 0;
+            }
+            button_ = payload->button;
+            needsExtraction_ = payload->needsExtraction;
+            dropSession_.prepare(std::move(payload->context));
+            data_ = std::move(prepared->data);
+            mode_.store(Mode::SourcePrepared);
+            return 1;
         }
 
         [[nodiscard]] LRESULT showAndArm(HWND window)
         {
+            if (mode_.load() != Mode::SourcePrepared) {
+                return 0;
+            }
             const auto host = screen_.hostWindow();
-            if (!data_ || !host) {
-                clearDrag();
+            if (!host) {
+                clearSource();
+                mode_.store(Mode::Idle);
                 return 0;
             }
-
-            // Demotion is harmless when Windows refused an earlier topmost request, and avoids making
-            // coverage depend on whether this process currently has foreground rights.
-            const auto choice = core::placement(host->topmost);
-            if (choice.demoteFirst) {
-                calls_.setWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
-            calls_.setWindowPos(window, choice.topmost ? HWND_TOPMOST : HWND_TOP, host->rect.left, host->rect.top,
-                                host->rect.right - host->rect.left, host->rect.bottom - host->rect.top,
-                                SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            position(window, *host, host->rect);
             if (!calls_.isWindowVisible(window)) {
-                clearDrag();
+                clearSource();
+                mode_.store(Mode::Idle);
                 return 0;
             }
+            mode_.store(Mode::SourceArmed);
             calls_.setCapture(window);
             calls_.setTimer(window, armTimer, armTimeoutMilliseconds, nullptr);
-            // Session has just released the physical button; the queued synthetic press is therefore a
-            // new click on the tool window, not a continuation of Far's panel gesture.
+            // Session released the physical button; this press is a new click on the tool window.
             input_.press(button_);
             return 1;
         }
 
+        void position(HWND window, const core::HostWindow &host, core::PixelRect rectangle)
+        {
+            const auto choice = core::placement(host.topmost);
+            if (choice.demoteFirst) {
+                calls_.setWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            const auto nativeHost = reinterpret_cast<HWND>(host.handle);
+            auto insertAfter = calls_.getWindow(nativeHost, GW_HWNDPREV);
+            if (insertAfter == window) {
+                insertAfter = calls_.getWindow(window, GW_HWNDPREV);
+            }
+            if (insertAfter == nullptr) {
+                insertAfter = choice.topmost ? HWND_TOPMOST : HWND_TOP;
+            }
+            calls_.setWindowPos(window, insertAfter, rectangle.left, rectangle.top, rectangle.right - rectangle.left,
+                                rectangle.bottom - rectangle.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+
         void runDrag(HWND window)
         {
-            if (!data_ || active_.exchange(true)) {
+            auto expected = Mode::SourceArmed;
+            if (!data_ || !mode_.compare_exchange_strong(expected, Mode::SourceDragging)) {
                 return;
             }
-            DragSource source{releasePolicy_,
-                              screen_,
-                              extraction_,
-                              peers_,
-                              registry_,
-                              button_,
-                              reinterpret_cast<core::NativeWindow>(window),
-                              ownHost_,
-                              needsExtraction_,
-                              paths_};
-            // A target may report Move after taking the extracted placeholders; GetFilesW is always non-moving,
-            // so the archive or remote panel remains untouched.
+            DragSource source{
+                releasePolicy_,  screen_, extraction_, button_, reinterpret_cast<core::NativeWindow>(window),
+                needsExtraction_};
             const auto outcome = shell_.runDrag(reinterpret_cast<core::NativeWindow>(window), *data_,
                                                 reinterpret_cast<std::uintptr_t>(&source), !needsExtraction_);
-            source.completePeerHandoff();
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);
-            // The tool thread must retain/touch or clean this run before publishing inactivity: Far's thread gates
-            // a new Session::begin on active(), and its cleanup/sweep could otherwise remove the previous run.
-            clearDrag(source.peerHandoff() ||
-                      core::retainExtractedRun(source.extractionRan(), outcome, DRAGDROP_S_DROP));
-            active_.store(false);
+            // Retention or cleanup completes before Idle is published, so neither a source gesture nor timer sweep
+            // can race the run that just left OLE.
+            clearSource(core::retainExtractedRun(source.extractionRan(), outcome, DRAGDROP_S_DROP));
+            mode_.store(Mode::Idle);
         }
 
         void disarm(HWND window)
         {
             calls_.killTimer(window, armTimer);
-            if (active_.load()) {
+            if (mode_.load() != Mode::SourceArmed) {
                 return;
             }
             calls_.releaseCapture();
             calls_.showWindow(window, SW_HIDE);
-            clearDrag();
+            clearSource();
+            mode_.store(Mode::Idle);
         }
 
-        void clearDrag(bool preserveExtraction = false)
+        void clearSource(bool preserveExtraction = false)
         {
-            if (sourceNonce_) {
-                peers_.endAnnouncement(window_.load(), peers_.broadcastTarget(), *sourceNonce_);
-                sourceNonce_.reset();
-            }
-            registry_.end();
             data_.reset();
-            paths_.clear();
-            ownHost_ = 0;
             if (std::exchange(needsExtraction_, false)) {
                 if (preserveExtraction) {
                     extraction_.retain();
@@ -515,6 +603,144 @@ namespace burlak::drag
                     extraction_.cleanup();
                 }
             }
+            // Drop the hover context the moment the source drag ends, so no later call can build a same-Far replay
+            // from a stale selection. The Far-thread drop/identity snapshot survives here because a same-Far release
+            // may still have a redraw synchro in flight; it is inert without the hover context and the next begin
+            // rebuilds it.
+            dropSession_.endSource();
+        }
+
+        void abortCurrent()
+        {
+            const auto mode = mode_.load();
+            if (mode == Mode::ReceiveArmed || mode == Mode::ReceiveEntered || mode == Mode::ReceiveDropping ||
+                mode == Mode::ReceivePending || mode == Mode::ReceiveRejected) {
+                finishReceive();
+                return;
+            }
+            clearSource();
+            mode_.store(Mode::Idle);
+        }
+
+        void clearForShutdown()
+        {
+            dropSession_.cancelReceive();
+            clearSource();
+            trackedButton_.reset();
+            receiveReleaseDeadline_.reset();
+            mode_.store(Mode::Idle);
+        }
+
+        void handleTimer(HWND window, WPARAM timer)
+        {
+            if (timer == armTimer) {
+                disarm(window);
+            } else if (timer == externalDragPollTimer) {
+                pollExternalDrag();
+            } else if (timer == extractionSweepTimer && mode_.load() == Mode::Idle) {
+                files_.sweep();
+            }
+        }
+
+        void pollExternalDrag()
+        {
+            const auto mode = mode_.load();
+            if (mode == Mode::SourcePrepared || mode == Mode::SourceArmed || mode == Mode::SourceDragging) {
+                return;
+            }
+            if (mode == Mode::ReceiveDropping) {
+                return;
+            }
+            const bool leftDown = screen_.buttonDown(core::Button::Left);
+            const bool rightDown = screen_.buttonDown(core::Button::Right);
+            if (trackedButton_) {
+                const bool held = *trackedButton_ == core::Button::Left ? leftDown : rightDown;
+                if (!held) {
+                    const auto releaseMode = mode_.load();
+                    if (releaseMode == Mode::ReceiveEntered) {
+                        if (!receiveReleaseDeadline_) {
+                            receiveReleaseDeadline_ = calls_.now() + core::receiveEnteredTimeout;
+                        } else if (calls_.now() >= *receiveReleaseDeadline_) {
+                            finishReceive();
+                        }
+                    } else if (releaseMode == Mode::ReceiveArmed || releaseMode == Mode::ReceivePending ||
+                               releaseMode == Mode::ReceiveRejected) {
+                        finishReceive();
+                    } else {
+                        trackedButton_.reset();
+                    }
+                    return;
+                }
+            }
+            if (mode_.load() != Mode::Idle) {
+                return;
+            }
+            if (!trackedButton_) {
+                if (!leftDown && !rightDown) {
+                    return;
+                }
+                const auto press = screen_.cursor();
+                if (!press) {
+                    return;
+                }
+                trackedButton_ = rightDown ? core::Button::Right : core::Button::Left;
+                pressPoint_ = *press;
+                pressRoot_ = screen_.windowAt(*press);
+            }
+            const auto point = screen_.cursor();
+            if (!point) {
+                return;
+            }
+            const auto host = screen_.hostWindowAt(*point);
+            const auto hostHandle =
+                host.transform([](const core::HostWindow &window) { return window.handle; }).value_or(0);
+            const auto receiver = host ? properties_.value(host->handle) : std::nullopt;
+            const auto process = properties_.processId();
+            const core::ExternalDragFacts facts{
+                .buttonDown = *trackedButton_ == core::Button::Left ? leftDown : rightDown,
+                .pressRoot = pressRoot_,
+                .pointRoot = screen_.windowAt(*point),
+                .host = hostHandle,
+                .console = screen_.consoleWindow(),
+                .tool = window_.load(),
+                .receiver = receiver,
+                .receiverAlive = !receiver || *receiver == process || files_.processAlive(*receiver),
+                .process = process,
+                .ownDragActive = false};
+            if (!externalDragPolicy_.overHost(facts)) {
+                return;
+            }
+            // A drag-selection from another program can cross Far and satisfy these physical facts. Its capture
+            // keeps OLE away from this window; the invisible overlay is discarded when the button rises.
+            mode_.store(Mode::ReceivePending);
+            if (!dropSession_.requestReceiveSnapshot(*point)) {
+                mode_.store(Mode::ReceiveRejected);
+            }
+        }
+
+        [[nodiscard]] LRESULT acceptReceiveSnapshot(HWND window, bool validParameters)
+        {
+            if (!validParameters) {
+                return 0;
+            }
+            auto snapshot = takeReceivePayload();
+            if (!snapshot || mode_.load() != Mode::ReceivePending) {
+                return 0;
+            }
+            const auto rectangle = receivePolicy_.overlayRect(*snapshot);
+            if (!rectangle) {
+                mode_.store(Mode::ReceiveRejected);
+                return 0;
+            }
+            dropSession_.prepareReceive(*snapshot);
+            position(window, *snapshot->host, *rectangle);
+            if (!calls_.isWindowVisible(window)) {
+                dropSession_.cancelReceive();
+                mode_.store(Mode::ReceiveRejected);
+                return 0;
+            }
+            mode_.store(Mode::ReceiveArmed);
+            return 1;
         }
 
         core::IScreen &screen_;
@@ -522,41 +748,48 @@ namespace burlak::drag
         core::IShell &shell_;
         core::IDropSession &dropSession_;
         core::IExtraction &extraction_;
-        core::IPeers &peers_;
+        core::IFiles &files_;
+        core::IWindowProperties &properties_;
         const ToolWindowCalls &calls_;
         UniqueHandle thread_;
         UniqueHandle readiness_;
         DWORD threadId_{};
         std::atomic<core::NativeWindow> window_{};
-        std::atomic<bool> active_{};
+        std::atomic<Mode> mode_{Mode::Idle};
         std::atomic<bool> stopRequested_{};
         mutable std::mutex privateMessageMutex_;
         std::optional<PreparePayload> preparePayload_;
+        std::optional<core::ReceiveSnapshot> receivePayload_;
+        std::optional<bool> receiveRefreshResult_;
         mutable bool startRequested_{};
         mutable bool abortRequested_{};
         mutable bool hasDataRequested_{};
         core::Button button_{core::Button::Left};
         bool needsExtraction_{};
-        core::NativeWindow ownHost_{};
-        std::vector<std::wstring> paths_;
         std::unique_ptr<core::IShell::DragData> data_;
+        std::optional<core::Button> trackedButton_;
+        std::optional<std::chrono::steady_clock::time_point> receiveReleaseDeadline_;
+        core::Point pressPoint_{};
+        core::NativeWindow pressRoot_{};
         core::ReleasePolicy releasePolicy_;
-        core::PeerRegistry registry_;
-        core::IncomingPeerRegistry incoming_;
-        std::optional<std::uint64_t> sourceNonce_;
+        core::ExternalDragPolicy externalDragPolicy_;
+        core::ReceivePolicy receivePolicy_;
         DropTarget dropTarget_;
     };
 
-    ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           core::IDropSession &dropSession, core::IExtraction &extraction, core::IPeers &peers)
-        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, peers, systemCalls)}
+    ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropData &dropData,
+                           core::IDropSession &dropSession, core::IExtraction &extraction, core::IFiles &files,
+                           core::IWindowProperties &properties, core::IDropMenu &menu)
+        : state_{std::make_unique<State>(screen, input, shell, dropData, dropSession, extraction, files, properties,
+                                         menu, systemCalls)}
     {
     }
 
-    ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell,
-                           core::IDropSession &dropSession, core::IExtraction &extraction, core::IPeers &peers,
-                           const ToolWindowCalls &calls)
-        : state_{std::make_unique<State>(screen, input, shell, dropSession, extraction, peers, calls)}
+    ToolWindow::ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropData &dropData,
+                           core::IDropSession &dropSession, core::IExtraction &extraction, core::IFiles &files,
+                           core::IWindowProperties &properties, core::IDropMenu &menu, const ToolWindowCalls &calls)
+        : state_{std::make_unique<State>(screen, input, shell, dropData, dropSession, extraction, files, properties,
+                                         menu, calls)}
     {
     }
 
@@ -573,7 +806,7 @@ namespace burlak::drag
     bool ToolWindow::prepare(std::span<const std::wstring> paths, core::Button button, bool needsExtraction,
                              core::DropContext context)
     {
-        return state_->prepare(paths, button, needsExtraction, context);
+        return state_->prepare(paths, button, needsExtraction, std::move(context));
     }
 
     bool ToolWindow::showAndArm()
@@ -611,9 +844,46 @@ namespace burlak::drag
         state_->drop(point, shift);
     }
 
+    std::uint32_t ToolWindow::dragEnter(std::uintptr_t dataObject, std::uint32_t keyState, core::Point point,
+                                        std::uint32_t allowedEffects)
+    {
+        return state_->dragEnter(dataObject, keyState, point, allowedEffects);
+    }
+
+    void ToolWindow::dragLeave()
+    {
+        state_->dragLeave();
+    }
+
+    std::uint32_t ToolWindow::drop(std::uintptr_t dataObject, std::uint32_t keyState, core::Point point,
+                                   std::uint32_t allowedEffects)
+    {
+        return state_->drop(dataObject, keyState, point, allowedEffects);
+    }
+
+    void ToolWindow::receiveSnapshot(core::ReceiveSnapshot snapshot)
+    {
+        state_->receiveSnapshot(std::move(snapshot));
+    }
+
+    void ToolWindow::completeReceiveRefresh(bool matches)
+    {
+        state_->completeReceiveRefresh(matches);
+    }
+
     std::uintptr_t armTimerId()
     {
         return armTimer;
+    }
+
+    std::uintptr_t externalDragPollTimerId()
+    {
+        return externalDragPollTimer;
+    }
+
+    std::uintptr_t extractionSweepTimerId()
+    {
+        return extractionSweepTimer;
     }
 
     const ToolWindowCalls &systemToolWindowCalls()

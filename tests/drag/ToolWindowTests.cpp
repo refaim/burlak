@@ -1,58 +1,72 @@
 #include "drag/ToolWindow.hpp"
 
-#include "../Desktop.hpp"
+#include "adapters/shell/Shell.hpp"
+#include "core/Policies.hpp"
 
 #include <doctest/doctest.h>
 
 #include <windows.h>
 
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <new>
+#include <vector>
 
 namespace burlak::drag
 {
 
     namespace
     {
+        adapters::shell::DropData &dropData()
+        {
+            static adapters::shell::DropData bridge;
+            return bridge;
+        }
 
         class Screen final : public core::IScreen
         {
           public:
             std::optional<core::HostWindow> host;
-            bool down{true};
             std::optional<core::Point> point;
             core::NativeWindow root{};
+            core::NativeWindow console{11};
+            bool left{};
+            bool right{};
 
             [[nodiscard]] std::optional<core::Point> cursor() override
             {
                 return point;
             }
-
-            [[nodiscard]] bool buttonDown(core::Button) override
+            [[nodiscard]] bool buttonDown(core::Button button) override
             {
-                return down;
+                return button == core::Button::Left ? left : right;
             }
-
             [[nodiscard]] core::NativeWindow windowAt(core::Point) override
             {
                 return root;
             }
-
+            [[nodiscard]] core::NativeWindow consoleWindow() override
+            {
+                return console;
+            }
+            [[nodiscard]] core::NativeWindow hostWindowHandle() override
+            {
+                return 0;
+            }
             [[nodiscard]] std::optional<core::HostWindow> hostWindow() override
             {
                 return host;
             }
-
             [[nodiscard]] std::optional<core::HostWindow> hostWindowAt(core::Point) override
             {
                 return host;
             }
-
             [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometry() override
             {
                 return std::unexpected(core::Error::Unavailable);
             }
-
             [[nodiscard]] std::expected<core::CellGeometry, core::Error> cellGeometryAt(core::Point) override
             {
                 return std::unexpected(core::Error::Unavailable);
@@ -72,6 +86,7 @@ namespace burlak::drag
             };
 
             bool prepares{true};
+            bool throwAllocation{};
             std::size_t parsedPaths{1};
             int dragCalls{};
             bool allowedLink{};
@@ -84,12 +99,14 @@ namespace burlak::drag
                 std::span<const std::wstring>, std::optional<core::Effect> preferred) override
             {
                 preferredEffect = preferred;
+                if (throwAllocation) {
+                    throw std::bad_alloc{};
+                }
                 if (!prepares) {
                     return std::unexpected(core::Error::NoSelection);
                 }
                 return PreparedDrag{.data = std::make_unique<Data>(), .parsedPaths = parsedPaths};
             }
-
             [[nodiscard]] core::DragLoopOutcome runDrag(core::NativeWindow owner, DragData &, std::uintptr_t source,
                                                         bool allowLink) override
             {
@@ -101,7 +118,6 @@ namespace burlak::drag
                 }
                 return dragOutcome;
             }
-
             [[nodiscard]] std::expected<void, core::Error> copy(std::span<const std::wstring>, std::wstring_view,
                                                                 core::Effect, core::NativeWindow) override
             {
@@ -130,28 +146,130 @@ namespace burlak::drag
         class DropSession final : public core::IDropSession
         {
           public:
-            std::optional<core::DropContext> context;
-            std::vector<core::PendingPeerDrop> peerDrops;
-            bool accepts{true};
+            std::optional<core::DropContext> sourceContext;
+            std::optional<core::ReceiveSnapshot> receiveContext;
+            std::vector<core::Point> snapshotRequests;
+            int cancellations{};
+            int sourceDrops{};
+            int receiveDrops{};
+            int refreshRequests{};
+            bool acceptRequest{true};
+            bool acceptRefresh{true};
+            std::function<void()> duringRefreshRequest;
+            std::function<void()> duringReceiveDrop;
 
-            void prepare(core::DropContext prepared) override
+            int sourceEnds{};
+
+            void prepare(core::DropContext context) override
             {
-                context = prepared;
+                sourceContext = std::move(context);
+            }
+            void endSource() override
+            {
+                ++sourceEnds;
             }
             [[nodiscard]] core::Effect effect(core::Point, bool) const override
             {
-                return core::Effect::None;
+                return core::Effect::Copy;
             }
-            [[nodiscard]] core::Effect drop(core::Point, bool) override
+            [[nodiscard]] core::Effect drop(core::Point, bool shift) override
             {
-                return core::Effect::None;
+                ++sourceDrops;
+                return shift ? core::Effect::Move : core::Effect::Copy;
+            }
+            [[nodiscard]] bool requestReceiveSnapshot(core::Point point) override
+            {
+                snapshotRequests.push_back(point);
+                return acceptRequest;
+            }
+            [[nodiscard]] bool requestReceiveRefresh(core::Point) override
+            {
+                ++refreshRequests;
+                if (duringRefreshRequest) {
+                    duringRefreshRequest();
+                }
+                return acceptRefresh;
+            }
+            void prepareReceive(core::ReceiveSnapshot snapshot) override
+            {
+                receiveContext = std::move(snapshot);
+            }
+            void cancelReceive() override
+            {
+                ++cancellations;
+                receiveContext.reset();
+            }
+            [[nodiscard]] core::Effect receiveEffect(core::Point, bool shift,
+                                                     core::AllowedEffects allowed) const override
+            {
+                if (shift && allowed.move) {
+                    return core::Effect::Move;
+                }
+                if (allowed.copy) {
+                    return core::Effect::Copy;
+                }
+                return allowed.move ? core::Effect::Move : core::Effect::None;
+            }
+            [[nodiscard]] core::NativeWindow receiveOwner() const override
+            {
+                return 10;
+            }
+            [[nodiscard]] core::ReceiveDropOutcome receiveDrop(std::span<const std::wstring>, core::Point,
+                                                               core::Effect effect) override
+            {
+                ++receiveDrops;
+                if (duringReceiveDrop) {
+                    duringReceiveDrop();
+                }
+                return core::receiveDropOutcome(effect, true);
+            }
+        };
+
+        class OleApartment final
+        {
+          public:
+            OleApartment() : initialized_{SUCCEEDED(OleInitialize(nullptr))}
+            {
+            }
+            ~OleApartment()
+            {
+                if (initialized_) {
+                    OleUninitialize();
+                }
+            }
+            [[nodiscard]] bool initialized() const
+            {
+                return initialized_;
             }
 
-            [[nodiscard]] bool receivePeerDrop(core::PendingPeerDrop drop) override
+          private:
+            bool initialized_{};
+        };
+
+        class TemporaryFile final
+        {
+          public:
+            TemporaryFile()
+                : root_{std::filesystem::temp_directory_path() /
+                        (L"burlak-tool-window-" + std::to_wstring(GetCurrentProcessId()))},
+                  path_{root_ / L"one.txt"}
             {
-                peerDrops.push_back(std::move(drop));
-                return accepts;
+                std::filesystem::create_directories(root_);
+                std::ofstream stream{path_};
             }
+            ~TemporaryFile()
+            {
+                std::error_code ignored;
+                std::filesystem::remove_all(root_, ignored);
+            }
+            [[nodiscard]] const std::filesystem::path &path() const
+            {
+                return path_;
+            }
+
+          private:
+            std::filesystem::path root_;
+            std::filesystem::path path_;
         };
 
         class Extraction final : public core::IExtraction
@@ -161,7 +279,6 @@ namespace burlak::drag
             int cleanups{};
             int retains{};
             bool succeeds{true};
-            bool touched{};
             std::function<void()> duringRetain;
 
             [[nodiscard]] bool extract() override
@@ -169,122 +286,83 @@ namespace burlak::drag
                 ++calls;
                 return succeeds;
             }
-
             void cleanup() override
             {
                 ++cleanups;
             }
-
             void retain() override
             {
                 if (duringRetain) {
                     duringRetain();
                 }
                 ++retains;
-                touched = true;
             }
         };
 
-        struct PrivateMessageProbe
-        {
-            Input *input{};
-            Extraction *extraction{};
-            std::vector<LRESULT> hostileResults;
-            std::optional<std::size_t> startPressesBeforeLegitimate;
-            std::optional<int> abortCleanupsBeforeLegitimate;
-        } privateMessageProbe;
-
-        LRESULT WINAPI sendPrivateWithHostileParameters(HWND window, UINT message, WPARAM word, LPARAM number)
-        {
-            privateMessageProbe.hostileResults.push_back(SendMessageW(window, message, 1, 0));
-            privateMessageProbe.hostileResults.push_back(SendMessageW(window, message, 0, 1));
-            if (message == WM_USER + 0x102) {
-                privateMessageProbe.startPressesBeforeLegitimate = privateMessageProbe.input->presses.size();
-            }
-            if (message == WM_USER + 0x103) {
-                privateMessageProbe.abortCleanupsBeforeLegitimate = privateMessageProbe.extraction->cleanups;
-            }
-            return SendMessageW(window, message, word, number);
-        }
-
-        class Peers final : public core::IPeers
+        class Files final : public core::IFiles
         {
           public:
-            int announcements{};
-            int endings{};
-            int replies{};
-            int sends{};
-            core::NativeWindow source{};
-            core::NativeWindow target{};
-            std::uint64_t announcedNonce{};
-            std::expected<std::uint64_t, core::Error> nonce{100};
-            std::optional<core::PeerAnnouncement> announcement;
-            std::optional<core::PeerEnvelope> payload;
-            core::PeerMenuChoice choice{core::PeerMenuChoice::Cancel};
-            std::expected<core::PeerTransportResult, core::Error> replyResult{
-                core::PeerTransportResult{.sent = 1, .receiver = 1}};
-            bool throwAllocation{};
+            int sweeps{};
+            bool alive{true};
 
-            [[nodiscard]] std::wstring_view toolWindowClass() const override
+            [[nodiscard]] std::expected<std::wstring, core::Error> runDirectory() override
             {
-                return L"BurlakToolWindow";
+                return std::unexpected(core::Error::Unavailable);
             }
-            [[nodiscard]] bool isAnnouncementMessage(std::uint32_t message) const override
+            [[nodiscard]] std::expected<std::wstring, core::Error> placeholder(std::wstring_view, bool) override
             {
-                return message == WM_APP + 77;
+                return std::unexpected(core::Error::Unavailable);
             }
-            [[nodiscard]] std::optional<core::PeerAnnouncement> receiveAnnouncement(std::uint32_t, std::uintptr_t,
-                                                                                    std::intptr_t) override
+            [[nodiscard]] bool nameBefore(std::wstring_view, std::wstring_view) const override
             {
-                return std::exchange(announcement, std::nullopt);
+                return false;
             }
-            [[nodiscard]] std::expected<std::uint64_t, core::Error> newNonce() const override
+            [[nodiscard]] std::expected<void, core::Error> removeTree(std::wstring_view) override
             {
-                return nonce;
+                return {};
+            }
+            [[nodiscard]] std::expected<void, core::Error> touch(std::wstring_view) override
+            {
+                return {};
+            }
+            [[nodiscard]] bool processAlive(std::uint32_t) const override
+            {
+                return alive;
+            }
+            void sweep() override
+            {
+                ++sweeps;
+            }
+        };
+
+        class Properties final : public core::IWindowProperties
+        {
+          public:
+            std::optional<std::uint32_t> receiver;
+            std::uint32_t process{7};
+
+            void set(core::NativeWindow, std::uint32_t) override
+            {
+            }
+            [[nodiscard]] std::optional<std::uint32_t> value(core::NativeWindow) const override
+            {
+                return receiver;
+            }
+            void remove(core::NativeWindow) override
+            {
             }
             [[nodiscard]] std::uint32_t processId() const override
             {
-                return 10;
+                return process;
             }
-            [[nodiscard]] core::NativeWindow broadcastTarget() const override
+        };
+
+        class Menu final : public core::IDropMenu
+        {
+          public:
+            [[nodiscard]] core::DropMenuChoice choose(core::NativeWindow, core::Point, core::AllowedEffects) override
             {
-                return 99;
-            }
-            void announce(core::NativeWindow announcedSource, core::NativeWindow announcedTarget,
-                          std::uint64_t value) override
-            {
-                ++announcements;
-                source = announcedSource;
-                target = announcedTarget;
-                announcedNonce = value;
-            }
-            void endAnnouncement(core::NativeWindow, core::NativeWindow, std::uint64_t) override
-            {
-                ++endings;
-            }
-            [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> reply(core::PeerIdentity,
-                                                                                      core::NativeWindow, std::uint64_t,
-                                                                                      std::uint64_t) override
-            {
-                ++replies;
-                return replyResult;
-            }
-            [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
-            {
-                if (throwAllocation) {
-                    throw std::bad_alloc{};
-                }
-                return std::exchange(payload, std::nullopt);
-            }
-            [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> send(const core::Peer &,
-                                                                                     const core::Drop &) override
-            {
-                ++sends;
-                return core::PeerTransportResult{.sent = 1, .receiver = 1};
-            }
-            [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow, core::Point) override
-            {
-                return choice;
+                return core::DropMenuChoice::Cancel;
             }
         };
 
@@ -300,20 +378,15 @@ namespace burlak::drag
                     .destinationDirectory = std::nullopt};
         }
 
-        LRESULT CALLBACK hostProc(HWND window, UINT message, WPARAM word, LPARAM number)
+        core::ReceiveSnapshot receiveSnapshot()
         {
-            return DefWindowProcW(window, message, word, number);
-        }
-
-        HWND hostWindow()
-        {
-            WNDCLASSW windowClass{};
-            windowClass.lpfnWndProc = hostProc;
-            windowClass.hInstance = GetModuleHandleW(nullptr);
-            windowClass.lpszClassName = L"BurlakToolHostTest";
-            static_cast<void>(RegisterClassW(&windowClass));
-            return CreateWindowExW(0, windowClass.lpszClassName, L"", WS_POPUP | WS_VISIBLE, 100, 120, 320, 240,
-                                   nullptr, nullptr, windowClass.hInstance, nullptr);
+            return {.panelsWindow = true,
+                    .panels = {core::PanelInfo{
+                                   .visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
+                               std::nullopt},
+                    .directories = {L"C:\\target", std::nullopt},
+                    .host = core::HostWindow{10, {100, 120, 740, 520}, false},
+                    .geometry = core::CellGeometry{{100, 120}, 8, 16}};
         }
 
         HANDLE WINAPI failCreateThread(LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD)
@@ -345,6 +418,10 @@ namespace burlak::drag
         {
             bool visible{};
             int placements{};
+            core::PixelRect rectangle{};
+            int captures{};
+            int releases{};
+            std::vector<std::pair<UINT_PTR, UINT>> timers;
         } headlessWindow;
 
         enum class JoinWaitResult : std::uint8_t
@@ -354,9 +431,106 @@ namespace burlak::drag
             Failure,
         } joinWaitResult{};
 
-        DWORD joinWaitFlags{};
-        DWORD joinWaitTimeout{};
         int joinWaitCalls{};
+        std::chrono::steady_clock::time_point fakeTime{};
+
+        std::chrono::steady_clock::time_point fakeNow()
+        {
+            return fakeTime;
+        }
+
+        HRESULT WINAPI joinThread(DWORD, DWORD, ULONG count, LPHANDLE handles, LPDWORD index)
+        {
+            ++joinWaitCalls;
+            if (joinWaitResult == JoinWaitResult::Failure || count != 1) {
+                return E_FAIL;
+            }
+            if (WaitForSingleObject(handles[0], 5000) != WAIT_OBJECT_0) {
+                return E_FAIL;
+            }
+            *index = joinWaitResult == JoinWaitResult::WrongIndex ? 1U : 0U;
+            return S_OK;
+        }
+
+        enum class RefreshWaitResult : std::uint8_t
+        {
+            Failure,
+            WrongIndex
+        } refreshWaitResult{};
+        DWORD refreshWaitMilliseconds{};
+
+        HRESULT WINAPI failRefreshWait(DWORD flags, DWORD milliseconds, ULONG count, LPHANDLE handles, LPDWORD index)
+        {
+            if (milliseconds == INFINITE) {
+                return joinThread(flags, milliseconds, count, handles, index);
+            }
+            refreshWaitMilliseconds = milliseconds;
+            if (refreshWaitResult == RefreshWaitResult::Failure) {
+                return E_FAIL;
+            }
+            *index = 1;
+            return S_OK;
+        }
+
+        BOOL WINAPI headlessSetWindowPos(HWND, HWND, int x, int y, int width, int height, UINT flags)
+        {
+            ++headlessWindow.placements;
+            if ((flags & SWP_NOMOVE) == 0) {
+                headlessWindow.rectangle = {x, y, x + width, y + height};
+            }
+            if ((flags & SWP_SHOWWINDOW) != 0) {
+                headlessWindow.visible = true;
+            }
+            return TRUE;
+        }
+
+        BOOL WINAPI headlessIsWindowVisible(HWND)
+        {
+            return headlessWindow.visible ? TRUE : FALSE;
+        }
+
+        BOOL WINAPI headlessShowWindow(HWND, int command)
+        {
+            if (command == SW_HIDE) {
+                headlessWindow.visible = false;
+            }
+            return TRUE;
+        }
+
+        HWND WINAPI headlessSetCapture(HWND window)
+        {
+            ++headlessWindow.captures;
+            return window;
+        }
+
+        BOOL WINAPI headlessReleaseCapture()
+        {
+            ++headlessWindow.releases;
+            return TRUE;
+        }
+
+        UINT_PTR WINAPI headlessSetTimer(HWND, UINT_PTR event, UINT duration, TIMERPROC)
+        {
+            headlessWindow.timers.emplace_back(event, duration);
+            return event;
+        }
+
+        BOOL WINAPI headlessKillTimer(HWND, UINT_PTR)
+        {
+            return TRUE;
+        }
+
+        HWND WINAPI noPreviousWindow(HWND, UINT)
+        {
+            return nullptr;
+        }
+
+        HWND positionedToolWindow{};
+
+        HWND WINAPI toolThenPreviousWindow(HWND window, UINT)
+        {
+            return window == reinterpret_cast<HWND>(10) ? positionedToolWindow : reinterpret_cast<HWND>(44);
+        }
 
         struct DelayedThreadState
         {
@@ -419,63 +593,6 @@ namespace burlak::drag
             return S_OK;
         }
 
-        HRESULT WINAPI joinThread(DWORD flags, DWORD timeout, ULONG count, LPHANDLE handles, LPDWORD index)
-        {
-            ++joinWaitCalls;
-            joinWaitFlags = flags;
-            joinWaitTimeout = timeout;
-            if (joinWaitResult == JoinWaitResult::Failure || count != 1) {
-                return E_FAIL;
-            }
-            if (WaitForSingleObject(handles[0], 5000) != WAIT_OBJECT_0) {
-                return E_FAIL;
-            }
-            *index = joinWaitResult == JoinWaitResult::WrongIndex ? 1U : 0U;
-            return S_OK;
-        }
-
-        BOOL WINAPI headlessSetWindowPos(HWND, HWND, int, int, int, int, UINT flags)
-        {
-            ++headlessWindow.placements;
-            if ((flags & SWP_SHOWWINDOW) != 0) {
-                headlessWindow.visible = true;
-            }
-            return TRUE;
-        }
-
-        BOOL WINAPI headlessIsWindowVisible(HWND)
-        {
-            return headlessWindow.visible ? TRUE : FALSE;
-        }
-
-        BOOL WINAPI headlessShowWindow(HWND, int command)
-        {
-            if (command == SW_HIDE) {
-                headlessWindow.visible = false;
-            }
-            return TRUE;
-        }
-
-        HWND WINAPI headlessSetCapture(HWND window)
-        {
-            return window;
-        }
-
-        BOOL WINAPI headlessReleaseCapture()
-        {
-            return TRUE;
-        }
-
-        UINT_PTR WINAPI headlessSetTimer(HWND, UINT_PTR event, UINT, TIMERPROC)
-        {
-            return event;
-        }
-
-        BOOL WINAPI headlessKillTimer(HWND, UINT_PTR)
-        {
-            return TRUE;
-        }
-
         ToolWindowCalls headlessCalls()
         {
             auto calls = systemToolWindowCalls();
@@ -486,6 +603,7 @@ namespace burlak::drag
             calls.releaseCapture = headlessReleaseCapture;
             calls.setTimer = headlessSetTimer;
             calls.killTimer = headlessKillTimer;
+            calls.getWindow = noPreviousWindow;
             calls.coWait = joinThread;
             return calls;
         }
@@ -494,608 +612,723 @@ namespace burlak::drag
         {
             headlessWindow = {};
             joinWaitResult = JoinWaitResult::Success;
-            joinWaitFlags = 0;
-            joinWaitTimeout = 0;
             joinWaitCalls = 0;
+            positionedToolWindow = nullptr;
         }
 
     } // namespace
 
     TEST_SUITE("tool window")
     {
-        TEST_CASE("thread, prepare, show, timer disarm, and stop use a headless window boundary")
+        TEST_CASE("poll requests a receive snapshot, shows only panel pixels, and hides on button-up")
         {
             resetHeadlessWindow();
             Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.left = true;
             Input input;
             Shell shell;
-            DropSession dropSession;
+            DropSession session;
             Extraction extraction;
-            Peers peers;
+            Files files;
+            Properties properties;
+            Menu menu;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            session.duringRefreshRequest = [&] { tool.completeReceiveRefresh(true); };
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            REQUIRE(window != nullptr);
+            REQUIRE(headlessWindow.timers.size() == 2);
+            CHECK(headlessWindow.timers[0] == std::pair<UINT_PTR, UINT>{externalDragPollTimerId(), 50});
+            CHECK(headlessWindow.timers[1] == std::pair<UINT_PTR, UINT>{extractionSweepTimerId(), 60000});
 
-            CHECK(tool.start());
-            CHECK(tool.start());
-            REQUIRE(tool.nativeWindow() != 0);
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            auto context = dropContext();
-            context.host = core::HostWindow{42, {0, 0, 1, 1}, false};
-            CHECK(tool.prepare(paths, core::Button::Left, true, context));
-            CHECK(shell.preferredEffect == core::Effect::Copy);
-            CHECK(peers.announcements == 1);
-            CHECK(peers.source == tool.nativeWindow());
-            CHECK(peers.target == peers.broadcastTarget());
-            CHECK(peers.announcedNonce == 100);
-            CHECK(tool.hasData());
-            CHECK(dropSession.context->press == core::Cell{5, 5});
-            CHECK(dropSession.context->host->handle == 42);
-            CHECK(tool.showAndArm());
-            CHECK(headlessWindow.visible);
-            CHECK(headlessWindow.placements == 2);
-            REQUIRE(input.presses.size() == 1);
-            CHECK(input.presses[0] == core::Button::Left);
-
-            SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, armTimerId() + 1, 0);
-            CHECK(headlessWindow.visible);
-            SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, armTimerId(), 0);
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(session.snapshotRequests.empty());
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(session.snapshotRequests == std::vector<core::Point>{{108, 200}});
+            CHECK(tool.active());
             CHECK_FALSE(headlessWindow.visible);
-            CHECK_FALSE(tool.hasData());
-            CHECK(extraction.cleanups == 1);
-            CHECK(peers.endings == 1);
 
+            tool.receiveSnapshot(receiveSnapshot());
+            CHECK(session.receiveContext.has_value());
+            CHECK(headlessWindow.rectangle == core::PixelRect{100, 120, 420, 520});
+            CHECK(headlessWindow.visible);
+            CHECK(headlessWindow.captures == 0);
+
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(headlessWindow.visible);
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK_FALSE(headlessWindow.visible);
+            CHECK_FALSE(tool.active());
+            CHECK(session.cancellations == 1);
             tool.stop();
-            tool.stop();
-            CHECK(tool.nativeWindow() == 0);
-            CHECK(joinWaitCalls == 1);
-            CHECK(joinWaitTimeout == INFINITE);
-            CHECK((joinWaitFlags & COWAIT_DISPATCH_CALLS) != 0);
-            CHECK((joinWaitFlags & COWAIT_DISPATCH_WINDOW_MESSAGES) != 0);
         }
 
-        TEST_CASE("the tool window routes foreign announcements, hellos, drops, and malformed copy data")
+        TEST_CASE("poll rejects live competing panes but accepts a stale focused-Far property")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.right = true;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            properties.receiver = 8;
+            Menu menu;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 40;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(session.snapshotRequests.empty());
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(session.snapshotRequests.empty());
+
+            files.alive = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            REQUIRE(session.snapshotRequests.size() == 1);
+            auto invalid = receiveSnapshot();
+            invalid.panelsWindow = false;
+            tool.receiveSnapshot(invalid);
+            CHECK_FALSE(headlessWindow.visible);
+            CHECK(tool.active());
+            screen.right = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK_FALSE(tool.active());
+            tool.stop();
+        }
+
+        TEST_CASE("entered receive survives button-up until Drop or DragLeave")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.left = true;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            tool.receiveSnapshot(receiveSnapshot());
+            REQUIRE(headlessWindow.visible);
+
+            CHECK(tool.dragEnter(0, 0, {108, 200}, DROPEFFECT_COPY | DROPEFFECT_MOVE) == DROPEFFECT_NONE);
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(headlessWindow.visible);
+            CHECK(tool.active());
+            tool.dragLeave();
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK_FALSE(headlessWindow.visible);
+            CHECK_FALSE(tool.active());
+            tool.stop();
+        }
+
+        TEST_CASE("abort clears an entered or dropping receiver and the own pid is its own receiver")
+        {
+            OleApartment ole;
+            REQUIRE(ole.initialized());
+            TemporaryFile file;
+            const std::vector<std::wstring> paths{file.path().wstring()};
+            auto data = adapters::shell::makeDataObject(paths);
+            REQUIRE(data.has_value());
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.left = true;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            properties.receiver = properties.process; // the last-focused Far is this process
+            Menu menu;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            REQUIRE(session.snapshotRequests == std::vector<core::Point>{{108, 200}});
+            tool.receiveSnapshot(receiveSnapshot());
+            const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+
+            SUBCASE("abort while entered")
+            {
+                REQUIRE(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
+                tool.abort();
+                CHECK_FALSE(tool.active());
+                CHECK_FALSE(headlessWindow.visible);
+            }
+            SUBCASE("abort while dropping")
+            {
+                REQUIRE(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
+                session.duringRefreshRequest = [&] { tool.completeReceiveRefresh(true); };
+                session.duringReceiveDrop = [&] { tool.abort(); };
+                static_cast<void>(tool.drop(nativeData, 0, {108, 200}, DROPEFFECT_COPY));
+                CHECK_FALSE(tool.active());
+                CHECK_FALSE(headlessWindow.visible);
+            }
+            tool.stop();
+        }
+
+        TEST_CASE("entered receive times out two minutes after button-up, and a later Drop is refused")
+        {
+            OleApartment ole;
+            REQUIRE(ole.initialized());
+            TemporaryFile file;
+            const std::vector<std::wstring> paths{file.path().wstring()};
+            auto data = adapters::shell::makeDataObject(paths);
+            REQUIRE(data.has_value());
+            resetHeadlessWindow();
+            fakeTime = {};
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.left = true;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            auto calls = headlessCalls();
+            calls.now = fakeNow;
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            tool.receiveSnapshot(receiveSnapshot());
+            const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+            static_cast<void>(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY));
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            // Ten seconds (the old ceiling) no longer tears the overlay down: a large-archive extraction may still
+            // be running in the source's QueryContinueDrag.
+            fakeTime += std::chrono::seconds{10};
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(headlessWindow.visible);
+            fakeTime += core::receiveEnteredTimeout - std::chrono::seconds{10} - std::chrono::milliseconds{1};
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(headlessWindow.visible);
+            fakeTime += std::chrono::milliseconds{1};
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK_FALSE(headlessWindow.visible);
+            CHECK_FALSE(tool.active());
+
+            // A source that finally sends Drop after the timeout finds an idle overlay: it must be answered NONE
+            // with no shell copy and no replay (OLE does not re-hit-test after DRAGDROP_S_DROP).
+            CHECK(tool.drop(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_NONE);
+            CHECK(session.receiveDrops == 0);
+            CHECK(session.sourceDrops == 0);
+            tool.stop();
+        }
+
+        TEST_CASE("dropping ignores poll and sweep timers and rejects a second DragEnter")
+        {
+            OleApartment ole;
+            REQUIRE(ole.initialized());
+            TemporaryFile file;
+            const std::vector<std::wstring> paths{file.path().wstring()};
+            auto data = adapters::shell::makeDataObject(paths);
+            REQUIRE(data.has_value());
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.left = true;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            tool.receiveSnapshot(receiveSnapshot());
+            const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+            REQUIRE(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
+            screen.left = false;
+            session.duringRefreshRequest = [&] { tool.completeReceiveRefresh(true); };
+            session.duringReceiveDrop = [&] {
+                SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+                SendMessageW(window, WM_TIMER, extractionSweepTimerId(), 0);
+                CHECK(headlessWindow.visible);
+                CHECK(files.sweeps == 0);
+                CHECK(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_NONE);
+            };
+            CHECK(tool.drop(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
+            CHECK_FALSE(headlessWindow.visible);
+            CHECK_FALSE(tool.active());
+            CHECK(files.sweeps == 0);
+            tool.stop();
+        }
+
+        TEST_CASE("receive refresh rejection and both bounded-wait failures cancel before the shell operation")
+        {
+            OleApartment ole;
+            REQUIRE(ole.initialized());
+            TemporaryFile file;
+            const std::vector<std::wstring> paths{file.path().wstring()};
+            auto data = adapters::shell::makeDataObject(paths);
+            REQUIRE(data.has_value());
+
+            for (int scenario = 0; scenario < 4; ++scenario) {
+                resetHeadlessWindow();
+                refreshWaitMilliseconds = 0;
+                Screen screen;
+                screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+                screen.point = core::Point{20, 30};
+                screen.root = 30;
+                screen.left = true;
+                Input input;
+                Shell shell;
+                DropSession session;
+                session.acceptRefresh = scenario != 0;
+                Extraction extraction;
+                Files files;
+                Properties properties;
+                Menu menu;
+                auto calls = headlessCalls();
+                if (scenario != 3) {
+                    calls.coWait = failRefreshWait;
+                }
+                refreshWaitResult = scenario == 1 ? RefreshWaitResult::Failure : RefreshWaitResult::WrongIndex;
+                ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+                REQUIRE(tool.start());
+                if (scenario == 3) {
+                    session.duringRefreshRequest = [&] { tool.completeReceiveRefresh(false); };
+                }
+                const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+                SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+                screen.point = core::Point{108, 200};
+                screen.root = 10;
+                SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+                tool.receiveSnapshot(receiveSnapshot());
+                const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+                REQUIRE(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
+
+                CHECK(tool.drop(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_NONE);
+                CHECK(session.refreshRequests == 1);
+                CHECK(session.receiveDrops == 0);
+                CHECK(refreshWaitMilliseconds == (scenario == 1 || scenario == 2 ? 10000U : 0U));
+                CHECK_FALSE(tool.active());
+                tool.stop();
+            }
+        }
+
+        TEST_CASE("poll tolerates incomplete samples and rejected or cancelled snapshot requests")
         {
             resetHeadlessWindow();
             Screen screen;
             Input input;
             Shell shell;
-            DropSession dropSession;
+            DropSession session;
             Extraction extraction;
-            Peers peers;
+            Files files;
+            Properties properties;
+            Menu menu;
             const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
             REQUIRE(tool.start());
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.left = true;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point.reset();
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.host.reset();
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.root = 10;
+            session.acceptRequest = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(tool.active());
+            tool.abort();
+            CHECK_FALSE(tool.active());
+
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.left = true;
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.left = true;
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            session.acceptRequest = true;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(tool.active());
+            tool.abort();
+            CHECK_FALSE(tool.active());
+            tool.receiveSnapshot(receiveSnapshot());
+            CHECK_FALSE(tool.active());
+
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.left = true;
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            tool.receiveSnapshot(receiveSnapshot());
+            REQUIRE(tool.active());
+            tool.abort();
+            CHECK_FALSE(tool.active());
+            tool.stop();
+        }
+
+        TEST_CASE("a receive snapshot that cannot make the overlay visible is rejected")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 740, 520}, false};
+            screen.point = core::Point{20, 30};
+            screen.root = 30;
+            screen.left = true;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            auto calls = headlessCalls();
+            calls.isWindowVisible = reportInvisible;
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.point = core::Point{108, 200};
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            tool.receiveSnapshot(receiveSnapshot());
+            CHECK(tool.active());
+            CHECK(session.cancellations == 1);
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK_FALSE(tool.active());
+            tool.stop();
+        }
+
+        TEST_CASE("the minute timer sweeps only while the single window state machine is idle")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 420, 360}, false};
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            auto calls = headlessCalls();
+            calls.getWindow = toolThenPreviousWindow;
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            positionedToolWindow = window;
+
+            SendMessageW(window, WM_TIMER, extractionSweepTimerId(), 0);
+            CHECK(files.sweeps == 1);
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
             REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
-
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
-            peers.announcement = core::PeerAnnouncement{.action = core::PeerAnnouncementAction::Begin,
-                                                        .source = {.window = 123, .process = peers.processId()},
-                                                        .nonce = 300};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
-            CHECK(peers.replies == 0);
-            peers.announcement = core::PeerAnnouncement{.action = core::PeerAnnouncementAction::Begin,
-                                                        .source = {.window = 123, .process = peers.processId() + 1},
-                                                        .nonce = 300};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
-            CHECK(peers.replies == 1);
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, 0) == 0);
-
-            std::byte wire{};
-            COPYDATASTRUCT copy{.dwData = 1, .cbData = 1, .lpData = &wire};
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
-            peers.payload = core::PeerEnvelope{
-                .sender = {.window = 3, .process = 2},
-                .payload = core::PeerHello{
-                    .process = 2, .tool = 3, .host = 4, .lastFocus = 5, .echoNonce = 100, .nonce = 400}};
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
-            CHECK(dropSession.peerDrops.empty());
-            const core::Drop drop{.paths = {L"C:\\one.txt"}, .at = {6, 7}, .effect = core::Effect::Move, .nonce = 100};
-            peers.payload =
-                core::PeerEnvelope{.sender = {.window = 123, .process = peers.processId() + 1}, .payload = drop};
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
-            REQUIRE(dropSession.peerDrops.size() == 1);
-            CHECK(dropSession.peerDrops[0] ==
-                  core::PendingPeerDrop{.drop = drop, .sourceProcess = peers.processId() + 1});
-
-            peers.announcement = core::PeerAnnouncement{.action = core::PeerAnnouncementAction::End,
-                                                        .source = {.window = 123, .process = peers.processId() + 1},
-                                                        .nonce = 300};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
-
-            peers.payload = core::PeerEnvelope{
-                .sender = {.window = 3, .process = 2},
-                .payload = core::PeerHello{
-                    .process = 2, .tool = 3, .host = 4, .lastFocus = 5, .echoNonce = 999, .nonce = 400}};
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
-
-            peers.nonce = std::unexpected(core::Error::Unavailable);
-            peers.announcement = core::PeerAnnouncement{
-                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 124, .process = 12}, .nonce = 301};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
-            peers.nonce = 100;
-
-            peers.announcement = core::PeerAnnouncement{
-                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 0, .process = 12}, .nonce = 302};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
-
-            peers.replyResult = std::unexpected(core::Error::Unavailable);
-            peers.announcement = core::PeerAnnouncement{
-                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 125, .process = 13}, .nonce = 303};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
-            peers.replyResult =
-                core::PeerTransportResult{.sent = 0, .receiver = 0, .lastError = 1460, .timeoutError = 1460};
-
-            peers.announcement = core::PeerAnnouncement{
-                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 126, .process = 14}, .nonce = 304};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
-            const core::Drop lateHello{
-                .paths = {L"C:\\two.txt"}, .at = {6, 7}, .effect = core::Effect::Copy, .nonce = 100};
-            peers.payload = core::PeerEnvelope{.sender = {.window = 126, .process = 14}, .payload = lateHello};
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
-            CHECK(dropSession.peerDrops.size() == 2);
-
-            peers.replyResult = core::PeerTransportResult{.sent = 1, .receiver = 1};
-            peers.announcement = core::PeerAnnouncement{
-                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 127, .process = 15}, .nonce = 305};
-            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
-            dropSession.accepts = false;
-            const core::Drop rejected{
-                .paths = {L"C:\\three.txt"}, .at = {6, 7}, .effect = core::Effect::Copy, .nonce = 100};
-            peers.payload = core::PeerEnvelope{.sender = {.window = 127, .process = 15}, .payload = rejected};
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
-            CHECK(dropSession.peerDrops.size() == 3);
-            dropSession.accepts = true;
-
-            peers.nonce = std::unexpected(core::Error::Unavailable);
-            CHECK(tool.prepare(paths, core::Button::Left, false, dropContext()));
-
-            peers.throwAllocation = true;
-            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
-
-            tool.stop();
-        }
-
-        TEST_CASE("private tool messages ignore foreign pointer-shaped parameters")
-        {
-            resetHeadlessWindow();
-            Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            auto calls = headlessCalls();
-            calls.sendMessage = sendPrivateWithHostileParameters;
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-            REQUIRE(tool.start());
-            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
-            constexpr LPARAM garbage = 1;
-
-            CHECK(SendMessageW(window, WM_USER + 0x101, 0, garbage) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x102, 0, garbage) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x103, 0, garbage) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x104, 0, garbage) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x101, 0, 0) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x102, 0, 0) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x103, 0, 0) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x104, 0, 0) == 0);
-            privateMessageProbe = {};
-            privateMessageProbe.input = &input;
-            privateMessageProbe.extraction = &extraction;
-            CHECK_FALSE(tool.hasData());
-
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            CHECK(tool.prepare(paths, core::Button::Left, true, dropContext()));
-            CHECK(tool.hasData());
-            CHECK(tool.showAndArm());
-            CHECK(privateMessageProbe.startPressesBeforeLegitimate == 0);
-            CHECK(input.presses.size() == 1);
-
+            CHECK(tool.active());
+            SendMessageW(window, WM_TIMER, extractionSweepTimerId(), 0);
+            CHECK(files.sweeps == 1);
             tool.abort();
-            CHECK(privateMessageProbe.abortCleanupsBeforeLegitimate == 0);
-            CHECK(extraction.cleanups == 1);
-            CHECK_FALSE(tool.hasData());
-            CHECK(privateMessageProbe.hostileResults.size() == 12);
-            for (const auto result : privateMessageProbe.hostileResults) {
-                CHECK(result == 0);
-            }
-            CHECK(IsWindow(window) != FALSE);
+            CHECK_FALSE(tool.active());
+
+            screen.point = core::Point{10, 10};
+            screen.root = 30;
+            screen.left = true;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            screen.root = 10;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            REQUIRE(tool.active());
+            SendMessageW(window, WM_TIMER, extractionSweepTimerId(), 0);
+            CHECK(files.sweeps == 1);
+            screen.left = false;
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            SendMessageW(window, WM_TIMER, extractionSweepTimerId(), 0);
+            CHECK(files.sweeps == 2);
             tool.stop();
         }
 
-        TEST_CASE("a successful plugin-panel peer handoff retains extracted files for the receiving synchro")
+        TEST_CASE("source mode still runs OLE, replays own drops, and retains extraction before becoming idle")
         {
             resetHeadlessWindow();
             Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
-            screen.point = core::Point{10, 20};
-            screen.root = 90;
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            peers.choice = core::PeerMenuChoice::Copy;
-            const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-            REQUIRE(tool.start());
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Right, true, dropContext()));
-
-            std::byte wire{};
-            COPYDATASTRUCT copy{.dwData = 1, .cbData = 1, .lpData = &wire};
-            peers.payload = core::PeerEnvelope{
-                .sender = {.window = 91, .process = 2},
-                .payload = core::PeerHello{
-                    .process = 2, .tool = 91, .host = 90, .lastFocus = 5, .echoNonce = 100, .nonce = 200}};
-            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
-            REQUIRE(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
-            REQUIRE(tool.showAndArm());
-            shell.duringDrag = [&peers, &shell](core::NativeWindow) {
-                auto &source = *reinterpret_cast<IDropSource *>(shell.sourceHandle);
-                CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
-                CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
-                CHECK(peers.sends == 0);
-            };
-
-            SendMessageW(window, WM_RBUTTONDOWN, 0, 0);
-            CHECK(peers.sends == 1);
-            CHECK(extraction.cleanups == 0);
-            CHECK(extraction.retains == 1);
-            tool.stop();
-        }
-
-        TEST_CASE("ordinary plugin-panel drag outcomes route extracted runs to retention or cleanup")
-        {
-            resetHeadlessWindow();
-            Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
-            screen.point = core::Point{10, 20};
-            screen.root = 90;
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-            REQUIRE(tool.start());
-            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            HRESULT expectedQuery{DRAGDROP_S_DROP};
-            bool escape{};
-            int expectedExtractions{1};
-            int expectedRetains{1};
-            int expectedCleanups{};
-
-            SUBCASE("completed external copy")
-            {
-                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_COPY};
-            }
-            SUBCASE("completed external move")
-            {
-                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_MOVE};
-            }
-            SUBCASE("drop reported no effect")
-            {
-                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_NONE};
-                expectedRetains = 0;
-                expectedCleanups = 1;
-            }
-            SUBCASE("Escape cancelled before extraction")
-            {
-                escape = true;
-                expectedQuery = DRAGDROP_S_CANCEL;
-                shell.dragOutcome = {DRAGDROP_S_CANCEL, DROPEFFECT_NONE};
-                expectedExtractions = 0;
-                expectedRetains = 0;
-                expectedCleanups = 1;
-            }
-            SUBCASE("extraction failed")
-            {
-                extraction.succeeds = false;
-                expectedQuery = DRAGDROP_S_CANCEL;
-                shell.dragOutcome = {DRAGDROP_S_CANCEL, DROPEFFECT_NONE};
-                expectedRetains = 0;
-                expectedCleanups = 1;
-            }
-            SUBCASE("own tool-window drop never extracted")
-            {
-                screen.root = tool.nativeWindow();
-                shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_COPY};
-                expectedExtractions = 0;
-                expectedRetains = 0;
-                expectedCleanups = 1;
-            }
-
-            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
-            REQUIRE(tool.showAndArm());
-            shell.duringDrag = [&](core::NativeWindow) {
-                auto &source = *reinterpret_cast<IDropSource *>(shell.sourceHandle);
-                CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
-                CHECK(source.QueryContinueDrag(escape, 0) == expectedQuery);
-            };
-
-            SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
-            CHECK(extraction.calls == expectedExtractions);
-            CHECK(extraction.retains == expectedRetains);
-            CHECK(extraction.cleanups == expectedCleanups);
-            tool.stop();
-        }
-
-        TEST_CASE("a completed drag stays active until its extracted run is retained and touched")
-        {
-            resetHeadlessWindow();
-            Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
-            screen.point = core::Point{10, 20};
-            screen.root = 90;
+            screen.host = core::HostWindow{10, {100, 120, 420, 360}, false};
+            screen.point = core::Point{200, 200};
+            screen.root = 40;
             Input input;
             Shell shell;
             shell.dragOutcome = {DRAGDROP_S_DROP, DROPEFFECT_COPY};
-            DropSession dropSession;
+            DropSession session;
             Extraction extraction;
-            Peers peers;
-            const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
+            Files files;
+            Properties properties;
+            Menu menu;
+            auto calls = headlessCalls();
+            calls.getWindow = toolThenPreviousWindow;
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
             REQUIRE(tool.start());
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            positionedToolWindow = window;
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            REQUIRE(tool.prepare(paths, core::Button::Right, true, dropContext()));
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(shell.preferredEffect == core::Effect::Copy);
+            CHECK(tool.hasData());
             REQUIRE(tool.showAndArm());
-            shell.duringDrag = [&shell](core::NativeWindow) {
+            SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
+            CHECK(input.presses == std::vector<core::Button>{core::Button::Right});
+            CHECK(headlessWindow.captures == 1);
+            shell.duringDrag = [&](core::NativeWindow owner) {
+                CHECK(tool.active());
                 auto &source = *reinterpret_cast<IDropSource *>(shell.sourceHandle);
                 CHECK(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
                 CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_DROP);
+                CHECK(owner == tool.nativeWindow());
+                SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
             };
-            bool newGestureAccepted{};
-            extraction.duringRetain = [&] { newGestureAccepted = !tool.active(); };
-
-            SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
-
-            CHECK_FALSE(newGestureAccepted);
-            CHECK(extraction.retains == 1);
-            CHECK(extraction.touched);
-            CHECK_FALSE(tool.active());
-            tool.stop();
-        }
-
-        TEST_CASE("shutdown still joins the tool thread when its pumping wait reports an unusable result")
-        {
-            resetHeadlessWindow();
-            SUBCASE("wait failed")
-            {
-                joinWaitResult = JoinWaitResult::Failure;
-            }
-            SUBCASE("wait returned an impossible handle index")
-            {
-                joinWaitResult = JoinWaitResult::WrongIndex;
-            }
-
-            Screen screen;
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-            REQUIRE(tool.start());
-
-            tool.stop();
-
-            CHECK(tool.nativeWindow() == 0);
-            CHECK(joinWaitCalls == 1);
-            CHECK(joinWaitTimeout == INFINITE);
-        }
-
-        TEST_CASE("a startup readiness timeout stops and joins a worker before returning")
-        {
-            delayedThread = {};
-            delayedThread.gate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            REQUIRE(delayedThread.gate != nullptr);
-            {
-                Screen screen;
-                Input input;
-                Shell shell;
-                DropSession dropSession;
-                Extraction extraction;
-                Peers peers;
-                auto calls = systemToolWindowCalls();
-                calls.createThread = createDelayedThread;
-                calls.sleep = countSleep;
-                calls.createWindow = countFailedWindow;
-                calls.coWait = releaseDelayedThread;
-                ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-
-                CHECK_FALSE(tool.start());
-                CHECK(delayedThread.sleeps == 200);
-                CHECK(delayedThread.joins == 1);
-                CHECK(delayedThread.entries == 1);
-                CHECK(delayedThread.windows == 0);
-                CHECK(tool.nativeWindow() == 0);
-            }
-            CloseHandle(delayedThread.gate);
-        }
-
-        TEST_CASE("system placement can show the real tool window" *
-                  doctest::skip(!burlak::tests::desktopAvailable(
-                      "SKIP: tool-window integration requires a visible window station with cursor access\n")))
-        {
-            const HWND host = hostWindow();
-            REQUIRE(host != nullptr);
-            Screen screen;
-            screen.host = core::HostWindow{reinterpret_cast<core::NativeWindow>(host), {100, 120, 420, 360}, false};
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers};
-            REQUIRE(tool.start());
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
-            REQUIRE(tool.showAndArm());
-            CHECK(IsWindowVisible(reinterpret_cast<HWND>(tool.nativeWindow())) != FALSE);
-            tool.abort();
-            tool.stop();
-            DestroyWindow(host);
-        }
-
-        TEST_CASE("missing data or host aborts without injecting a press")
-        {
-            Screen screen;
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers};
-            REQUIRE(tool.start());
-            CHECK_FALSE(tool.showAndArm());
-            SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_LBUTTONDOWN, 0, 0);
-            CHECK_FALSE(tool.active());
-
-            shell.prepares = false;
-            const std::vector<std::wstring> invalid{L"Z:\\definitely-missing\\file.txt"};
-            CHECK_FALSE(tool.prepare(invalid, core::Button::Right, false, dropContext()));
-            shell.prepares = true;
-            shell.parsedPaths = 1;
-            const std::vector<std::wstring> valid{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(valid, core::Button::Right, false, dropContext()));
-            CHECK_FALSE(tool.showAndArm());
-            CHECK_FALSE(tool.hasData());
-            CHECK(input.presses.empty());
-
-            REQUIRE(tool.prepare(valid, core::Button::Right, false, dropContext()));
-            tool.abort();
-            CHECK_FALSE(tool.hasData());
-            tool.stop();
-        }
-
-        TEST_CASE("prepare rejects a shell payload that omitted any requested path")
-        {
-            Screen screen;
-            Input input;
-            Shell shell;
-            shell.parsedPaths = 1;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers};
-            REQUIRE(tool.start());
-            const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
-
-            CHECK_FALSE(tool.prepare(paths, core::Button::Left, false, dropContext()));
-            CHECK_FALSE(tool.hasData());
-            CHECK_FALSE(dropSession.context.has_value());
-            tool.stop();
-        }
-
-        TEST_CASE("placement decisions and both button messages run a headless shell loop")
-        {
-            resetHeadlessWindow();
-            Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, true};
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            const auto calls = headlessCalls();
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-            REQUIRE(tool.start());
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Right, true, dropContext()));
-            REQUIRE(tool.showAndArm());
-            CHECK(headlessWindow.placements == 1);
-            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
-            shell.duringDrag = [&tool](core::NativeWindow owner) {
-                CHECK(tool.active());
-                const auto window = reinterpret_cast<HWND>(owner);
-                SendMessageW(window, WM_TIMER, armTimerId(), 0);
-                SendMessageW(window, WM_RBUTTONDOWN, 0, 0);
-            };
+            bool idleDuringRetain{};
+            extraction.duringRetain = [&] { idleDuringRetain = !tool.active(); };
             SendMessageW(window, WM_RBUTTONDOWN, 0, 0);
             CHECK(shell.dragCalls == 1);
             CHECK_FALSE(shell.allowedLink);
+            CHECK(extraction.calls == 1);
+            CHECK(extraction.retains == 1);
+            CHECK_FALSE(idleDuringRetain);
             CHECK_FALSE(tool.active());
             CHECK_FALSE(tool.hasData());
-            CHECK_FALSE(headlessWindow.visible);
-            CHECK(extraction.cleanups == 1);
+            CHECK(headlessWindow.releases == 1);
 
-            screen.host->topmost = false;
+            // The same-Far replay runs only from inside the OLE drag loop; a Drop that reaches the overlay in any
+            // other window state is answered NONE (finding: a torn-down overlay must not replay a stale selection).
             REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
             REQUIRE(tool.showAndArm());
-            CHECK(headlessWindow.placements == 3);
-            shell.duringDrag = [&tool](core::NativeWindow owner) {
-                CHECK(tool.active());
-                SendMessageW(reinterpret_cast<HWND>(owner), WM_LBUTTONDOWN, 0, 0);
-            };
+            shell.duringDrag = [&](core::NativeWindow) { tool.drop({45, 6}, true); };
             SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
-            CHECK(shell.dragCalls == 2);
-            CHECK(shell.allowedLink);
+            CHECK(session.sourceDrops == 1);
+            CHECK(session.sourceEnds >= 1);
 
+            // Outside the drag loop the overlay is inert: the same-Far replay never reaches the session.
+            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
+            tool.drop({45, 6}, true);
+            CHECK(session.sourceDrops == 1);
+            tool.abort();
             tool.stop();
         }
 
-        TEST_CASE("thread and native-window startup failures remain expected")
+        TEST_CASE("arm timeout, incomplete payloads, and invisible placement clean source state")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 420, 360}, true};
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
+            SendMessageW(window, WM_TIMER, armTimerId(), 0);
+            SendMessageW(window, WM_TIMER, armTimerId() + 99, 0);
+            CHECK_FALSE(tool.showAndArm());
+            SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
+            shell.prepares = false;
+            CHECK_FALSE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            shell.prepares = true;
+            shell.parsedPaths = 1;
+            CHECK_FALSE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            CHECK_FALSE(tool.hasData());
+
+            shell.parsedPaths = 2;
+            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            CHECK_FALSE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            SendMessageW(window, WM_LBUTTONDOWN, 0, 0);
+            REQUIRE(tool.showAndArm());
+            CHECK_FALSE(tool.showAndArm());
+            SendMessageW(window, WM_TIMER, armTimerId(), 0);
+            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
+            REQUIRE(tool.showAndArm());
+            SendMessageW(window, WM_TIMER, armTimerId(), 0);
+            CHECK_FALSE(tool.active());
+            CHECK(extraction.cleanups == 2);
+
+            calls = headlessCalls();
+            calls.isWindowVisible = reportInvisible;
+            ToolWindow invisible{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(invisible.start());
+            REQUIRE(invisible.prepare(paths, core::Button::Left, true, dropContext()));
+            CHECK_FALSE(invisible.showAndArm());
+            CHECK(extraction.cleanups == 3);
+
+            screen.host.reset();
+            ToolWindow noHost{screen,     input, shell,      dropData(), session,
+                              extraction, files, properties, menu,       headlessCalls()};
+            REQUIRE(noHost.start());
+            REQUIRE(noHost.prepare(paths, core::Button::Left, true, dropContext()));
+            CHECK_FALSE(noHost.showAndArm());
+            noHost.stop();
+            invisible.stop();
+            tool.stop();
+        }
+
+        TEST_CASE("private messages require zero parameters and an in-process guarded slot")
+        {
+            resetHeadlessWindow();
+            Screen screen;
+            screen.host = core::HostWindow{10, {100, 120, 420, 360}, false};
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            const auto calls = headlessCalls();
+            ToolWindow tool{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            REQUIRE(tool.start());
+            const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+
+            for (const UINT message :
+                 {WM_USER + 0x101, WM_USER + 0x102, WM_USER + 0x103, WM_USER + 0x104, WM_USER + 0x105}) {
+                CHECK(SendMessageW(window, message, 1, 0) == 0);
+                CHECK(SendMessageW(window, message, 0, 1) == 0);
+                CHECK(SendMessageW(window, message, 0, 0) == 0);
+            }
+            CHECK_FALSE(tool.hasData());
+            shell.throwAllocation = true;
+            CHECK_FALSE(
+                tool.prepare(std::vector<std::wstring>{L"C:\\one.txt"}, core::Button::Left, false, dropContext()));
+            tool.stop();
+        }
+
+        TEST_CASE("thread, readiness event, native window, and join failures remain bounded")
         {
             Screen screen;
             Input input;
             Shell shell;
-            DropSession dropSession;
+            DropSession session;
             Extraction extraction;
-            Peers peers;
+            Files files;
+            Properties properties;
+            Menu menu;
 
             auto calls = systemToolWindowCalls();
             calls.createEvent = failCreateEvent;
-            ToolWindow noReadinessEvent{screen, input, shell, dropSession, extraction, peers, calls};
-            CHECK_FALSE(noReadinessEvent.start());
+            ToolWindow noEvent{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            CHECK_FALSE(noEvent.start());
 
             calls = systemToolWindowCalls();
             calls.createThread = failCreateThread;
-            ToolWindow noThread{screen, input, shell, dropSession, extraction, peers, calls};
+            ToolWindow noThread{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
             CHECK_FALSE(noThread.start());
 
             calls = systemToolWindowCalls();
             calls.createWindow = failCreateWindow;
             calls.sleep = shortSleep;
-            ToolWindow noWindow{screen, input, shell, dropSession, extraction, peers, calls};
+            ToolWindow noWindow{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
             CHECK_FALSE(noWindow.start());
-            noWindow.stop();
-        }
 
-        TEST_CASE("a headless window that cannot be shown drops prepared data")
-        {
-            resetHeadlessWindow();
-            Screen screen;
-            screen.host = core::HostWindow{1, {100, 120, 420, 360}, false};
-            Input input;
-            Shell shell;
-            DropSession dropSession;
-            Extraction extraction;
-            Peers peers;
-            auto calls = headlessCalls();
-            calls.isWindowVisible = reportInvisible;
-            ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
-            REQUIRE(tool.start());
-            const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left, true, dropContext()));
-            CHECK_FALSE(tool.showAndArm());
-            CHECK_FALSE(tool.hasData());
-            CHECK(extraction.cleanups == 1);
+            delayedThread = {};
+            delayedThread.gate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            REQUIRE(delayedThread.gate != nullptr);
+            calls = systemToolWindowCalls();
+            calls.createThread = createDelayedThread;
+            calls.sleep = countSleep;
+            calls.createWindow = countFailedWindow;
+            calls.coWait = releaseDelayedThread;
+            ToolWindow delayed{screen, input, shell, dropData(), session, extraction, files, properties, menu, calls};
+            CHECK_FALSE(delayed.start());
+            CHECK(delayedThread.sleeps == 200);
+            CHECK(delayedThread.joins == 1);
+            CHECK(delayedThread.entries == 1);
+            CHECK(delayedThread.windows == 0);
+            CloseHandle(delayedThread.gate);
 
             const HWND withoutState = CreateWindowExW(0, L"BurlakToolWindow", L"", WS_POPUP, 0, 0, 1, 1, nullptr,
                                                       nullptr, GetModuleHandleW(nullptr), nullptr);
             REQUIRE(withoutState != nullptr);
             DestroyWindow(withoutState);
 
-            tool.stop();
+            for (const auto result : {JoinWaitResult::Failure, JoinWaitResult::WrongIndex}) {
+                resetHeadlessWindow();
+                joinWaitResult = result;
+                const auto headless = headlessCalls();
+                ToolWindow joined{screen,     input, shell,      dropData(), session,
+                                  extraction, files, properties, menu,       headless};
+                REQUIRE(joined.start());
+                joined.stop();
+                CHECK(joinWaitCalls == 1);
+                CHECK(joined.nativeWindow() == 0);
+            }
         }
     }
 

@@ -1,10 +1,11 @@
 #include "../Desktop.hpp"
+#include "../core/Fakes.hpp"
 #include "adapters/shell/Shell.hpp"
-#include "adapters/win/Focus.hpp"
-#include "adapters/win/Peers.hpp"
 #include "adapters/win/Screen.hpp"
 #include "core/Policies.hpp"
+#include "core/Session.hpp"
 #include "drag/DragSource.hpp"
+#include "drag/ToolWindow.hpp"
 
 #include <doctest/doctest.h>
 
@@ -394,6 +395,167 @@ namespace
         }
     };
 
+    class ReceiveScreen final : public burlak::core::IScreen
+    {
+      public:
+        HWND host{};
+        burlak::core::NativeWindow sampledRoot{};
+
+        [[nodiscard]] std::optional<burlak::core::Point> cursor() override
+        {
+            POINT point{};
+            return GetCursorPos(&point) != FALSE ? std::optional{burlak::core::Point{point.x, point.y}} : std::nullopt;
+        }
+        [[nodiscard]] bool buttonDown(burlak::core::Button button) override
+        {
+            const auto key = button == burlak::core::Button::Left ? VK_LBUTTON : VK_RBUTTON;
+            return (GetAsyncKeyState(key) & 0x8000) != 0;
+        }
+        [[nodiscard]] burlak::core::NativeWindow windowAt(burlak::core::Point) override
+        {
+            return sampledRoot;
+        }
+        [[nodiscard]] burlak::core::NativeWindow consoleWindow() override
+        {
+            return reinterpret_cast<burlak::core::NativeWindow>(host);
+        }
+        [[nodiscard]] burlak::core::NativeWindow hostWindowHandle() override
+        {
+            return reinterpret_cast<burlak::core::NativeWindow>(host);
+        }
+        [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindow() override
+        {
+            return hostAt();
+        }
+        [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindowAt(burlak::core::Point) override
+        {
+            return hostAt();
+        }
+        [[nodiscard]] std::expected<burlak::core::CellGeometry, burlak::core::Error> cellGeometry() override
+        {
+            return geometry();
+        }
+        [[nodiscard]] std::expected<burlak::core::CellGeometry, burlak::core::Error> cellGeometryAt(
+            burlak::core::Point) override
+        {
+            return geometry();
+        }
+
+      private:
+        [[nodiscard]] std::optional<burlak::core::HostWindow> hostAt() const
+        {
+            RECT rect{};
+            if (host == nullptr || GetWindowRect(host, &rect) == FALSE) {
+                return std::nullopt;
+            }
+            return burlak::core::HostWindow{reinterpret_cast<burlak::core::NativeWindow>(host),
+                                            {rect.left, rect.top, rect.right, rect.bottom},
+                                            true};
+        }
+        [[nodiscard]] std::expected<burlak::core::CellGeometry, burlak::core::Error> geometry() const
+        {
+            const auto window = hostAt();
+            if (!window) {
+                return std::unexpected(burlak::core::Error::Unavailable);
+            }
+            return burlak::core::CellGeometry{{window->rect.left, window->rect.top}, 10, 10};
+        }
+    };
+
+    class ReceiveInput final : public burlak::core::IInput
+    {
+      public:
+        void release(burlak::core::Button) override
+        {
+        }
+        void press(burlak::core::Button) override
+        {
+        }
+        [[nodiscard]] burlak::core::ReplayOutcome replay(std::span<const burlak::core::MouseEvent>) override
+        {
+            return {};
+        }
+    };
+
+    class ReceiveProperties final : public burlak::core::IWindowProperties
+    {
+      public:
+        void set(burlak::core::NativeWindow, std::uint32_t) override
+        {
+        }
+        [[nodiscard]] std::optional<std::uint32_t> value(burlak::core::NativeWindow) const override
+        {
+            return std::nullopt;
+        }
+        void remove(burlak::core::NativeWindow) override
+        {
+        }
+        [[nodiscard]] std::uint32_t processId() const override
+        {
+            return GetCurrentProcessId();
+        }
+    };
+
+    class ReceiveMenu final : public burlak::core::IDropMenu
+    {
+      public:
+        [[nodiscard]] burlak::core::DropMenuChoice choose(burlak::core::NativeWindow, burlak::core::Point,
+                                                          burlak::core::AllowedEffects) override
+        {
+            return burlak::core::DropMenuChoice::Cancel;
+        }
+    };
+
+    // A Far host that signals an event on each postSynchro so a background stand-in can service the synchro during
+    // an OLE drag, exactly as the composition's Far thread does; the shared tests::Host only counts.
+    class SignallingHost final : public burlak::core::IFarHost
+    {
+      public:
+        SignallingHost() : event_{CreateEventW(nullptr, FALSE, FALSE, nullptr)}
+        {
+        }
+        ~SignallingHost()
+        {
+            if (event_ != nullptr) {
+                static_cast<void>(CloseHandle(event_));
+            }
+        }
+        SignallingHost(const SignallingHost &) = delete;
+        SignallingHost &operator=(const SignallingHost &) = delete;
+
+        std::atomic<int> synchros{};
+
+        void postSynchro() override
+        {
+            ++synchros;
+            static_cast<void>(SetEvent(event_));
+        }
+        void message(std::wstring_view, std::span<const std::wstring> lines) override
+        {
+            messages.emplace_back(lines.begin(), lines.end());
+        }
+        [[nodiscard]] std::optional<burlak::core::PluginModule> pluginModule(const burlak::core::Guid &) override
+        {
+            return std::nullopt;
+        }
+        [[nodiscard]] std::expected<std::wstring, burlak::core::Error> extract(burlak::core::PanelHandle,
+                                                                               std::span<const burlak::core::Item>,
+                                                                               const burlak::core::PluginModule &,
+                                                                               std::wstring_view) override
+        {
+            return std::unexpected(burlak::core::Error::Unavailable);
+        }
+        [[nodiscard]] HANDLE event() const
+        {
+            return event_;
+        }
+
+        std::vector<std::vector<std::wstring>> messages;
+
+      private:
+        HANDLE event_{};
+    };
+
     class RegistrationGuard
     {
       public:
@@ -703,9 +865,6 @@ TEST_SUITE("e2e")
         pluginPanel = true;
         synchroRequests.store(0);
         pluginGlobal.Instance = reinterpret_cast<void *>(44);
-        auto startupInfo = pluginStartup();
-        startup(&startupInfo);
-        PluginRuntimeGuard runtime{exit};
         const auto agedRun = std::filesystem::temp_directory_path() / L"Burlak" /
                              (std::to_wstring(GetCurrentProcessId()) + L"-e2e-aged");
         TreeCleanup agedCleanup{agedRun};
@@ -713,6 +872,10 @@ TEST_SUITE("e2e")
         std::ofstream{agedRun / L"stale.txt"} << "stale";
         std::filesystem::last_write_time(agedRun, std::filesystem::file_time_type::clock::now() -
                                                       burlak::core::extractionRunGracePeriod - std::chrono::minutes{1});
+        auto startupInfo = pluginStartup();
+        startup(&startupInfo);
+        PluginRuntimeGuard runtime{exit};
+        CHECK_FALSE(std::filesystem::exists(agedRun));
 
         MouseButtonGuard button;
         button.press();
@@ -730,7 +893,6 @@ TEST_SUITE("e2e")
         ProcessSynchroEventInfo event{};
         event.Event = SE_COMMONSYNCHRO;
         CHECK(synchro(&event) == 0);
-        CHECK_FALSE(std::filesystem::exists(agedRun));
         REQUIRE(pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }));
 
         const POINT targetPoint = inside(targetWindowGuard.get());
@@ -787,20 +949,13 @@ TEST_SUITE("e2e")
 
         burlak::core::ReleasePolicy policy;
         burlak::adapters::win::Screen screen;
-        burlak::adapters::win::Focus focus;
-        burlak::adapters::win::Peers peers{focus};
-        burlak::core::PeerRegistry registry;
         NoExtraction extraction;
         burlak::drag::DragSource source{policy,
                                         screen,
                                         extraction,
-                                        peers,
-                                        registry,
                                         burlak::core::Button::Left,
                                         reinterpret_cast<burlak::core::NativeWindow>(window.get()),
-                                        reinterpret_cast<burlak::core::NativeWindow>(window.get()),
-                                        false,
-                                        paths};
+                                        false};
         MouseButtonGuard button;
         button.press();
         std::jthread cursorWake{[&target, &button] {
@@ -821,5 +976,121 @@ TEST_SUITE("e2e")
         }
         REQUIRE(dragResult.status == DRAGDROP_S_DROP);
         CHECK(target.received());
+    }
+
+    TEST_CASE("a real OLE drag copies through Burlak's receive overlay" * doctest::skip(!controlledDragEnvironment()))
+    {
+        OleGuard ole;
+        REQUIRE(SUCCEEDED(ole.status()));
+        const auto root =
+            std::filesystem::temp_directory_path() / (L"burlak-e2e-receive-" + std::to_wstring(GetCurrentProcessId()));
+        TreeCleanup cleanup{root};
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+        const auto sourceDirectory = root / L"source";
+        const auto destination = root / L"destination";
+        std::filesystem::create_directories(sourceDirectory);
+        std::filesystem::create_directories(destination);
+        const auto sourcePath = sourceDirectory / L"received.txt";
+        std::ofstream{sourcePath} << "received";
+
+        const int x = GetSystemMetrics(SM_XVIRTUALSCREEN) + 40;
+        const int y = GetSystemMetrics(SM_YVIRTUALSCREEN) + 40;
+        WindowGuard sourceWindow{x + 320, y, 240, 180, false};
+        WindowGuard hostWindow{x, y, 240, 180, true};
+        REQUIRE(sourceWindow.get() != nullptr);
+        REQUIRE(hostWindow.get() != nullptr);
+        CursorGuard cursor;
+        REQUIRE(cursor.captured());
+
+        burlak::tests::Panels panels;
+        panels.panels[0] = burlak::tests::visiblePanel({0, 0, 19, 9});
+        panels.directories[0] = destination.wstring();
+        SignallingHost host;
+        burlak::tests::Files files;
+        ReceiveScreen screen;
+        screen.host = hostWindow.get();
+        ReceiveInput input;
+        burlak::adapters::shell::Shell shell;
+        ReceiveProperties properties;
+        ReceiveMenu menu;
+        NoExtraction extraction;
+        burlak::core::Session session{panels, host, screen, input, files, shell};
+        burlak::adapters::shell::DropData dropData;
+        burlak::drag::ToolWindow tool{screen, input, shell, dropData, session, extraction, files, properties, menu};
+        REQUIRE(tool.start());
+
+        MouseButtonGuard button;
+        const POINT press = inside(sourceWindow.get());
+        REQUIRE(SetCursorPos(press.x, press.y) != FALSE);
+        screen.sampledRoot = reinterpret_cast<burlak::core::NativeWindow>(sourceWindow.get());
+        button.press();
+        REQUIRE(pumpUntil([] { return (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; }));
+        SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, burlak::drag::externalDragPollTimerId(), 0);
+
+        const POINT dropPoint{x + 50, y + 50};
+        REQUIRE(SetCursorPos(dropPoint.x, dropPoint.y) != FALSE);
+        screen.sampledRoot = reinterpret_cast<burlak::core::NativeWindow>(hostWindow.get());
+        SendMessageW(reinterpret_cast<HWND>(tool.nativeWindow()), WM_TIMER, burlak::drag::externalDragPollTimerId(), 0);
+        CHECK(host.synchros == 1);
+        static_cast<void>(session.synchro());
+        const auto snapshot = session.takeReceiveSnapshot();
+        REQUIRE(snapshot.has_value());
+        tool.receiveSnapshot(*snapshot);
+        REQUIRE(pumpUntil(
+            [&tool, dropPoint] { return WindowFromPoint(dropPoint) == reinterpret_cast<HWND>(tool.nativeWindow()); }));
+
+        const std::vector<std::wstring> paths{sourcePath.wstring()};
+        auto data = burlak::adapters::shell::makeDataObject(paths);
+        REQUIRE(data.has_value());
+        burlak::core::ReleasePolicy policy;
+        burlak::drag::DragSource source{policy,
+                                        screen,
+                                        extraction,
+                                        burlak::core::Button::Left,
+                                        reinterpret_cast<burlak::core::NativeWindow>(sourceWindow.get()),
+                                        false};
+        std::jthread release{[&button] {
+            std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
+            button.release();
+        }};
+        // Stand in for Far's thread for the drag's duration: the tool thread's Drop posts a refresh synchro and waits
+        // pumping COM, so nothing services it here unless another thread runs session.synchro() and forwards the
+        // refresh to the tool, exactly as the composition does. Without it the refresh wait would stall to its
+        // timeout, Drop would answer NONE, and the copy and redraw assertions could not pass where OLE enters.
+        std::atomic<bool> stop{false};
+        std::jthread farThread{[&] {
+            while (!stop.load()) {
+                static_cast<void>(WaitForSingleObject(host.event(), 5));
+                static_cast<void>(session.synchro());
+                if (const auto refresh = session.takeReceiveRefresh()) {
+                    tool.completeReceiveRefresh(*refresh);
+                }
+            }
+        }};
+        const auto result = burlak::adapters::shell::runDrag(sourceWindow.get(), *data->data.Get(), source, false,
+                                                             burlak::adapters::shell::systemShellCalls());
+        release.join();
+        if (result.status != DRAGDROP_S_DROP) {
+            stop.store(true);
+            farThread.join();
+            WARN_MESSAGE(false, "OLE did not enter Burlak's receive overlay");
+            tool.stop();
+            return;
+        }
+        // The refresh synchro was serviced by the stand-in while Drop waited; the redraw synchro is posted just
+        // before Drop returns. Stop the stand-in and drain any redraw it had not yet consumed on this thread, so the
+        // final assertions do not race the fake panels.
+        stop.store(true);
+        farThread.join();
+        static_cast<void>(session.synchro());
+        CHECK(result.effect == DROPEFFECT_COPY);
+        CHECK(std::filesystem::is_regular_file(destination / sourcePath.filename()));
+        // snapshot (before the drag), drop-time refresh, and post-copy redraw.
+        CHECK(host.synchros == 3);
+        CHECK(panels.updates == std::vector<burlak::core::PanelSide>{burlak::core::PanelSide::Active});
+        tool.stop();
     }
 }

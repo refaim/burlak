@@ -27,6 +27,16 @@ namespace burlak::adapters::win
 
         using ProcessHandle = std::unique_ptr<void, ProcessHandleCloser>;
 
+        struct FileHandleCloser
+        {
+            void operator()(void *handle) const noexcept
+            {
+                static_cast<void>(CloseHandle(handle));
+            }
+        };
+
+        using FileHandle = std::unique_ptr<void, FileHandleCloser>;
+
         [[nodiscard]] std::expected<std::wstring, core::Error> placeholderOutcome(bool created,
                                                                                   const std::filesystem::path &path)
         {
@@ -51,19 +61,29 @@ namespace burlak::adapters::win
             return directory / L"Burlak";
         }
 
-        [[nodiscard]] bool extractionRunName(std::wstring_view name, std::uint32_t sourceProcess)
+        [[nodiscard]] bool runInUse(const std::filesystem::path &run)
         {
-            const auto prefix = std::to_wstring(sourceProcess) + L"-";
-            if (!name.starts_with(prefix) || name.size() == prefix.size()) {
-                return false;
+            std::error_code error;
+            std::filesystem::recursive_directory_iterator entry{run, error};
+            const std::filesystem::recursive_directory_iterator end;
+            for (; entry != end; entry.increment(error)) {
+                if (!entry->is_regular_file(error)) {
+                    error.clear();
+                    continue;
+                }
+                const HANDLE opened = CreateFileW(entry->path().c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (opened == INVALID_HANDLE_VALUE) {
+                    return true;
+                }
+                const FileHandle close{opened};
             }
-            return std::ranges::all_of(name.substr(prefix.size()),
-                                       [](wchar_t character) { return character >= L'0' && character <= L'9'; });
+            return false;
         }
 
     } // namespace
 
-    Files::Files() : Files{GetCurrentProcessId(), processAlive, systemTempDirectory}
+    Files::Files() : Files{GetCurrentProcessId(), adapters::win::processAlive, systemTempDirectory}
     {
     }
 
@@ -139,36 +159,9 @@ namespace burlak::adapters::win
         return core::expectedOutcome(!error, core::Error::Unavailable);
     }
 
-    core::AdoptedPeerPaths Files::adoptPeerPaths(std::span<const std::wstring> paths, std::uint32_t sourceProcess)
+    bool Files::processAlive(const std::uint32_t process) const
     {
-        core::AdoptedPeerPaths unchanged{.paths = {paths.begin(), paths.end()}, .cleanupDirectory = std::nullopt};
-        if (root_.empty() || paths.empty()) {
-            return unchanged;
-        }
-        const auto sourceDirectory = std::filesystem::path{paths.front()}.parent_path().lexically_normal();
-        if (sourceDirectory.parent_path() != root_.lexically_normal() ||
-            !extractionRunName(sourceDirectory.filename().wstring(), sourceProcess)) {
-            return unchanged;
-        }
-        for (const auto &path : paths) {
-            const auto candidate = std::filesystem::path{path}.lexically_normal();
-            if (candidate.parent_path() != sourceDirectory) {
-                return unchanged;
-            }
-        }
-
-        const auto destination = root_ / (std::to_wstring(process_) + L"-peer-" + std::to_wstring(++peerSequence_));
-        core::AdoptedPeerPaths adopted{.paths = {}, .cleanupDirectory = destination.wstring()};
-        adopted.paths.reserve(paths.size());
-        for (const auto &path : paths) {
-            adopted.paths.push_back((destination / std::filesystem::path{path}.filename()).wstring());
-        }
-        // Both names are under the user's one temporary root, so this directory move is an atomic same-volume
-        // ownership transfer. A failure deliberately leaves the sender's names usable until that process exits.
-        if (MoveFileExW(sourceDirectory.c_str(), destination.c_str(), 0) == FALSE) {
-            return unchanged;
-        }
-        return adopted;
+        return processProbe_(process);
     }
 
     void Files::sweep()
@@ -198,10 +191,11 @@ namespace burlak::adapters::win
             const std::array ages{written <= cutoff, false};
             const bool oldEnough = ages[static_cast<std::size_t>(static_cast<bool>(error))];
             error.clear();
-            if (core::shouldSweepRun(ownRun, alive, oldEnough)) {
-                // The grace period lets normal asynchronous sends finish. A target that still holds a file open
-                // keeps that file when remove_all reports sharing failure; younger runs survive Far exit for the
-                // next startup sweep, bounding successful-drag storage to roughly the last ten minutes at a sweep.
+            const bool candidate = core::shouldSweepRun(ownRun, alive, oldEnough, false);
+            const bool inUse = candidate && runInUse(entry->path());
+            if (core::shouldSweepRun(ownRun, alive, oldEnough, inUse)) {
+                // Telegram and Chrome hold large files open while transferring them, so a sharing violation keeps
+                // the whole run. Targets that queued a path but have not opened it yet rely on the three-minute grace.
                 static_cast<void>(std::filesystem::remove_all(entry->path(), error));
                 error.clear();
             }

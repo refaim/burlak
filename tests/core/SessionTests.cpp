@@ -43,6 +43,16 @@ namespace burlak::core
                 return 0;
             }
 
+            [[nodiscard]] NativeWindow consoleWindow() override
+            {
+                return 1;
+            }
+
+            [[nodiscard]] NativeWindow hostWindowHandle() override
+            {
+                return window.transform([](const HostWindow &host) { return host.handle; }).value_or(0);
+            }
+
             [[nodiscard]] std::optional<HostWindow> hostWindow() override
             {
                 calls.emplace_back("host");
@@ -114,6 +124,7 @@ namespace burlak::core
             bool prepared{true};
             bool shown{true};
             bool aborted{};
+            bool busy{};
             std::optional<DropContext> context;
             std::vector<std::wstring> paths;
             bool needsExtraction{};
@@ -148,7 +159,7 @@ namespace burlak::core
 
             [[nodiscard]] bool active() const override
             {
-                return false;
+                return busy;
             }
 
             void stop() override
@@ -373,6 +384,56 @@ namespace burlak::core
             CHECK(input.replays.size() == 1);
             CHECK(session.drop({5, 5}, false) == Effect::None);
             CHECK(host.synchros == 1);
+        }
+
+        TEST_CASE("ending a source drag clears the hover context so a later drop cannot replay a stale selection")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+
+            arm(session, tool);
+            CHECK(session.effect({45, 5}, false) == Effect::Copy);
+
+            session.endSource();
+            CHECK(session.effect({45, 5}, false) == Effect::None);
+            CHECK(session.drop({45, 5}, true) == Effect::None);
+            CHECK(host.synchros == 0);
+            session.synchro();
+            CHECK(input.replays.empty());
+        }
+
+        TEST_CASE("a new gesture discards the replay queued by the previous drag")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+
+            arm(session, tool);
+            CHECK(session.drop({45, 5}, false) == Effect::Copy);
+            CHECK(host.synchros == 1);
+            session.endSource();
+
+            // Far consumed a new gesture past its threshold before servicing the queued replay synchro: the same
+            // Far-thread call rebuilds the source context from the new press and must not then replay the old drop
+            // against it.
+            screen.buttons = {true, true};
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {6, 6}}));
+            session.synchro();
+            CHECK(input.replays.empty());
+            CHECK(host.messages.empty());
         }
 
         TEST_CASE("Far synchro cancels a queued drop when its source panel snapshot is stale")
@@ -908,125 +969,6 @@ namespace burlak::core
             CHECK(host.messages.size() == 1);
         }
 
-        TEST_CASE("a peer drop copies into the item-row panel and redraws that side")
-        {
-            auto panels = readyPanels();
-            std::vector<std::string> calls;
-            Screen screen{calls};
-            Input input{calls};
-            tests::Host host;
-            tests::Files files;
-            tests::Shell shell;
-            Session session{panels, host, screen, input, files, shell};
-            const Drop drop{.paths = {L"C:\\source\\one.txt"}, .at = {5, 5}, .effect = Effect::Move};
-            files.adoptedResult = core::AdoptedPeerPaths{.paths = {L"C:\\Temp\\Burlak\\8-peer-1\\one.txt"},
-                                                         .cleanupDirectory = L"C:\\Temp\\Burlak\\8-peer-1"};
-
-            CHECK(session.receivePeerDrop(PendingPeerDrop{.drop = drop, .sourceProcess = 7}));
-            panels.panels[1]->realNames = true;
-            const Drop second{.paths = {L"C:\\source\\two.txt"}, .at = {45, 5}, .effect = Effect::Copy};
-            CHECK(session.receivePeerDrop(PendingPeerDrop{.drop = second, .sourceProcess = 9}));
-            CHECK(host.synchros == 2);
-            CHECK(shell.copies.empty());
-            session.synchro();
-
-            REQUIRE(shell.copies.size() == 1);
-            CHECK(shell.copies[0].paths == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\8-peer-1\\one.txt"});
-            CHECK(shell.copies[0].effect == drop.effect);
-            CHECK(shell.destinations == std::vector<std::wstring>{L"C:\\work"});
-            CHECK(shell.owners == std::vector<NativeWindow>{1});
-            CHECK(panels.updates == std::vector<PanelSide>{PanelSide::Active});
-            CHECK(host.messages.empty());
-            CHECK(files.peerProcesses == std::vector<std::uint32_t>{7});
-            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\8-peer-1"});
-
-            session.synchro();
-            REQUIRE(shell.copies.size() == 2);
-            CHECK(shell.copies.back().paths == second.paths);
-            CHECK(panels.updates.back() == PanelSide::Passive);
-            CHECK(shell.destinations.back() == L"D:\\target");
-        }
-
-        TEST_CASE("a peer drop reports every receiving refusal as one line")
-        {
-            auto panels = readyPanels();
-            std::vector<std::string> calls;
-            Screen screen{calls};
-            Input input{calls};
-            tests::Host host;
-            tests::Files files;
-            tests::Shell shell;
-            Session session{panels, host, screen, input, files, shell};
-            Point point{5, 5};
-            files.adoptedResult = core::AdoptedPeerPaths{.paths = {L"C:\\Temp\\Burlak\\8-peer-2\\one.txt"},
-                                                         .cleanupDirectory = L"C:\\Temp\\Burlak\\8-peer-2"};
-
-            SUBCASE("host unavailable")
-            {
-                screen.pointWindow.reset();
-            }
-            SUBCASE("geometry unavailable")
-            {
-                screen.pointGeometry = std::unexpected(Error::Unavailable);
-            }
-            SUBCASE("not panels")
-            {
-                panels.panelsWindow = false;
-            }
-            SUBCASE("not an item row")
-            {
-                point = {0, 0};
-            }
-            SUBCASE("not a file panel")
-            {
-                panels.panels[0]->filePanel = false;
-            }
-            SUBCASE("no real names")
-            {
-                panels.panels[0]->realNames = false;
-            }
-            SUBCASE("no directory")
-            {
-                panels.directories[0].reset();
-            }
-            SUBCASE("shell failure")
-            {
-                shell.copyResult = std::unexpected(Error::ForeignCallFailed);
-            }
-
-            CHECK(session.receivePeerDrop(
-                PendingPeerDrop{.drop = Drop{.paths = {L"C:\\source\\one.txt"}, .at = point, .effect = Effect::Copy},
-                                .sourceProcess = 7}));
-            session.synchro();
-            CHECK(panels.updates.empty());
-            REQUIRE(host.messages.size() == 1);
-            REQUIRE(host.messages[0].size() == 1);
-            CHECK(host.messages[0][0].starts_with(L"Burlak: drop here is not possible: "));
-            CHECK(files.peerProcesses == std::vector<std::uint32_t>{7});
-            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\8-peer-2"});
-        }
-
-        TEST_CASE("the pending peer-drop queue rejects overflow instead of discarding an accepted drop")
-        {
-            auto panels = readyPanels();
-            std::vector<std::string> calls;
-            Screen screen{calls};
-            Input input{calls};
-            tests::Host host;
-            tests::Files files;
-            tests::Shell shell;
-            Session session{panels, host, screen, input, files, shell};
-            const PendingPeerDrop drop{
-                .drop = Drop{.paths = {L"C:\\source\\one.txt"}, .at = {5, 5}, .effect = Effect::Copy},
-                .sourceProcess = 7};
-
-            for (std::size_t index = 0; index < peerRegistryLimit; ++index) {
-                CHECK(session.receivePeerDrop(drop));
-            }
-            CHECK_FALSE(session.receivePeerDrop(drop));
-            CHECK(host.synchros == peerRegistryLimit);
-        }
-
         TEST_CASE("real-path plans neither request extraction nor ask the tool to clean temporary files")
         {
             auto panels = readyPanels();
@@ -1040,13 +982,194 @@ namespace burlak::core
             Session session{panels, host, screen, input, files, shell};
 
             REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
-            CHECK(files.sweeps == 1);
+            CHECK(files.sweeps == 0);
             CHECK_FALSE(tool.needsExtraction);
             CHECK_FALSE(session.requestExtraction());
             session.retain();
             CHECK(files.touched.empty());
             session.cleanup();
             CHECK(files.removed.empty());
+        }
+
+        TEST_CASE("a busy tool window refuses a source session before cleanup")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tool.busy = true;
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+
+            CHECK_FALSE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            CHECK(calls.empty());
+            CHECK(files.sweeps == 0);
+        }
+
+        TEST_CASE("external receive snapshot, shell copy, and redraw cross the synchro boundary by value")
+        {
+            auto panels = readyPanels();
+            panels.panels[1]->realNames = true;
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+
+            REQUIRE(session.requestReceiveSnapshot({45, 5}));
+            CHECK_FALSE(session.requestReceiveSnapshot({46, 6}));
+            CHECK(host.synchros == 1);
+            CHECK_FALSE(session.takeReceiveSnapshot().has_value());
+            session.synchro();
+            auto snapshot = session.takeReceiveSnapshot();
+            REQUIRE(snapshot.has_value());
+            CHECK(snapshot->panels == panels.panels);
+            CHECK(snapshot->directories == panels.directories);
+            CHECK(snapshot->host == screen.pointWindow);
+            CHECK(snapshot->geometry == std::optional{*screen.pointGeometry});
+            CHECK_FALSE(session.takeReceiveSnapshot().has_value());
+
+            screen.pointGeometry = std::unexpected(Error::Unavailable);
+            REQUIRE(session.requestReceiveSnapshot({47, 7}));
+            session.synchro();
+            const auto withoutGeometry = session.takeReceiveSnapshot();
+            REQUIRE(withoutGeometry.has_value());
+            CHECK_FALSE(withoutGeometry->geometry.has_value());
+
+            session.prepareReceive(*snapshot);
+            CHECK(session.receiveOwner() == 1);
+            CHECK(session.receiveEffect({45, 5}, false) == Effect::Copy);
+            CHECK(session.receiveEffect({45, 5}, true) == Effect::Move);
+            const std::vector<std::wstring> paths{L"C:\\source\\one.txt"};
+            CHECK(session.receiveDrop(paths, {45, 5}, Effect::Copy) == ReceiveDropOutcome{Effect::Copy, false});
+            REQUIRE(shell.copies.size() == 1);
+            CHECK(shell.destinations == std::vector<std::wstring>{L"D:\\target"});
+            CHECK(shell.owners == std::vector<NativeWindow>{1});
+            CHECK(host.synchros == 3);
+            CHECK(panels.updates.empty());
+            session.synchro();
+            CHECK(panels.updates == std::vector<PanelSide>{PanelSide::Passive});
+
+            session.cancelReceive();
+            CHECK(session.receiveOwner() == 0);
+            CHECK(session.receiveEffect({45, 5}, false) == Effect::None);
+            CHECK(session.receiveDrop(paths, {45, 5}, Effect::Copy) == ReceiveDropOutcome{});
+        }
+
+        TEST_CASE("failed, empty, and invalid-effect receives do not redraw")
+        {
+            auto panels = readyPanels();
+            panels.panels[1]->realNames = true;
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            shell.copyResult = std::unexpected(Error::ForeignCallFailed);
+            Session session{panels, host, screen, input, files, shell};
+            session.prepareReceive(ReceiveSnapshot{.panelsWindow = true,
+                                                   .panels = panels.panels,
+                                                   .directories = panels.directories,
+                                                   .host = screen.pointWindow,
+                                                   .geometry = *screen.pointGeometry});
+            const std::vector<std::wstring> paths{L"C:\\source\\one.txt"};
+
+            CHECK(session.receiveDrop(paths, {45, 5}, Effect::Move) == ReceiveDropOutcome{});
+            CHECK(session.receiveDrop({}, {45, 5}, Effect::Copy) == ReceiveDropOutcome{});
+            CHECK(session.receiveDrop(paths, {45, 5}, Effect::None) == ReceiveDropOutcome{});
+            CHECK(session.receiveDrop(paths, {5, 0}, Effect::Copy) == ReceiveDropOutcome{});
+            CHECK(host.synchros == 0);
+            CHECK(panels.updates.empty());
+        }
+
+        TEST_CASE("a receive refresh accepts the same panel identity and rejects a changed destination")
+        {
+            auto panels = readyPanels();
+            panels.panels[1]->realNames = true;
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+            const ReceiveSnapshot initial{.panelsWindow = true,
+                                          .panels = panels.panels,
+                                          .directories = panels.directories,
+                                          .host = screen.pointWindow,
+                                          .geometry = *screen.pointGeometry};
+            CHECK_FALSE(session.requestReceiveRefresh({45, 5}));
+            session.prepareReceive(initial);
+
+            REQUIRE(session.requestReceiveRefresh({45, 5}));
+            CHECK_FALSE(session.requestReceiveRefresh({46, 6}));
+            session.synchro();
+            CHECK(session.takeReceiveRefresh() == std::optional{true});
+            CHECK_FALSE(session.takeReceiveRefresh().has_value());
+            CHECK(host.messages.empty());
+
+            panels.directories[1] = L"D:\\changed";
+            REQUIRE(session.requestReceiveRefresh({45, 5}));
+            session.synchro();
+            CHECK(session.takeReceiveRefresh() == std::optional{false});
+            REQUIRE(host.messages.size() == 1);
+            CHECK(host.messages[0] ==
+                  std::vector<std::wstring>{L"Panel changed during the drop; the drop was cancelled."});
+            panels.directories[1] = initial.directories[1];
+
+            SUBCASE("a background refresh of the panel not receiving the drop is accepted")
+            {
+                panels.panels[0]->currentItem = 7;
+                panels.panels[0]->topItem = 3;
+                panels.panels[0]->selectedItems = 9;
+                panels.directories[0] = L"E:\\elsewhere";
+                panels.panels[1]->currentItem = 2;
+                REQUIRE(session.requestReceiveRefresh({45, 5}));
+                session.synchro();
+                CHECK(session.takeReceiveRefresh() == std::optional{true});
+                CHECK(host.messages.size() == 1);
+            }
+            SUBCASE("the destination panel hidden during the drop cancels it")
+            {
+                panels.panels[1]->visible = false;
+                REQUIRE(session.requestReceiveRefresh({45, 5}));
+                session.synchro();
+                CHECK(session.takeReceiveRefresh() == std::optional{false});
+                CHECK(host.messages.size() == 2);
+            }
+            SUBCASE("cell geometry that disappears during the drop cancels it")
+            {
+                screen.pointGeometry = std::unexpected(Error::Unavailable);
+                REQUIRE(session.requestReceiveRefresh({45, 5}));
+                session.synchro();
+                CHECK(session.takeReceiveRefresh() == std::optional{false});
+                CHECK(host.messages.size() == 2);
+            }
+            SUBCASE("the refresh answers for the snapshot that was current when Drop asked")
+            {
+                panels.directories[1] = L"D:\\changed";
+                REQUIRE(session.requestReceiveRefresh({45, 5}));
+                auto replaced = initial;
+                replaced.directories[1] = L"D:\\changed";
+                session.prepareReceive(replaced);
+                session.synchro();
+                CHECK(session.takeReceiveRefresh() == std::optional{false});
+                CHECK(host.messages.size() == 2);
+            }
+            SUBCASE("a cancelled receive drops its pending refresh")
+            {
+                REQUIRE(session.requestReceiveRefresh({45, 5}));
+                session.cancelReceive();
+                session.synchro();
+                CHECK_FALSE(session.takeReceiveRefresh().has_value());
+                CHECK(host.messages.size() == 1);
+            }
         }
     }
 

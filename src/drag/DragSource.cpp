@@ -1,16 +1,12 @@
 #include "drag/DragSource.hpp"
 
-#include <utility>
-
 namespace burlak::drag
 {
 
     DragSource::DragSource(core::IReleasePolicy &policy, core::IScreen &screen, core::IExtraction &extraction,
-                           core::IPeers &peers, core::PeerRegistry &registry, core::Button button,
-                           core::NativeWindow ownWindow, core::NativeWindow ownHost, bool needsExtraction,
-                           std::span<const std::wstring> paths)
-        : policy_{policy}, screen_{screen}, extraction_{extraction}, peers_{peers}, registry_{registry},
-          button_{button}, ownWindow_{ownWindow}, ownHost_{ownHost}, needsExtraction_{needsExtraction}, paths_{paths}
+                           core::Button button, core::NativeWindow ownWindow, bool needsExtraction)
+        : policy_{policy}, screen_{screen}, extraction_{extraction}, button_{button}, ownWindow_{ownWindow},
+          needsExtraction_{needsExtraction}
     {
     }
 
@@ -45,39 +41,16 @@ namespace burlak::drag
         const bool rightDown = (keyState & MK_RBUTTON) != 0;
         const bool released = button_ == core::Button::Left ? !leftDown : !rightDown;
         bool overOwnWindow = false;
-        std::optional<core::Point> point;
-        std::optional<core::Peer> peer;
         if (!escaped && released && lastEffect_ != core::Effect::None) {
-            point = screen_.cursor();
-            if (point) {
-                const auto window = screen_.windowAt(*point);
-                overOwnWindow = needsExtraction_ && window == ownWindow_;
-                peer = registry_.select(window, ownHost_);
+            if (const auto point = screen_.cursor()) {
+                overOwnWindow = needsExtraction_ && screen_.windowAt(*point) == ownWindow_;
             }
         }
-        const auto action = policy_.query(button_, escaped, leftDown, rightDown, lastEffect_, needsExtraction_,
-                                          overOwnWindow, peer.has_value());
+        const auto action =
+            policy_.query(button_, escaped, leftDown, rightDown, lastEffect_, needsExtraction_, overOwnWindow);
         if (action == core::DragAction::ExtractThenDrop) {
             extractionRan_ = extraction_.extract();
             return extractionRan_ ? DRAGDROP_S_DROP : DRAGDROP_S_CANCEL;
-        }
-        if (action == core::DragAction::HandToPeer) {
-            if (needsExtraction_) {
-                extractionRan_ = extraction_.extract();
-                if (!extractionRan_) {
-                    return DRAGDROP_S_CANCEL;
-                }
-            }
-            const auto chosen = button_ == core::Button::Right
-                                    ? core::peerMenuEffect(peers_.menu(ownWindow_, *point))
-                                    : ((keyState & MK_SHIFT) != 0 ? core::Effect::Move : core::Effect::Copy);
-            if (chosen != core::Effect::None) {
-                pendingPeerHandoff_ = PendingPeerHandoff{
-                    .peer = *peer,
-                    .drop = {
-                        .paths = {paths_.begin(), paths_.end()}, .at = *point, .effect = chosen, .nonce = peer->nonce}};
-            }
-            return DRAGDROP_S_CANCEL;
         }
         constexpr HRESULT results[]{S_OK, DRAGDROP_S_DROP, DRAGDROP_S_CANCEL, DRAGDROP_S_CANCEL};
         return results[static_cast<std::size_t>(action)];
@@ -90,27 +63,9 @@ namespace burlak::drag
         return DRAGDROP_S_USEDEFAULTCURSORS;
     }
 
-    void DragSource::completePeerHandoff()
-    {
-        auto pending = std::exchange(pendingPeerHandoff_, std::nullopt);
-        if (!pending) {
-            return;
-        }
-        const auto outcome = core::peerSendOutcome(peers_.send(pending->peer, pending->drop));
-        // Once a timed-out handler might have queued an extracted drop, deleting its advertised run would race
-        // that receiver. Keeping it is safe; a later dead-owner sweep removes it after the ten-minute grace period.
-        peerHandoff_ = outcome == core::PeerSendOutcome::Accepted ||
-                       (needsExtraction_ && outcome == core::PeerSendOutcome::Indeterminate);
-    }
-
     core::Effect DragSource::lastEffect() const
     {
         return lastEffect_;
-    }
-
-    bool DragSource::peerHandoff() const
-    {
-        return peerHandoff_;
     }
 
     bool DragSource::extractionRan() const

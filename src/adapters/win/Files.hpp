@@ -25,8 +25,7 @@ namespace burlak::adapters::win
         [[nodiscard]] bool nameBefore(std::wstring_view left, std::wstring_view right) const override;
         [[nodiscard]] std::expected<void, core::Error> removeTree(std::wstring_view path) override;
         [[nodiscard]] std::expected<void, core::Error> touch(std::wstring_view path) override;
-        [[nodiscard]] core::AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
-                                                            std::uint32_t sourceProcess) override;
+        [[nodiscard]] bool processAlive(std::uint32_t process) const override;
         void sweep() override;
 
       private:
@@ -34,7 +33,6 @@ namespace burlak::adapters::win
         std::filesystem::path currentDirectory_;
         std::uint32_t process_{};
         std::uint64_t sequence_{};
-        std::uint64_t peerSequence_{};
         ProcessProbe processProbe_{};
     };
 

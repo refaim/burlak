@@ -86,6 +86,54 @@ namespace burlak::adapters::shell
             return E_FAIL;
         }
 
+        enum class DropQueryMode : std::uint8_t
+        {
+            Empty,
+            TooMany,
+            EmptyPath,
+            ShortWrite,
+            Relative,
+            LongPath,
+            OversizedTotal
+        } dropQueryMode{};
+
+        UINT WINAPI fakeDropQuery(HDROP, UINT index, LPWSTR path, UINT)
+        {
+            if (index == 0xFFFFFFFFU) {
+                if (dropQueryMode == DropQueryMode::Empty) {
+                    return 0;
+                }
+                if (dropQueryMode == DropQueryMode::TooMany) {
+                    return 4097U;
+                }
+                return dropQueryMode == DropQueryMode::OversizedTotal ? 17U : 1U;
+            }
+            if (path == nullptr) {
+                if (dropQueryMode == DropQueryMode::EmptyPath) {
+                    return 0U;
+                }
+                if (dropQueryMode == DropQueryMode::LongPath) {
+                    return 32768U;
+                }
+                return dropQueryMode == DropQueryMode::OversizedTotal ? 32767U : 12U;
+            }
+            if (dropQueryMode == DropQueryMode::ShortWrite) {
+                return 11;
+            }
+            if (dropQueryMode == DropQueryMode::LongPath || dropQueryMode == DropQueryMode::OversizedTotal) {
+                const UINT length = dropQueryMode == DropQueryMode::LongPath ? 32768U : 32767U;
+                std::fill_n(path, length, L'a');
+                path[0] = L'C';
+                path[1] = L':';
+                path[2] = L'\\';
+                path[length] = L'\0';
+                return length;
+            }
+            constexpr wchar_t relative[] = L"relative.txt";
+            std::copy(std::begin(relative), std::end(relative), path);
+            return 12;
+        }
+
         HRESULT dragResult{DRAGDROP_S_DROP};
         DWORD draggedEffect{DROPEFFECT_COPY};
         DWORD allowedEffects{};
@@ -199,13 +247,45 @@ namespace burlak::adapters::shell
             const auto root = std::filesystem::canonical(std::filesystem::temp_directory_path()) / L"burlak-shell-data";
             std::filesystem::create_directories(root);
             const auto file = root / L"one.txt";
+            const auto secondFile = root / L"two.txt";
             {
                 std::ofstream stream{file};
+                std::ofstream second{secondFile};
             }
-            const std::vector<std::wstring> paths{file.wstring()};
+            const std::vector<std::wstring> paths{file.wstring(), secondFile.wstring()};
 
             auto data = makeDataObject(paths);
             REQUIRE(data.has_value());
+            DropData bridge;
+            const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+            CHECK(bridge.offersFileDrop(nativeData));
+            CHECK_FALSE(bridge.offersFileDrop(0));
+            const auto bridged = bridge.fileDropPaths(nativeData);
+            REQUIRE(bridged.has_value());
+            CHECK(bridged->size() == paths.size());
+            CHECK(bridge.fileDropPaths(0) == std::unexpected(core::Error::NoSelection));
+            CHECK(bridge.setPerformedEffect(0, core::Effect::None) == std::unexpected(core::Error::Unavailable));
+            CHECK(offersFileDrop(*data->data.Get()));
+            const auto received = fileDropPaths(*data->data.Get());
+            REQUIRE(received.has_value());
+            CHECK(received->size() == 2);
+            CHECK(std::filesystem::canonical(received->front()) == std::filesystem::canonical(file));
+            CHECK(std::filesystem::canonical(received->back()) == std::filesystem::canonical(secondFile));
+            CHECK(maximumDropPaths == 4096);
+            CHECK(maximumDropPathCodeUnits == 32767);
+            CHECK(maximumDropBytes == 1024 * 1024);
+            CHECK(fileDropPaths(*data->data.Get(), 1) == std::unexpected(core::Error::NoSelection));
+            for (const auto mode : {DropQueryMode::Empty, DropQueryMode::TooMany, DropQueryMode::EmptyPath,
+                                    DropQueryMode::ShortWrite, DropQueryMode::Relative}) {
+                dropQueryMode = mode;
+                CHECK(fileDropPaths(*data->data.Get(), maximumDropPaths, fakeDropQuery) ==
+                      std::unexpected(core::Error::NoSelection));
+            }
+            for (const auto mode : {DropQueryMode::LongPath, DropQueryMode::OversizedTotal}) {
+                dropQueryMode = mode;
+                CHECK(fileDropPaths(*data->data.Get(), maximumDropPaths, fakeDropQuery) ==
+                      std::unexpected(core::Error::NoSelection));
+            }
             CHECK(data->parsedPaths == paths.size());
             FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
             STGMEDIUM medium{};
@@ -215,6 +295,18 @@ namespace burlak::adapters::shell
             wchar_t path[MAX_PATH]{};
             CHECK(DragQueryFileW(drop, 0, path, MAX_PATH) > 0);
             CHECK(std::filesystem::canonical(std::filesystem::path{path}) == std::filesystem::canonical(file));
+
+            CHECK(bridge.setPerformedEffect(nativeData, core::Effect::None).has_value());
+            const auto performedFormat = RegisterClipboardFormatW(CFSTR_PERFORMEDDROPEFFECT);
+            REQUIRE(performedFormat != 0);
+            FORMATETC performed{static_cast<CLIPFORMAT>(performedFormat), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            STGMEDIUM performedMedium{};
+            REQUIRE(SUCCEEDED(data->data->GetData(&performed, &performedMedium)));
+            const auto performedValue = static_cast<const DWORD *>(GlobalLock(performedMedium.hGlobal));
+            REQUIRE(performedValue != nullptr);
+            CHECK(*performedValue == DROPEFFECT_NONE);
+            GlobalUnlock(performedMedium.hGlobal);
+            ReleaseStgMedium(&performedMedium);
 
             const auto preferredFormat = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
             REQUIRE(preferredFormat != 0);

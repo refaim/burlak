@@ -2,6 +2,7 @@
 
 #include "core/Geometry.hpp"
 
+#include <algorithm>
 #include <limits>
 
 namespace burlak::core
@@ -46,7 +47,7 @@ namespace burlak::core
     } // namespace
 
     DragAction ReleasePolicy::query(Button button, bool escapePressed, bool leftDown, bool rightDown, Effect lastEffect,
-                                    bool needsExtraction, bool overOwnWindow, bool peer) const
+                                    bool needsExtraction, bool overOwnWindow) const
     {
         if (escapePressed) {
             return DragAction::Cancel;
@@ -54,9 +55,6 @@ namespace burlak::core
         const bool trackedDown = button == Button::Left ? leftDown : rightDown;
         if (trackedDown) {
             return DragAction::Continue;
-        }
-        if (lastEffect != Effect::None && peer) {
-            return DragAction::HandToPeer;
         }
         return lastEffect != Effect::None && needsExtraction && !overOwnWindow ? DragAction::ExtractThenDrop
                                                                                : DragAction::Drop;
@@ -114,6 +112,89 @@ namespace burlak::core
                sameHost(before.host, current.host) && before.sourcePaths == current.sourcePaths &&
                before.destinationDirectory && current.destinationDirectory &&
                *before.destinationDirectory == *current.destinationDirectory;
+    }
+
+    bool ExternalDragPolicy::overHost(const ExternalDragFacts &facts) const
+    {
+        const bool selectedReceiver = !facts.receiver || *facts.receiver == facts.process || !facts.receiverAlive;
+        const bool rootBelongsToHost = facts.pointRoot == facts.host || facts.pointRoot == facts.console;
+        return facts.buttonDown && facts.pressRoot != 0 && facts.host != 0 && facts.pressRoot != facts.host &&
+               facts.pressRoot != facts.tool && rootBelongsToHost && selectedReceiver && !facts.ownDragActive;
+    }
+
+    std::optional<ReceiveDestination> ReceivePolicy::destination(const ReceiveSnapshot &snapshot, Point point) const
+    {
+        if (!snapshot.panelsWindow || !snapshot.host || !snapshot.geometry || !contains(snapshot.host->rect, point)) {
+            return std::nullopt;
+        }
+        const auto cell = toCell(point, *snapshot.geometry);
+        constexpr std::array sides{PanelSide::Active, PanelSide::Passive};
+        for (std::size_t panelIndex = 0; panelIndex < snapshot.panels.size(); ++panelIndex) {
+            const auto &panel = snapshot.panels[panelIndex];
+            const auto &directory = snapshot.directories[panelIndex];
+            if (panel && panel->visible && panel->filePanel && panel->realNames && directory &&
+                isItemCell(*panel, cell)) {
+                return ReceiveDestination{.side = sides[panelIndex], .directory = *directory};
+            }
+        }
+        return std::nullopt;
+    }
+
+    Effect ReceivePolicy::effect(const ReceiveSnapshot &snapshot, Point point, bool shift, AllowedEffects allowed) const
+    {
+        if (!destination(snapshot, point)) {
+            return Effect::None;
+        }
+        if (shift && allowed.move) {
+            return Effect::Move;
+        }
+        if (allowed.copy) {
+            return Effect::Copy;
+        }
+        return allowed.move ? Effect::Move : Effect::None;
+    }
+
+    std::optional<PixelRect> ReceivePolicy::overlayRect(const ReceiveSnapshot &snapshot) const
+    {
+        if (!snapshot.panelsWindow || !snapshot.host || !snapshot.geometry) {
+            return std::nullopt;
+        }
+        std::optional<PixelRect> result;
+        for (std::size_t panelIndex = 0; panelIndex < snapshot.panels.size(); ++panelIndex) {
+            const auto &panel = snapshot.panels[panelIndex];
+            if (!panel || !panel->visible || !panel->filePanel || !panel->realNames ||
+                !snapshot.directories[panelIndex]) {
+                continue;
+            }
+            const auto upperLeft = toPoint({panel->rect.left, panel->rect.top}, *snapshot.geometry);
+            const auto lowerRight = toPoint({panel->rect.right + 1, panel->rect.bottom + 1}, *snapshot.geometry);
+            const PixelRect rectangle{upperLeft.x, upperLeft.y, lowerRight.x, lowerRight.y};
+            if (!result) {
+                result = rectangle;
+            } else {
+                result = PixelRect{.left = std::min(result->left, rectangle.left),
+                                   .top = std::min(result->top, rectangle.top),
+                                   .right = std::max(result->right, rectangle.right),
+                                   .bottom = std::max(result->bottom, rectangle.bottom)};
+            }
+        }
+        return result;
+    }
+
+    bool ReceivePolicy::sameIdentity(const ReceiveSnapshot &before, const ReceiveSnapshot &current, Point point) const
+    {
+        // The drop lands in the destination directory, not on a row, so that panel's cursor and selection may move
+        // and the other panel may change entirely: Far's thread is free during the hover, and a background refresh
+        // of the panel the user is not dropping into must not cancel a valid drop.
+        const auto target = destination(before, point);
+        if (!target || destination(current, point) != target) {
+            return false;
+        }
+        const auto panelIndex = index(target->side);
+        const auto &previous = *before.panels[panelIndex];
+        const auto &fresh = *current.panels[panelIndex];
+        return before.host == current.host && before.geometry == current.geometry && previous.rect == fresh.rect &&
+               previous.handle == fresh.handle && previous.owner == fresh.owner;
     }
 
     WindowPlacement placement(bool hostTopmost)
@@ -188,14 +269,33 @@ namespace burlak::core
         return owner;
     }
 
-    bool shouldSweepRun(bool ownRun, bool ownerAlive, bool oldEnough)
+    bool shouldSweepRun(bool ownRun, bool ownerAlive, bool oldEnough, bool inUse)
     {
-        return oldEnough && (ownRun || !ownerAlive);
+        return oldEnough && !inUse && (ownRun || !ownerAlive);
     }
 
     bool retainExtractedRun(bool extractionRan, DragLoopOutcome outcome, std::int32_t droppedStatus)
     {
         return extractionRan && outcome.status == droppedStatus && outcome.effect != 0;
+    }
+
+    ReceiveDropOutcome receiveDropOutcome(Effect effect, bool completed)
+    {
+        if (!completed || (effect != Effect::Copy && effect != Effect::Move)) {
+            return {};
+        }
+        return effect == Effect::Copy ? ReceiveDropOutcome{Effect::Copy, false}
+                                      : ReceiveDropOutcome{Effect::None, true};
+    }
+
+    Effect dropMenuEffect(DropMenuChoice choice, AllowedEffects allowed)
+    {
+        constexpr std::array effects{Effect::Copy, Effect::Move, Effect::None};
+        const auto effect = effects.at(static_cast<std::size_t>(choice));
+        if ((effect == Effect::Copy && !allowed.copy) || (effect == Effect::Move && !allowed.move)) {
+            return Effect::None;
+        }
+        return effect;
     }
 
 } // namespace burlak::core

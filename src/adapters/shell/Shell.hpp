@@ -10,6 +10,7 @@
 #include <expected>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace burlak::adapters::shell
 {
@@ -53,7 +54,25 @@ namespace burlak::adapters::shell
         std::span<const std::wstring> paths, std::optional<core::Effect> preferredEffect, const ShellCalls &calls);
     [[nodiscard]] core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, bool allowLink,
                                                 const ShellCalls &calls);
+    inline constexpr std::size_t maximumDropPaths = 4096;
+    inline constexpr std::size_t maximumDropPathCodeUnits = 32767;
+    inline constexpr std::size_t maximumDropBytes = 1024 * 1024;
+    using DragQueryFileCall = decltype(&DragQueryFileW);
+    [[nodiscard]] bool offersFileDrop(IDataObject &data);
+    [[nodiscard]] std::expected<std::vector<std::wstring>, core::Error> fileDropPaths(
+        IDataObject &data, std::size_t maximumPaths = maximumDropPaths, DragQueryFileCall query = DragQueryFileW);
+    [[nodiscard]] std::expected<void, core::Error> setPerformedEffect(IDataObject &data, core::Effect effect);
     [[nodiscard]] const ShellCalls &systemShellCalls();
+
+    class DropData final : public core::IDropData
+    {
+      public:
+        [[nodiscard]] bool offersFileDrop(std::uintptr_t data) const override;
+        [[nodiscard]] std::expected<std::vector<std::wstring>, core::Error> fileDropPaths(
+            std::uintptr_t data) const override;
+        [[nodiscard]] std::expected<void, core::Error> setPerformedEffect(std::uintptr_t data,
+                                                                          core::Effect effect) override;
+    };
 
     class Shell final : public core::IShell
     {

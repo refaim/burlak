@@ -104,9 +104,7 @@ namespace burlak::tests
         std::vector<std::wstring> removed;
         std::vector<std::wstring> touched;
         std::expected<void, core::Error> touchResult{};
-        std::vector<std::vector<std::wstring>> peerPaths;
-        std::vector<std::uint32_t> peerProcesses;
-        std::optional<core::AdoptedPeerPaths> adoptedResult;
+        bool alive{true};
         int sweeps{};
         mutable std::size_t nameComparisons{};
 
@@ -137,23 +135,17 @@ namespace burlak::tests
             return touchResult;
         }
 
-        [[nodiscard]] core::AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
-                                                            std::uint32_t sourceProcess) override
-        {
-            peerPaths.emplace_back(paths.begin(), paths.end());
-            peerProcesses.push_back(sourceProcess);
-            if (adoptedResult) {
-                return std::exchange(adoptedResult, std::nullopt).value();
-            }
-            return {.paths = {paths.begin(), paths.end()}, .cleanupDirectory = std::nullopt};
-        }
-
         [[nodiscard]] bool nameBefore(std::wstring_view left, std::wstring_view right) const override
         {
             ++nameComparisons;
             return std::lexicographical_compare(
                 left.begin(), left.end(), right.begin(), right.end(),
                 [](wchar_t first, wchar_t second) { return std::towlower(first) < std::towlower(second); });
+        }
+
+        [[nodiscard]] bool processAlive(std::uint32_t) const override
+        {
+            return alive;
         }
 
         void sweep() override
@@ -165,6 +157,12 @@ namespace burlak::tests
     class Shell final : public core::IShell
     {
       public:
+        struct CopyCall
+        {
+            std::vector<std::wstring> paths;
+            core::Effect effect{core::Effect::None};
+        };
+
         class Data final : public DragData
         {
           public:
@@ -175,7 +173,7 @@ namespace burlak::tests
         };
 
         std::expected<void, core::Error> copyResult{};
-        std::vector<core::Drop> copies;
+        std::vector<CopyCall> copies;
         std::vector<std::wstring> destinations;
         std::vector<core::NativeWindow> owners;
 
@@ -194,7 +192,7 @@ namespace burlak::tests
                                                             std::wstring_view destination, core::Effect effect,
                                                             core::NativeWindow owner) override
         {
-            copies.push_back(core::Drop{.paths = {paths.begin(), paths.end()}, .effect = effect});
+            copies.push_back(CopyCall{.paths = {paths.begin(), paths.end()}, .effect = effect});
             destinations.emplace_back(destination);
             owners.push_back(owner);
             return copyResult;

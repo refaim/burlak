@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/Peers.hpp"
 #include "core/Types.hpp"
 
 #include <expected>
@@ -41,6 +40,8 @@ namespace burlak::core
         [[nodiscard]] virtual std::optional<Point> cursor() = 0;
         [[nodiscard]] virtual bool buttonDown(Button button) = 0;
         [[nodiscard]] virtual NativeWindow windowAt(Point point) = 0;
+        [[nodiscard]] virtual NativeWindow consoleWindow() = 0;
+        [[nodiscard]] virtual NativeWindow hostWindowHandle() = 0;
         [[nodiscard]] virtual std::optional<HostWindow> hostWindow() = 0;
         [[nodiscard]] virtual std::optional<HostWindow> hostWindowAt(Point point) = 0;
         [[nodiscard]] virtual std::expected<CellGeometry, Error> cellGeometry() = 0;
@@ -80,6 +81,15 @@ namespace burlak::core
                                                               NativeWindow owner) = 0;
     };
 
+    class IDropData
+    {
+      public:
+        [[nodiscard]] virtual bool offersFileDrop(std::uintptr_t data) const = 0;
+        [[nodiscard]] virtual std::expected<std::vector<std::wstring>, Error> fileDropPaths(
+            std::uintptr_t data) const = 0;
+        [[nodiscard]] virtual std::expected<void, Error> setPerformedEffect(std::uintptr_t data, Effect effect) = 0;
+    };
+
     class IFiles
     {
       public:
@@ -89,31 +99,23 @@ namespace burlak::core
         [[nodiscard]] virtual bool nameBefore(std::wstring_view left, std::wstring_view right) const = 0;
         [[nodiscard]] virtual std::expected<void, Error> removeTree(std::wstring_view path) = 0;
         [[nodiscard]] virtual std::expected<void, Error> touch(std::wstring_view path) = 0;
-        [[nodiscard]] virtual AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
-                                                              std::uint32_t sourceProcess) = 0;
+        [[nodiscard]] virtual bool processAlive(std::uint32_t process) const = 0;
         virtual void sweep() = 0;
     };
 
-    class IPeers
+    class IWindowProperties
     {
       public:
-        [[nodiscard]] virtual std::wstring_view toolWindowClass() const = 0;
-        [[nodiscard]] virtual bool isAnnouncementMessage(std::uint32_t message) const = 0;
-        [[nodiscard]] virtual std::optional<PeerAnnouncement> receiveAnnouncement(std::uint32_t message,
-                                                                                  std::uintptr_t word,
-                                                                                  std::intptr_t number) = 0;
-        [[nodiscard]] virtual std::expected<std::uint64_t, Error> newNonce() const = 0;
+        virtual void set(NativeWindow window, std::uint32_t value) = 0;
+        [[nodiscard]] virtual std::optional<std::uint32_t> value(NativeWindow window) const = 0;
+        virtual void remove(NativeWindow window) = 0;
         [[nodiscard]] virtual std::uint32_t processId() const = 0;
-        [[nodiscard]] virtual NativeWindow broadcastTarget() const = 0;
-        virtual void announce(NativeWindow source, NativeWindow target, std::uint64_t nonce) = 0;
-        virtual void endAnnouncement(NativeWindow source, NativeWindow target, std::uint64_t nonce) = 0;
-        [[nodiscard]] virtual std::expected<PeerTransportResult, Error> reply(PeerIdentity target, NativeWindow tool,
-                                                                              std::uint64_t echoNonce,
-                                                                              std::uint64_t nonce) = 0;
-        [[nodiscard]] virtual std::optional<PeerEnvelope> receive(std::uintptr_t sender,
-                                                                  std::intptr_t nativePayload) = 0;
-        [[nodiscard]] virtual std::expected<PeerTransportResult, Error> send(const Peer &peer, const Drop &drop) = 0;
-        [[nodiscard]] virtual PeerMenuChoice menu(NativeWindow owner, Point point) = 0;
+    };
+
+    class IDropMenu
+    {
+      public:
+        [[nodiscard]] virtual DropMenuChoice choose(NativeWindow owner, Point point, AllowedEffects allowed) = 0;
     };
 
     class IDragTool
@@ -150,9 +152,17 @@ namespace burlak::core
     {
       public:
         virtual void prepare(DropContext context) = 0;
+        virtual void endSource() = 0;
         [[nodiscard]] virtual Effect effect(Point point, bool shift) const = 0;
         [[nodiscard]] virtual Effect drop(Point point, bool shift) = 0;
-        [[nodiscard]] virtual bool receivePeerDrop(PendingPeerDrop drop) = 0;
+        [[nodiscard]] virtual bool requestReceiveSnapshot(Point point) = 0;
+        [[nodiscard]] virtual bool requestReceiveRefresh(Point point) = 0;
+        virtual void prepareReceive(ReceiveSnapshot snapshot) = 0;
+        virtual void cancelReceive() = 0;
+        [[nodiscard]] virtual Effect receiveEffect(Point point, bool shift, AllowedEffects allowed) const = 0;
+        [[nodiscard]] virtual NativeWindow receiveOwner() const = 0;
+        [[nodiscard]] virtual ReceiveDropOutcome receiveDrop(std::span<const std::wstring> paths, Point point,
+                                                             Effect effect) = 0;
     };
 
 } // namespace burlak::core

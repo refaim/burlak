@@ -35,41 +35,6 @@ namespace burlak::core
                    panel->handle == recipe.panel && panel->owner == recipe.owner;
         }
 
-        [[nodiscard]] std::wstring refusalText(PeerDropRefusal refusal)
-        {
-            constexpr std::array reasons{
-                L"the current window is not the panels",    L"the console geometry is unavailable",
-                L"the Far host window is unavailable",      L"the point is not on a panel item row",
-                L"the destination is not a file panel",     L"the destination panel has no real directory",
-                L"the destination directory is unavailable"};
-            return reasons.at(static_cast<std::size_t>(refusal));
-        }
-
-        void reportPeerRefusal(IFarHost &host, std::wstring reason)
-        {
-            report(host, L"Burlak: drop here is not possible: " + std::move(reason));
-        }
-
-        class PeerRunCleanup final
-        {
-          public:
-            PeerRunCleanup(IFiles &files, const std::optional<std::wstring> &directory)
-                : files_{files}, directory_{directory}
-            {
-            }
-
-            ~PeerRunCleanup()
-            {
-                if (directory_) {
-                    static_cast<void>(files_.removeTree(*directory_));
-                }
-            }
-
-          private:
-            IFiles &files_;
-            const std::optional<std::wstring> &directory_;
-        };
-
         [[nodiscard]] bool extractRecipe(IPanels &panels, IFarHost &host, const ExtractionRecipe &recipe,
                                          std::wstring_view requestedDirectory)
         {
@@ -118,8 +83,10 @@ namespace burlak::core
 
     bool Session::begin(IDragTool &tool, DragStart start)
     {
+        if (tool.active()) {
+            return false;
+        }
         cleanup();
-        files_.sweep();
         if (!panels_.currentWindowIsPanels()) {
             return false;
         }
@@ -171,6 +138,9 @@ namespace burlak::core
             cleanupDirectory_ =
                 plan->extraction.transform([](const ExtractionRecipe &recipe) { return recipe.directory; });
             plan_ = std::move(*plan);
+            // A replay queued by the previous drag is obsolete once a new gesture starts: the same Far-thread call
+            // that begins this drag would otherwise consume it against the context just built from the new press.
+            pendingDrop_.reset();
         }
         farContext_ = context;
         if (!context.host) {
@@ -198,6 +168,16 @@ namespace burlak::core
         hoverContext_ = std::move(context);
     }
 
+    void Session::endSource()
+    {
+        // The tool window calls this when its OLE drag ends. Dropping the hover context here is enough to disarm a
+        // stray same-Far drop: effect() and drop() consult only hoverContext_, so without it drop() returns None and
+        // no pendingDrop_ can be posted. The Far-thread drop/identity snapshot (farContext_, plan_, pendingDrop_) is
+        // left untouched because a same-Far release may still have its replay synchro in flight; it is read only when
+        // a pendingDrop_ exists, which now cannot be created afresh, and the next begin rebuilds it.
+        hoverContext_.reset();
+    }
+
     Effect Session::effect(Point point, bool shift) const
     {
         return hoverContext_ ? dropPolicy_.effect(*hoverContext_, point, shift) : Effect::None;
@@ -220,18 +200,104 @@ namespace burlak::core
         return decision.effect;
     }
 
-    bool Session::receivePeerDrop(PendingPeerDrop drop)
+    bool Session::requestReceiveSnapshot(Point point)
     {
-        std::unique_lock lock{pendingMutex_};
-        // Any same-integrity process that completes the one-drag protocol can name source paths, but it can
-        // only request a copy into the real directory this Far revalidates on its own thread below.
-        if (pendingPeerDrops_.size() == peerRegistryLimit) {
-            return false;
+        bool accepted{};
+        {
+            const std::lock_guard lock{pendingMutex_};
+            accepted = !pendingReceivePoint_;
+            if (accepted) {
+                pendingReceivePoint_ = point;
+            }
         }
-        pendingPeerDrops_.push_back(std::move(drop));
-        lock.unlock();
-        host_.postSynchro();
-        return true;
+        if (accepted) {
+            host_.postSynchro();
+        }
+        return accepted;
+    }
+
+    std::optional<ReceiveSnapshot> Session::takeReceiveSnapshot()
+    {
+        const std::lock_guard lock{pendingMutex_};
+        return std::exchange(completedReceiveSnapshot_, std::nullopt);
+    }
+
+    bool Session::requestReceiveRefresh(Point point)
+    {
+        bool accepted{};
+        {
+            const std::lock_guard lock{pendingMutex_};
+            accepted = receiveSnapshot_.has_value() && !pendingReceiveRefresh_;
+            if (accepted) {
+                // The request carries the identity Drop is acting on, so Far's thread answers for that drop even
+                // if the receive slot is replaced or cleared before synchro runs.
+                pendingReceiveRefresh_ = PendingReceiveRefresh{point, *receiveSnapshot_};
+            }
+        }
+        if (accepted) {
+            host_.postSynchro();
+        }
+        return accepted;
+    }
+
+    std::optional<bool> Session::takeReceiveRefresh()
+    {
+        const std::lock_guard lock{pendingMutex_};
+        return std::exchange(completedReceiveRefresh_, std::nullopt);
+    }
+
+    void Session::prepareReceive(ReceiveSnapshot snapshot)
+    {
+        const std::lock_guard lock{pendingMutex_};
+        receiveSnapshot_ = std::move(snapshot);
+    }
+
+    void Session::cancelReceive()
+    {
+        const std::lock_guard lock{pendingMutex_};
+        receiveSnapshot_.reset();
+        pendingReceiveRefresh_.reset();
+        completedReceiveRefresh_.reset();
+    }
+
+    Effect Session::receiveEffect(Point point, bool shift, AllowedEffects allowed) const
+    {
+        const std::lock_guard lock{pendingMutex_};
+        return receiveSnapshot_ ? receivePolicy_.effect(*receiveSnapshot_, point, shift, allowed) : Effect::None;
+    }
+
+    NativeWindow Session::receiveOwner() const
+    {
+        const std::lock_guard lock{pendingMutex_};
+        return receiveSnapshot_.and_then([](const ReceiveSnapshot &snapshot) { return snapshot.host; })
+            .transform([](const HostWindow &host) { return host.handle; })
+            .value_or(0);
+    }
+
+    ReceiveDropOutcome Session::receiveDrop(std::span<const std::wstring> paths, Point point, Effect effect)
+    {
+        std::optional<ReceiveSnapshot> snapshot;
+        {
+            const std::lock_guard lock{pendingMutex_};
+            snapshot = receiveSnapshot_;
+        }
+        const auto destination = snapshot ? receivePolicy_.destination(*snapshot, point) : std::nullopt;
+        const bool validEffect = effect == Effect::Copy || effect == Effect::Move;
+        if (!destination || !validEffect || paths.empty()) {
+            return {};
+        }
+        const auto owner = snapshot->host.transform([](const HostWindow &host) { return host.handle; }).value_or(0);
+        // A run under %TEMP%\Burlak is intentionally just another source. IFileOperation can rename its contents
+        // on the same volume; the source-side retention and timer sweep handle whatever remains.
+        const bool completed = shell_.copy(paths, destination->directory, effect, owner).has_value();
+        if (completed) {
+            {
+                const std::lock_guard lock{pendingMutex_};
+                pendingRedraw_ = destination->side;
+            }
+            host_.postSynchro();
+        }
+        return receiveDropOutcome(effect, completed);
     }
 
     bool Session::requestExtraction()
@@ -252,15 +318,21 @@ namespace burlak::core
     {
         std::optional<std::wstring> extraction;
         std::optional<PendingDrop> pending;
-        std::optional<PendingPeerDrop> peerDrop;
+        std::optional<Point> receivePoint;
+        std::optional<PendingReceiveRefresh> receiveRefresh;
+        std::optional<PanelSide> redraw;
         {
             const std::lock_guard lock{pendingMutex_};
             extraction = std::exchange(pendingExtraction_, std::nullopt);
             if (!extraction) {
-                if (!pendingPeerDrops_.empty()) {
-                    peerDrop = std::move(pendingPeerDrops_.front());
-                    pendingPeerDrops_.pop_front();
-                } else {
+                receivePoint = std::exchange(pendingReceivePoint_, std::nullopt);
+                if (!receivePoint) {
+                    receiveRefresh = std::exchange(pendingReceiveRefresh_, std::nullopt);
+                }
+                if (!receivePoint && !receiveRefresh) {
+                    redraw = std::exchange(pendingRedraw_, std::nullopt);
+                }
+                if (!receivePoint && !receiveRefresh && !redraw) {
                     pending = std::exchange(pendingDrop_, std::nullopt);
                 }
             }
@@ -277,33 +349,38 @@ namespace burlak::core
                 })
                 .value_or(false);
         }
-        if (peerDrop) {
-            // Taking ownership before validating the destination lets this Far remove an extracted run even when
-            // the recorded point is refused; a failed rename leaves cleanup to the source and dead-owner sweep.
-            auto adopted = files_.adoptPeerPaths(peerDrop->drop.paths, peerDrop->sourceProcess);
-            const PeerRunCleanup cleanup{files_, adopted.cleanupDirectory};
-            const auto host = screen_.hostWindowAt(peerDrop->drop.at);
-            if (!host) {
-                reportPeerRefusal(host_, refusalText(PeerDropRefusal::HostUnavailable));
-                return std::nullopt;
-            }
-            const auto geometry = screen_.cellGeometryAt(peerDrop->drop.at);
-            const PeerReceiveContext context{
+        if (receivePoint) {
+            const auto geometry = screen_.cellGeometryAt(*receivePoint);
+            ReceiveSnapshot snapshot{
                 .panelsWindow = panels_.currentWindowIsPanels(),
                 .panels = {panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)},
                 .directories = {panels_.directory(PanelSide::Active), panels_.directory(PanelSide::Passive)},
+                .host = screen_.hostWindowAt(*receivePoint),
                 .geometry = geometry ? std::optional{*geometry} : std::nullopt};
-            const auto destination = peerDropPolicy_.destination(context, peerDrop->drop.at);
-            if (!destination) {
-                reportPeerRefusal(host_, refusalText(destination.error()));
-                return std::nullopt;
+            const std::lock_guard lock{pendingMutex_};
+            completedReceiveSnapshot_ = std::move(snapshot);
+            return std::nullopt;
+        }
+        if (receiveRefresh) {
+            const auto geometry = screen_.cellGeometryAt(receiveRefresh->point);
+            const ReceiveSnapshot fresh{
+                .panelsWindow = panels_.currentWindowIsPanels(),
+                .panels = {panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)},
+                .directories = {panels_.directory(PanelSide::Active), panels_.directory(PanelSide::Passive)},
+                .host = screen_.hostWindowAt(receiveRefresh->point),
+                .geometry = geometry ? std::optional{*geometry} : std::nullopt};
+            const bool matches = receivePolicy_.sameIdentity(receiveRefresh->before, fresh, receiveRefresh->point);
+            {
+                const std::lock_guard lock{pendingMutex_};
+                completedReceiveRefresh_ = matches;
             }
-            const auto copied = shell_.copy(adopted.paths, destination->directory, peerDrop->drop.effect, host->handle);
-            if (!copied) {
-                reportPeerRefusal(host_, L"the shell copy failed");
-                return std::nullopt;
+            if (!matches) {
+                report(host_, L"Panel changed during the drop; the drop was cancelled.");
             }
-            panels_.updateAndRedraw(destination->side);
+            return std::nullopt;
+        }
+        if (redraw) {
+            panels_.updateAndRedraw(*redraw);
             return std::nullopt;
         }
         if (!pending) {
@@ -423,8 +500,6 @@ namespace burlak::core
             // sweep may then run early, which shortens retention but is not unsafe.
             static_cast<void>(files_.touch(*cleanupDirectory_));
         }
-        // A successful peer handoff transfers the run by rename. If that rename later fails, leaving the source
-        // run here lets the receiving shell finish even when this drag session or Far shuts down meanwhile.
         cleanupDirectory_.reset();
     }
 

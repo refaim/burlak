@@ -1,7 +1,7 @@
+#include "adapters/shell/Shell.hpp"
 #include "adapters/win/Input.hpp"
-#include "adapters/win/Peers.hpp"
-#include "core/PeerWire.hpp"
 #include "drag/ExtractionWait.hpp"
+#include "drag/ToolWindow.hpp"
 #include "plugin/Composition.hpp"
 #include "plugin/Firewall.hpp"
 
@@ -9,21 +9,58 @@
 
 #include <plugin.hpp>
 
+#include <array>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <stdexcept>
+#include <utility>
 
 namespace
 {
 
     std::atomic<int> synchros{};
     bool throwFromFar{};
-    bool peerPanel{};
+    bool dispatchSynchro{};
+    bool receivePanel{};
     bool sameFarPanels{};
     int panelUpdates{};
     int panelRedraws{};
-    std::wstring peerDirectory;
+    std::wstring receiveDirectory;
     std::vector<INPUT_RECORD> replayedRecords;
+
+    class TemporaryDropFiles final
+    {
+      public:
+        TemporaryDropFiles()
+            : root_{std::filesystem::temp_directory_path() /
+                    (L"burlak-plugin-drop-" + std::to_wstring(GetCurrentProcessId()))},
+              paths_{root_ / L"one.txt", root_ / L"two.txt"}
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(root_, ignored);
+            std::filesystem::create_directories(root_);
+            const std::ofstream first{paths_[0]};
+            const std::ofstream second{paths_[1]};
+        }
+
+        ~TemporaryDropFiles()
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(root_, ignored);
+        }
+
+        [[nodiscard]] std::vector<std::wstring> paths() const
+        {
+            return {paths_[0].wstring(), paths_[1].wstring()};
+        }
+
+      private:
+        std::filesystem::path root_;
+        std::array<std::filesystem::path, 2> paths_;
+    };
 
     constexpr burlak::core::Point sameFarDropPoint{45, 7};
 
@@ -49,63 +86,6 @@ namespace
         *written = count;
         return TRUE;
     }
-
-    class PeerDropPeers final : public burlak::core::IPeers
-    {
-      public:
-        std::optional<burlak::core::PeerAnnouncement> announcement;
-        std::optional<burlak::core::PeerEnvelope> envelope;
-
-        [[nodiscard]] std::wstring_view toolWindowClass() const override
-        {
-            return L"BurlakToolWindow";
-        }
-        [[nodiscard]] bool isAnnouncementMessage(std::uint32_t message) const override
-        {
-            return message == WM_APP + 88;
-        }
-        [[nodiscard]] std::optional<burlak::core::PeerAnnouncement> receiveAnnouncement(std::uint32_t, std::uintptr_t,
-                                                                                        std::intptr_t) override
-        {
-            return std::exchange(announcement, std::nullopt);
-        }
-        [[nodiscard]] std::expected<std::uint64_t, burlak::core::Error> newNonce() const override
-        {
-            return 500;
-        }
-        [[nodiscard]] std::uint32_t processId() const override
-        {
-            return 10;
-        }
-        [[nodiscard]] burlak::core::NativeWindow broadcastTarget() const override
-        {
-            return 99;
-        }
-        void announce(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t) override
-        {
-        }
-        void endAnnouncement(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t) override
-        {
-        }
-        [[nodiscard]] std::expected<burlak::core::PeerTransportResult, burlak::core::Error> reply(
-            burlak::core::PeerIdentity, burlak::core::NativeWindow, std::uint64_t, std::uint64_t) override
-        {
-            return burlak::core::PeerTransportResult{.sent = 1, .receiver = 1};
-        }
-        [[nodiscard]] std::optional<burlak::core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
-        {
-            return std::exchange(envelope, std::nullopt);
-        }
-        [[nodiscard]] std::expected<burlak::core::PeerTransportResult, burlak::core::Error> send(
-            const burlak::core::Peer &, const burlak::core::Drop &) override
-        {
-            return burlak::core::PeerTransportResult{.sent = 1, .receiver = 1};
-        }
-        [[nodiscard]] burlak::core::PeerMenuChoice menu(burlak::core::NativeWindow, burlak::core::Point) override
-        {
-            return burlak::core::PeerMenuChoice::Cancel;
-        }
-    };
 
     class ExtractionSession final : public burlak::core::IExtractionSession
     {
@@ -137,6 +117,7 @@ namespace
     HRESULT waitStatus{S_OK};
     DWORD waitIndex{};
     BOOL resetStatus{TRUE};
+    std::function<void()> waitAction;
 
     HANDLE WINAPI createTestEvent(LPSECURITY_ATTRIBUTES, BOOL, BOOL, LPCWSTR)
     {
@@ -157,7 +138,11 @@ namespace
     {
         *index = waitIndex;
         if (waitStatus == S_OK) {
-            activeWait->complete(waitOutcome);
+            if (auto action = std::exchange(waitAction, {})) {
+                action();
+            } else {
+                activeWait->complete(waitOutcome);
+            }
         }
         return waitStatus;
     }
@@ -211,19 +196,19 @@ namespace
             directory.Name = name;
             return static_cast<intptr_t>(bytes);
         }
-        if (peerPanel && command == FCTL_GETPANELDIRECTORY) {
+        if (receivePanel && command == FCTL_GETPANELDIRECTORY) {
             if (parameter == nullptr) {
                 return sizeof(FarPanelDirectory);
             }
             auto &directory = *static_cast<FarPanelDirectory *>(parameter);
-            directory.Name = peerDirectory.c_str();
+            directory.Name = receiveDirectory.c_str();
             return 1;
         }
-        if (peerPanel && command == FCTL_UPDATEPANEL) {
+        if (receivePanel && command == FCTL_UPDATEPANEL) {
             ++panelUpdates;
             return 1;
         }
-        if (peerPanel && command == FCTL_REDRAWPANEL) {
+        if (receivePanel && command == FCTL_REDRAWPANEL) {
             ++panelRedraws;
             return 1;
         }
@@ -237,6 +222,11 @@ namespace
         }
         if (command == ACTL_SYNCHRO) {
             ++synchros;
+            if (dispatchSynchro) {
+                ProcessSynchroEventInfo event{};
+                event.Event = SE_COMMONSYNCHRO;
+                static_cast<void>(ProcessSynchroEventW(&event));
+            }
             return 1;
         }
         auto &window = *static_cast<WindowInfo *>(parameter);
@@ -264,24 +254,36 @@ namespace
         return info;
     }
 
-    class PeerScreen final : public burlak::core::IScreen
+    class TestScreen final : public burlak::core::IScreen
     {
       public:
+        burlak::core::NativeWindow hostHandle{};
+        std::optional<burlak::core::Point> point;
+        burlak::core::NativeWindow root{};
+        bool leftDown{};
         [[nodiscard]] std::optional<burlak::core::Point> cursor() override
         {
-            return std::nullopt;
+            return point;
         }
-        [[nodiscard]] bool buttonDown(burlak::core::Button) override
+        [[nodiscard]] bool buttonDown(burlak::core::Button button) override
         {
-            return false;
+            return button == burlak::core::Button::Left && leftDown;
         }
         [[nodiscard]] burlak::core::NativeWindow windowAt(burlak::core::Point) override
         {
-            return 0;
+            return root;
+        }
+        [[nodiscard]] burlak::core::NativeWindow consoleWindow() override
+        {
+            return hostHandle;
+        }
+        [[nodiscard]] burlak::core::NativeWindow hostWindowHandle() override
+        {
+            return hostHandle;
         }
         [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindow() override
         {
-            return burlak::core::HostWindow{99, {0, 0, 80, 25}, false};
+            return burlak::core::HostWindow{hostHandle, {0, 0, 80, 25}, false};
         }
         [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindowAt(burlak::core::Point) override
         {
@@ -298,7 +300,7 @@ namespace
         }
     };
 
-    class PeerShell final : public burlak::core::IShell
+    class TestShell final : public burlak::core::IShell
     {
       public:
         class Data final : public DragData
@@ -338,6 +340,83 @@ namespace
         }
     };
 
+    class TestFiles final : public burlak::core::IFiles
+    {
+      public:
+        int sweeps{};
+
+        [[nodiscard]] std::expected<std::wstring, burlak::core::Error> runDirectory() override
+        {
+            return std::unexpected(burlak::core::Error::Unavailable);
+        }
+        [[nodiscard]] std::expected<std::wstring, burlak::core::Error> placeholder(std::wstring_view, bool) override
+        {
+            return std::unexpected(burlak::core::Error::Unavailable);
+        }
+        [[nodiscard]] bool nameBefore(std::wstring_view, std::wstring_view) const override
+        {
+            return false;
+        }
+        [[nodiscard]] std::expected<void, burlak::core::Error> removeTree(std::wstring_view) override
+        {
+            return {};
+        }
+        [[nodiscard]] std::expected<void, burlak::core::Error> touch(std::wstring_view) override
+        {
+            return {};
+        }
+        [[nodiscard]] bool processAlive(std::uint32_t) const override
+        {
+            return true;
+        }
+        void sweep() override
+        {
+            ++sweeps;
+        }
+    };
+
+    class TestProperties final : public burlak::core::IWindowProperties
+    {
+      public:
+        std::optional<std::uint32_t> stored;
+        burlak::core::NativeWindow window{};
+        int removes{};
+
+        void set(burlak::core::NativeWindow target, std::uint32_t value) override
+        {
+            window = target;
+            stored = value;
+        }
+        [[nodiscard]] std::optional<std::uint32_t> value(burlak::core::NativeWindow) const override
+        {
+            return stored;
+        }
+        void remove(burlak::core::NativeWindow target) override
+        {
+            window = target;
+            stored.reset();
+            ++removes;
+        }
+        [[nodiscard]] std::uint32_t processId() const override
+        {
+            return 7;
+        }
+    };
+
+    class TestMenu final : public burlak::core::IDropMenu
+    {
+      public:
+        burlak::core::DropMenuChoice choice{burlak::core::DropMenuChoice::Cancel};
+        std::optional<burlak::core::NativeWindow> owner;
+
+        [[nodiscard]] burlak::core::DropMenuChoice choose(burlak::core::NativeWindow menuOwner, burlak::core::Point,
+                                                          burlak::core::AllowedEffects) override
+        {
+            owner = menuOwner;
+            return choice;
+        }
+    };
+
     class SameFarScreen final : public burlak::core::IScreen
     {
       public:
@@ -352,6 +431,14 @@ namespace
         [[nodiscard]] burlak::core::NativeWindow windowAt(burlak::core::Point) override
         {
             return burlak::plugin::composition().toolWindow();
+        }
+        [[nodiscard]] burlak::core::NativeWindow consoleWindow() override
+        {
+            return 99;
+        }
+        [[nodiscard]] burlak::core::NativeWindow hostWindowHandle() override
+        {
+            return 0;
         }
         [[nodiscard]] std::optional<burlak::core::HostWindow> hostWindow() override
         {
@@ -449,6 +536,20 @@ TEST_SUITE("plugin exports")
         waitOutcome = false;
         CHECK_FALSE(wait.extract());
         CHECK(session.requests == 2);
+
+        bool nestedResult{true};
+        waitAction = [&] {
+            nestedResult = activeWait->extract();
+            activeWait->complete(true);
+        };
+        CHECK(wait.extract());
+        CHECK_FALSE(nestedResult);
+
+        waitAction = [&] {
+            burlak::drag::ExtractionCompleter completion{*activeWait};
+            completion.complete(true);
+        };
+        CHECK(wait.extract());
         wait.cleanup();
         CHECK(session.cleanups == 1);
         wait.retain();
@@ -472,6 +573,12 @@ TEST_SUITE("plugin exports")
         missingCalls.createEvent = failCreateEvent;
         burlak::drag::ExtractionWait missing{session, missingCalls};
         CHECK_FALSE(missing.extract());
+
+        burlak::drag::ExtractionWait cancelled{session, calls};
+        activeWait = &cancelled;
+        waitAction = [&] { activeWait->cancel(); };
+        CHECK_FALSE(cancelled.extract());
+        cancelled.cancel();
         CHECK(burlak::drag::systemExtractionWaitCalls().coWait == CoWaitForMultipleHandles);
     }
 
@@ -518,67 +625,132 @@ TEST_SUITE("plugin exports")
               (SHIFT_PRESSED | LEFT_CTRL_PRESSED | LEFT_ALT_PRESSED));
     }
 
-    TEST_CASE("startup creates the idle peer responder and focus records update its tick")
+    TEST_CASE("startup and exit sweep once each while focus marks and clears the host receiver")
     {
+        TestScreen screen;
+        TestShell shell;
+        TestFiles files;
+        TestProperties properties;
+        TestMenu menu;
+        burlak::plugin::composition().useReceiveAdapters(screen, shell, files, properties, menu);
         auto startupInfo = startup();
         SetStartupInfoW(&startupInfo);
         CHECK(burlak::plugin::composition().toolWindow() != 0);
-        CHECK(burlak::plugin::composition().lastFocus() == 0);
+        CHECK(files.sweeps == 1);
 
         ProcessConsoleInputInfo focus{};
         focus.StructSize = sizeof(focus);
         focus.Rec.EventType = FOCUS_EVENT;
         focus.Rec.Event.FocusEvent.bSetFocus = FALSE;
         CHECK(ProcessConsoleInputW(&focus) == 0);
-        CHECK(burlak::plugin::composition().lastFocus() == 0);
+        CHECK_FALSE(properties.stored.has_value());
         focus.Rec.Event.FocusEvent.bSetFocus = TRUE;
         CHECK(ProcessConsoleInputW(&focus) == 0);
-        CHECK(burlak::plugin::composition().lastFocus() != 0);
+        CHECK_FALSE(properties.stored.has_value());
+        screen.hostHandle = 99;
+        CHECK(ProcessConsoleInputW(&focus) == 0);
+        CHECK(properties.stored == 7);
+        CHECK(properties.window == 99);
+        ExitFARW(nullptr);
+        CHECK_FALSE(properties.stored.has_value());
+        CHECK(properties.removes == 1);
+        CHECK(files.sweeps == 2);
+        burlak::plugin::composition().useDefaultAdapters();
     }
 
-    TEST_CASE("a peer wire drop reaches Far synchro, shell copy, and panel redraw through the exports")
+    TEST_CASE("external copy and Shift-move drops cross the export synchro boundary and redraw the panel")
     {
-        PeerScreen screen;
-        PeerShell shell;
-        PeerDropPeers peers;
-        burlak::plugin::composition().usePeerDropAdapters(screen, shell, peers);
-        const std::wstring source{L"C:\\source\\received.txt"};
-        const std::wstring destination{L"D:\\destination"};
-
-        peerPanel = true;
-        peerDirectory = destination;
+        REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
+        TemporaryDropFiles filesOnDisk;
+        const auto paths = filesOnDisk.paths();
+        auto data = burlak::adapters::shell::makeDataObject(paths);
+        REQUIRE(data.has_value());
+        TestScreen screen;
+        TestShell shell;
+        TestFiles files;
+        TestProperties properties;
+        TestMenu menu;
+        burlak::plugin::composition().useReceiveAdapters(screen, shell, files, properties, menu);
+        receivePanel = true;
+        receiveDirectory = L"D:\\destination";
         panelUpdates = 0;
         panelRedraws = 0;
+        synchros = 0;
         auto startupInfo = startup();
         SetStartupInfoW(&startupInfo);
         const auto tool = burlak::plugin::composition().toolWindow();
         REQUIRE(tool != 0);
-        const burlak::core::PeerIdentity sender{.window = 123, .process = 77};
-        peers.announcement = burlak::core::PeerAnnouncement{
-            .action = burlak::core::PeerAnnouncementAction::Begin, .source = sender, .nonce = 400};
-        REQUIRE(SendMessageW(reinterpret_cast<HWND>(tool), WM_APP + 88, 0, 0) == 1);
-        const burlak::core::Drop drop{
-            .paths = {source}, .at = {5, 5}, .effect = burlak::core::Effect::Copy, .nonce = 500};
-        peers.envelope = burlak::core::PeerEnvelope{.sender = sender, .payload = drop};
-        COPYDATASTRUCT copy{};
+
+        screen.hostHandle = 99;
+        screen.leftDown = true;
+        screen.point = burlak::core::Point{1, 1};
+        screen.root = 30;
+        SendMessageW(reinterpret_cast<HWND>(tool), WM_TIMER, burlak::drag::externalDragPollTimerId(), 0);
         const auto before = synchros.load();
-        REQUIRE(SendMessageW(reinterpret_cast<HWND>(tool), WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
+        screen.point = burlak::core::Point{5, 5};
+        screen.root = 99;
+        SendMessageW(reinterpret_cast<HWND>(tool), WM_TIMER, burlak::drag::externalDragPollTimerId(), 0);
         CHECK(synchros == before + 1);
 
         ProcessSynchroEventInfo event{};
         event.Event = SE_COMMONSYNCHRO;
         CHECK(ProcessSynchroEventW(&event) == 0);
-        CHECK(shell.paths == std::vector<std::wstring>{source});
-        CHECK(shell.destination == destination);
-        CHECK(shell.effect == burlak::core::Effect::Copy);
+        CHECK(burlak::plugin::composition().toolWindow() == tool);
+        dispatchSynchro = true;
+
+        bool moving{};
+        bool rightButton{};
+        SUBCASE("copy")
+        {
+            moving = false;
+        }
+        SUBCASE("Shift move")
+        {
+            moving = true;
+        }
+        SUBCASE("right-button menu copy")
+        {
+            rightButton = true;
+            menu.choice = burlak::core::DropMenuChoice::Copy;
+        }
+        const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+        const auto keys = moving ? static_cast<std::uint32_t>(MK_SHIFT) : (rightButton ? MK_RBUTTON : 0U);
+        const auto expectedHover = moving ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+        CHECK(burlak::plugin::composition().dragEnterToolWindow(nativeData, keys, {5, 5},
+                                                                DROPEFFECT_COPY | DROPEFFECT_MOVE) == expectedHover);
+        screen.leftDown = false;
+        const auto returned =
+            burlak::plugin::composition().dropOnToolWindow(nativeData, keys, {5, 5}, DROPEFFECT_COPY | DROPEFFECT_MOVE);
+        CHECK(returned == (moving ? DROPEFFECT_NONE : DROPEFFECT_COPY));
+        // The popup must be owned by the tool window of this thread: TrackPopupMenu refuses the host, which belongs
+        // to conhost or Windows Terminal, and would otherwise cancel every right-button drop.
+        CHECK(menu.owner == (rightButton ? std::optional{tool} : std::nullopt));
+        CHECK(shell.paths == paths);
+        CHECK(shell.destination == receiveDirectory);
+        CHECK(shell.effect == (moving ? burlak::core::Effect::Move : burlak::core::Effect::Copy));
         CHECK(shell.owner == 99);
         CHECK(panelUpdates == 1);
         CHECK(panelRedraws == 1);
 
+        const auto formatId = RegisterClipboardFormatW(CFSTR_PERFORMEDDROPEFFECT);
+        REQUIRE(formatId != 0);
+        FORMATETC format{static_cast<CLIPFORMAT>(formatId), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        STGMEDIUM medium{};
+        const auto getData = data->data->GetData(&format, &medium);
+        CHECK((moving ? SUCCEEDED(getData) : getData == DV_E_FORMATETC));
+        if (SUCCEEDED(getData)) {
+            const auto value = static_cast<const DWORD *>(GlobalLock(medium.hGlobal));
+            REQUIRE(value != nullptr);
+            CHECK(*value == DROPEFFECT_NONE);
+            GlobalUnlock(medium.hGlobal);
+            ReleaseStgMedium(&medium);
+        }
+
         ExitFARW(nullptr);
-        peerPanel = false;
-        burlak::plugin::composition().usePeerDropAdapters(screen, shell);
+        dispatchSynchro = false;
+        receivePanel = false;
         burlak::plugin::composition().useDefaultAdapters();
+        OleUninitialize();
     }
 
     TEST_CASE("right double-click replay preserves every native mouse-record field")
@@ -624,9 +796,12 @@ TEST_SUITE("plugin exports")
     {
         SameFarScreen screen;
         SameFarShell shell;
+        TestFiles files;
+        TestProperties properties;
+        TestMenu menu;
         const burlak::adapters::win::InputCalls calls{replayMouseEvent, replayConsoleInfo, captureConsoleInput};
         burlak::adapters::win::Input input{11, 12, calls};
-        burlak::plugin::composition().usePeerDropAdapters(screen, shell);
+        burlak::plugin::composition().useReceiveAdapters(screen, shell, files, properties, menu);
         burlak::plugin::composition().useInputAdapter(input);
         sameFarPanels = true;
         synchros = 0;
@@ -688,9 +863,10 @@ TEST_SUITE("plugin exports")
         burlak::plugin::Composition empty;
         CHECK(empty.feed({}).action == burlak::core::VerdictAction::Pass);
         empty.recordFocus();
-        CHECK(empty.lastFocus() == 0);
         CHECK(empty.toolWindow() == 0);
         empty.dropOnToolWindow({}, false);
+        CHECK(empty.dragEnterToolWindow(0, 0, {}, DROPEFFECT_COPY) == 0);
+        CHECK(empty.dropOnToolWindow(0, 0, {}, DROPEFFECT_COPY) == 0);
         empty.synchro();
         empty.stop();
         empty.useDefaultAdapters();

@@ -66,6 +66,22 @@ namespace burlak::adapters::win
         return reinterpret_cast<core::NativeWindow>(window == nullptr ? nullptr : calls_.getAncestor(window, GA_ROOT));
     }
 
+    core::NativeWindow Screen::consoleWindow()
+    {
+        return reinterpret_cast<core::NativeWindow>(calls_.getConsoleWindow());
+    }
+
+    core::NativeWindow Screen::hostWindowHandle()
+    {
+        const auto console = calls_.getConsoleWindow();
+        RECT rect{};
+        if (console != nullptr && calls_.isWindowVisible(console) != FALSE && calls_.getWindowRect(console, &rect) &&
+            rect.right > rect.left && rect.bottom > rect.top) {
+            return reinterpret_cast<core::NativeWindow>(console);
+        }
+        return reinterpret_cast<core::NativeWindow>(console == nullptr ? nullptr : calls_.getWindow(console, GW_OWNER));
+    }
+
     std::optional<core::HostWindow> Screen::hostWindow()
     {
         const auto point = cursor();

@@ -45,8 +45,6 @@ add_library(
   src/core/Geometry.cpp
   src/core/Gesture.cpp
   src/core/DragPlan.cpp
-  src/core/Peers.cpp
-  src/core/PeerWire.cpp
   src/core/Session.cpp
   src/core/Policies.cpp)
 target_include_directories(burlak_core PUBLIC src)
@@ -59,11 +57,11 @@ add_library(
   src/adapters/win/Files.cpp
   src/adapters/win/Screen.cpp
   src/adapters/win/Input.cpp
-  src/adapters/win/Focus.cpp
-  src/adapters/win/Peers.cpp
+  src/adapters/win/DropMenu.cpp
+  src/adapters/win/WindowProperties.cpp
   src/adapters/shell/Shell.cpp)
 target_include_directories(burlak_adapters PUBLIC src PRIVATE sdk)
-target_link_libraries(burlak_adapters PUBLIC burlak_core burlak_options PRIVATE bcrypt ole32 shell32 user32)
+target_link_libraries(burlak_adapters PUBLIC burlak_core burlak_options PRIVATE ole32 shell32 user32)
 
 add_library(
   burlak_drag STATIC
@@ -102,7 +100,6 @@ if(BUILD_TESTING)
     tests/core/GeometryTests.cpp
     tests/core/GestureTests.cpp
     tests/core/DragPlanTests.cpp
-    tests/core/PeerTests.cpp
     tests/core/SessionTests.cpp
     tests/core/PoliciesTests.cpp)
   target_include_directories(core_tests PRIVATE third_party)
@@ -129,7 +126,7 @@ if(BUILD_TESTING)
     tests/adapters/FilesTests.cpp
     tests/adapters/ScreenTests.cpp
     tests/adapters/InputTests.cpp
-    tests/adapters/PeersTests.cpp
+    tests/adapters/WindowTests.cpp
     tests/adapters/ShellTests.cpp)
   target_include_directories(adapter_tests PRIVATE third_party sdk)
   target_compile_definitions(

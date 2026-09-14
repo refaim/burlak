@@ -23,11 +23,14 @@ namespace burlak::plugin
         void reset();
         [[nodiscard]] core::Verdict feed(const core::MouseEvent &event);
         void recordFocus();
-        [[nodiscard]] std::uint64_t lastFocus() const;
         [[nodiscard]] core::NativeWindow toolWindow() const;
         void dropOnToolWindow(core::Point point, bool shift);
-        void usePeerDropAdapters(core::IScreen &screen, core::IShell &shell);
-        void usePeerDropAdapters(core::IScreen &screen, core::IShell &shell, core::IPeers &peers);
+        [[nodiscard]] std::uint32_t dragEnterToolWindow(std::uintptr_t dataObject, std::uint32_t keyState,
+                                                        core::Point point, std::uint32_t allowedEffects);
+        [[nodiscard]] std::uint32_t dropOnToolWindow(std::uintptr_t dataObject, std::uint32_t keyState,
+                                                     core::Point point, std::uint32_t allowedEffects);
+        void useReceiveAdapters(core::IScreen &screen, core::IShell &shell, core::IFiles &files,
+                                core::IWindowProperties &properties, core::IDropMenu &menu);
         void useInputAdapter(core::IInput &input);
         void useDefaultAdapters();
         void synchro();
@@ -38,7 +41,9 @@ namespace burlak::plugin
         std::unique_ptr<Runtime> runtime_;
         std::optional<std::reference_wrapper<core::IScreen>> screenOverride_;
         std::optional<std::reference_wrapper<core::IShell>> shellOverride_;
-        std::optional<std::reference_wrapper<core::IPeers>> peersOverride_;
+        std::optional<std::reference_wrapper<core::IFiles>> filesOverride_;
+        std::optional<std::reference_wrapper<core::IWindowProperties>> propertiesOverride_;
+        std::optional<std::reference_wrapper<core::IDropMenu>> menuOverride_;
         std::optional<std::reference_wrapper<core::IInput>> inputOverride_;
     };
 

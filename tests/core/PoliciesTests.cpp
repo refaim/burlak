@@ -12,30 +12,308 @@ namespace burlak::core
         TEST_CASE("release policy cancels Escape and otherwise continues or drops")
         {
             ReleasePolicy policy;
-            CHECK(policy.query(Button::Left, true, true, false, Effect::Copy, false, false, true) ==
-                  DragAction::Cancel);
-            CHECK(policy.query(Button::Left, false, false, true, Effect::Copy, false, false, false) ==
-                  DragAction::Drop);
-            CHECK(policy.query(Button::Left, false, true, false, Effect::Copy, false, false, true) ==
-                  DragAction::Continue);
-            CHECK(policy.query(Button::Right, false, true, false, Effect::Copy, false, false, false) ==
-                  DragAction::Drop);
-            CHECK(policy.query(Button::Right, false, false, true, Effect::Copy, false, false, true) ==
-                  DragAction::Continue);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::None, false, false, true) ==
-                  DragAction::Drop);
+            CHECK(policy.query(Button::Left, true, true, false, Effect::Copy, false, false) == DragAction::Cancel);
+            CHECK(policy.query(Button::Left, false, false, true, Effect::Copy, false, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, true, false, Effect::Copy, false, false) == DragAction::Continue);
+            CHECK(policy.query(Button::Right, false, true, false, Effect::Copy, false, false) == DragAction::Drop);
+            CHECK(policy.query(Button::Right, false, false, true, Effect::Copy, false, false) == DragAction::Continue);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::None, false, false) == DragAction::Drop);
         }
 
         TEST_CASE("release policy extracts accepted plugin payloads except over the own tool window")
         {
             ReleasePolicy policy;
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false, false) ==
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false) ==
                   DragAction::ExtractThenDrop);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Move, true, true, false) == DragAction::Drop);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Link, false, false, false) ==
-                  DragAction::Drop);
-            CHECK(policy.query(Button::Left, false, false, false, Effect::Copy, true, false, true) ==
-                  DragAction::HandToPeer);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Move, true, true) == DragAction::Drop);
+            CHECK(policy.query(Button::Left, false, false, false, Effect::Link, false, false) == DragAction::Drop);
+        }
+
+        TEST_CASE("external drags are accepted only from outside this host by its selected Far")
+        {
+            ExternalDragPolicy policy;
+            const ExternalDragFacts candidate{.buttonDown = true,
+                                              .pressRoot = 30,
+                                              .pointRoot = 10,
+                                              .host = 10,
+                                              .console = 11,
+                                              .tool = 20,
+                                              .receiver = 7,
+                                              .receiverAlive = true,
+                                              .process = 7};
+            CHECK(policy.overHost(candidate));
+
+            auto facts = candidate;
+            SUBCASE("press began in the host")
+            {
+                facts.pressRoot = 10;
+            }
+            SUBCASE("press began in the tool window")
+            {
+                facts.pressRoot = 20;
+            }
+            SUBCASE("button is up")
+            {
+                facts.buttonDown = false;
+            }
+            SUBCASE("press root is unavailable")
+            {
+                facts.pressRoot = 0;
+            }
+            SUBCASE("cursor is outside")
+            {
+                facts.host = 0;
+            }
+            SUBCASE("another root overlaps the host")
+            {
+                facts.pointRoot = 40;
+            }
+            SUBCASE("another Far most recently had focus")
+            {
+                facts.receiver = 8;
+            }
+            SUBCASE("our own drag is active")
+            {
+                facts.ownDragActive = true;
+            }
+            CHECK_FALSE(policy.overHost(facts));
+
+            facts = candidate;
+            facts.receiver.reset();
+            CHECK(policy.overHost(facts));
+            facts.receiver = 8;
+            facts.receiverAlive = false;
+            CHECK(policy.overHost(facts));
+            facts.pointRoot = facts.console;
+            CHECK(policy.overHost(facts));
+        }
+
+        TEST_CASE("receive policy covers only real-name file-panel item rows")
+        {
+            ReceiveSnapshot snapshot{
+                .panelsWindow = true,
+                .panels = {PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
+                           PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {40, 0, 79, 24}}},
+                .directories = {L"C:\\left", L"D:\\right"},
+                .host = HostWindow{10, {100, 50, 740, 450}, false},
+                .geometry = CellGeometry{{100, 50}, 8, 16}};
+            ReceivePolicy policy;
+
+            CHECK(policy.effect(snapshot, {108, 82}, false) == Effect::Copy);  // first item row
+            CHECK(policy.effect(snapshot, {108, 401}, true) == Effect::Move);  // last item row
+            CHECK(policy.effect(snapshot, {100, 130}, false) == Effect::None); // left frame
+            CHECK(policy.effect(snapshot, {420, 130}, false) == Effect::None); // divider
+            CHECK(policy.effect(snapshot, {108, 66}, false) == Effect::None);  // title row
+            CHECK(policy.effect(snapshot, {108, 402}, false) == Effect::None); // status row
+            CHECK(policy.effect(snapshot, {108, 434}, false) == Effect::None); // command line / key bar
+            CHECK(policy.effect(snapshot, {99, 130}, false) == Effect::None);  // outside the host
+
+            const auto left = policy.destination(snapshot, {108, 130});
+            REQUIRE(left.has_value());
+            CHECK(left->side == PanelSide::Active);
+            CHECK(left->directory == L"C:\\left");
+
+            snapshot.panels[0]->visible = false;
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.panels[0]->visible = true;
+            snapshot.panels[0]->realNames = false;
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.panels[0]->realNames = true;
+            snapshot.panels[0]->filePanel = false;
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.panels[0]->filePanel = true;
+            snapshot.panelsWindow = false;
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.panelsWindow = true;
+            snapshot.geometry.reset();
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.geometry = CellGeometry{{100, 50}, 8, 16};
+            snapshot.host.reset();
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.host = HostWindow{10, {100, 50, 740, 450}, false};
+            snapshot.panels[0].reset();
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+            snapshot.panels[0] =
+                PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}};
+            snapshot.directories[0].reset();
+            CHECK(policy.effect(snapshot, {108, 130}, false) == Effect::None);
+        }
+
+        TEST_CASE("receive policy honours the source's allowed effect mask")
+        {
+            const ReceiveSnapshot snapshot{
+                .panelsWindow = true,
+                .panels = {PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
+                           std::nullopt},
+                .directories = {L"C:\\left", std::nullopt},
+                .host = HostWindow{10, {100, 50, 740, 450}, false},
+                .geometry = CellGeometry{{100, 50}, 8, 16}};
+            ReceivePolicy policy;
+
+            CHECK(policy.effect(snapshot, {108, 82}, true, AllowedEffects{.copy = true}) == Effect::Copy);
+            CHECK(policy.effect(snapshot, {108, 82}, false, AllowedEffects{.move = true}) == Effect::Move);
+            CHECK(policy.effect(snapshot, {108, 82}, true, {}) == Effect::None);
+            CHECK(dropMenuEffect(DropMenuChoice::Copy, AllowedEffects{.move = true}) == Effect::None);
+            CHECK(dropMenuEffect(DropMenuChoice::Move, AllowedEffects{.copy = true}) == Effect::None);
+            CHECK(dropMenuEffect(DropMenuChoice::Copy, AllowedEffects{.copy = true}) == Effect::Copy);
+            CHECK(dropMenuEffect(DropMenuChoice::Move, AllowedEffects{.move = true}) == Effect::Move);
+        }
+
+        TEST_CASE("receive overlay is the union of qualifying panel rectangles")
+        {
+            ReceiveSnapshot snapshot{
+                .panelsWindow = true,
+                .panels = {PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {0, 0, 39, 24}},
+                           PanelInfo{.visible = true, .realNames = true, .filePanel = true, .rect = {40, 0, 79, 24}}},
+                .directories = {L"C:\\left", L"D:\\right"},
+                .host = HostWindow{10, {100, 50, 740, 450}, false},
+                .geometry = CellGeometry{{100, 50}, 8, 16}};
+            ReceivePolicy policy;
+            CHECK(policy.overlayRect(snapshot) == PixelRect{100, 50, 740, 450});
+
+            snapshot.panels[1]->realNames = false;
+            CHECK(policy.overlayRect(snapshot) == PixelRect{100, 50, 420, 450});
+            snapshot.panels[0]->visible = false;
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+
+            snapshot = {};
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+            snapshot.panelsWindow = true;
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+            snapshot.host = HostWindow{10, {100, 50, 740, 450}, false};
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+
+            snapshot.geometry = CellGeometry{{100, 50}, 8, 16};
+            snapshot.panels[0] =
+                PanelInfo{.visible = true, .realNames = true, .filePanel = false, .rect = {0, 0, 39, 24}};
+            snapshot.directories[0] = L"C:\\left";
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+            snapshot.panels[0]->filePanel = true;
+            snapshot.directories[0].reset();
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+            snapshot.panels[0].reset();
+            CHECK_FALSE(policy.overlayRect(snapshot).has_value());
+        }
+
+        TEST_CASE("drop-time identity follows the destination panel, its directory, the host, geometry, and window")
+        {
+            const ReceiveSnapshot before{.panelsWindow = true,
+                                         .panels = {PanelInfo{.visible = true,
+                                                              .realNames = true,
+                                                              .filePanel = true,
+                                                              .rect = {0, 0, 39, 24},
+                                                              .handle = 11,
+                                                              .selectedItems = 2,
+                                                              .currentItem = 1,
+                                                              .topItem = 0},
+                                                    PanelInfo{.visible = true,
+                                                              .realNames = true,
+                                                              .filePanel = true,
+                                                              .rect = {40, 0, 79, 24},
+                                                              .handle = 22,
+                                                              .selectedItems = 0,
+                                                              .currentItem = 3,
+                                                              .topItem = 0}},
+                                         .directories = {L"C:\\left", L"D:\\right"},
+                                         .host = HostWindow{10, {100, 50, 740, 450}, false},
+                                         .geometry = CellGeometry{{100, 50}, 8, 16}};
+            ReceivePolicy policy;
+            const Point right{460, 130}; // cell (45, 5): an item row of the right panel
+            CHECK(policy.sameIdentity(before, before, right));
+            CHECK_FALSE(policy.sameIdentity(before, before, {100, 130})); // left frame: never a destination
+
+            auto current = before;
+            // A background refresh of the panel the user is not dropping into must not cancel the drop.
+            current.panels[0]->currentItem = 7;
+            current.panels[0]->topItem = 3;
+            current.panels[0]->selectedItems = 9;
+            current.panels[0]->visible = false;
+            current.directories[0] = L"E:\\elsewhere";
+            CHECK(policy.sameIdentity(before, current, right));
+            // The drop lands in the destination directory, not on a row, so its cursor may move as well.
+            current = before;
+            current.panels[1]->currentItem = 8;
+            current.panels[1]->topItem = 2;
+            current.panels[1]->selectedItems = 4;
+            CHECK(policy.sameIdentity(before, current, right));
+
+            current = before;
+            SUBCASE("destination directory changed")
+            {
+                current.directories[1] = L"D:\\changed";
+            }
+            SUBCASE("destination directory unavailable")
+            {
+                current.directories[1].reset();
+            }
+            SUBCASE("destination hidden")
+            {
+                current.panels[1]->visible = false;
+            }
+            SUBCASE("destination is no longer a file panel")
+            {
+                current.panels[1]->filePanel = false;
+            }
+            SUBCASE("destination lost its real names")
+            {
+                current.panels[1]->realNames = false;
+            }
+            SUBCASE("destination rectangle changed under the same point")
+            {
+                current.panels[1]->rect.left = 41;
+            }
+            SUBCASE("destination rectangle no longer covers the point")
+            {
+                current.panels[1]->rect.left = 46;
+            }
+            SUBCASE("destination handle changed")
+            {
+                current.panels[1]->handle = 99;
+            }
+            SUBCASE("destination owner changed")
+            {
+                current.panels[1]->owner[0] = std::byte{1};
+            }
+            SUBCASE("destination panel missing")
+            {
+                current.panels[1].reset();
+            }
+            SUBCASE("the other panel grew over the point")
+            {
+                current.panels[0]->rect.right = 60;
+            }
+            SUBCASE("panels window no longer current")
+            {
+                current.panelsWindow = false;
+            }
+            SUBCASE("host changed")
+            {
+                current.host->handle = 99;
+            }
+            SUBCASE("host missing")
+            {
+                current.host.reset();
+            }
+            SUBCASE("geometry shifted while the point still maps into the destination")
+            {
+                current.geometry->origin.x = 101; // cell (44, 5)
+            }
+            SUBCASE("geometry missing")
+            {
+                current.geometry.reset();
+            }
+            CHECK_FALSE(policy.sameIdentity(before, current, right));
+        }
+
+        TEST_CASE("receive outcomes implement optimized move semantics")
+        {
+            CHECK(receiveDropOutcome(Effect::Copy, true) == ReceiveDropOutcome{Effect::Copy, false});
+            CHECK(receiveDropOutcome(Effect::Move, true) == ReceiveDropOutcome{Effect::None, true});
+            CHECK(receiveDropOutcome(Effect::Copy, false) == ReceiveDropOutcome{});
+            CHECK(receiveDropOutcome(Effect::None, true) == ReceiveDropOutcome{});
+            CHECK(dropMenuEffect(DropMenuChoice::Copy) == Effect::Copy);
+            CHECK(dropMenuEffect(DropMenuChoice::Move) == Effect::Move);
+            CHECK(dropMenuEffect(DropMenuChoice::Cancel) == Effect::None);
         }
 
         TEST_CASE("release feedback prefers move, then copy, then link, then none")
@@ -300,15 +578,21 @@ namespace burlak::core
 
         TEST_CASE("sweep policy removes old own runs and old runs whose owners are dead")
         {
-            CHECK_FALSE(shouldSweepRun(true, true, false));
-            CHECK_FALSE(shouldSweepRun(true, false, false));
-            CHECK(shouldSweepRun(true, true, true));
-            CHECK(shouldSweepRun(true, false, true));
-            CHECK_FALSE(shouldSweepRun(false, true, false));
-            CHECK_FALSE(shouldSweepRun(false, false, false));
-            CHECK_FALSE(shouldSweepRun(false, true, true));
-            CHECK(shouldSweepRun(false, false, true));
-            CHECK(extractionRunGracePeriod == std::chrono::minutes{10});
+            CHECK_FALSE(shouldSweepRun(true, true, false, false));
+            CHECK_FALSE(shouldSweepRun(true, false, false, false));
+            CHECK(shouldSweepRun(true, true, true, false));
+            CHECK(shouldSweepRun(true, false, true, false));
+            CHECK_FALSE(shouldSweepRun(false, true, false, false));
+            CHECK_FALSE(shouldSweepRun(false, false, false, false));
+            CHECK_FALSE(shouldSweepRun(false, true, true, false));
+            CHECK(shouldSweepRun(false, false, true, false));
+            CHECK_FALSE(shouldSweepRun(true, true, true, true));
+            CHECK_FALSE(shouldSweepRun(false, false, true, true));
+            CHECK(extractionRunGracePeriod == std::chrono::minutes{3});
+            CHECK(extractionSweepInterval == std::chrono::minutes{1});
+            CHECK(externalDragPollInterval == std::chrono::milliseconds{50});
+            CHECK(receiveDropTimeout == std::chrono::seconds{10});
+            CHECK(receiveEnteredTimeout == std::chrono::minutes{2});
 
             CHECK(runOwner(L"17-old") == 17);
             CHECK_FALSE(runOwner(L"other").has_value());

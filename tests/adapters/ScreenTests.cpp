@@ -204,6 +204,8 @@ namespace burlak::adapters::win
             Screen screen{fakeCalls};
             CHECK(screen.cursor() == std::optional{core::Point{50, 50}});
             CHECK(screen.windowAt({50, 50}) == reinterpret_cast<core::NativeWindow>(fakeState.rootWindow));
+            CHECK(screen.consoleWindow() == reinterpret_cast<core::NativeWindow>(fakeState.console));
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.console));
             fakeState.pointWindow = nullptr;
             CHECK(screen.windowAt({50, 50}) == 0);
             fakeState.pointWindow = reinterpret_cast<HWND>(4);
@@ -227,12 +229,24 @@ namespace burlak::adapters::win
             fakeState.rectSucceeds = true;
             fakeState.visible = false;
             CHECK_FALSE(screen.hostWindow().has_value());
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.visible = true;
+            fakeState.rectSucceeds = false;
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.rectSucceeds = true;
+            fakeState.rect.right = fakeState.rect.left;
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.rect = {0, 0, 100, 0};
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.rect = {0, 0, 100, 100};
             fakeState.visible = true;
             fakeState.cursor = {200, 200};
             CHECK_FALSE(screen.hostWindow().has_value());
 
             fakeState.cursor = {50, 50};
             fakeState.console = nullptr;
+            CHECK(screen.consoleWindow() == 0);
+            CHECK(screen.hostWindowHandle() == 0);
             CHECK_FALSE(screen.hostWindow().has_value());
 
             fakeState.cursorSucceeds = false;

@@ -5,6 +5,7 @@
 #include <shlobj.h>
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -61,10 +62,10 @@ namespace burlak::adapters::shell
             return data.SetData(&format, &medium, release);
         }
 
-        [[nodiscard]] std::expected<void, core::Error> setPreferredEffect(IDataObject &data, core::Effect effect,
-                                                                          const ShellCalls &api)
+        [[nodiscard]] std::expected<void, core::Error> setDropEffect(IDataObject &data, core::Effect effect,
+                                                                     const wchar_t *formatName, const ShellCalls &api)
         {
-            const auto clipboardFormat = api.registerClipboardFormat(CFSTR_PREFERREDDROPEFFECT);
+            const auto clipboardFormat = api.registerClipboardFormat(formatName);
             if (clipboardFormat == 0) {
                 return std::unexpected(core::Error::Unavailable);
             }
@@ -91,6 +92,22 @@ namespace burlak::adapters::shell
             static_cast<void>(memory.release());
             return {};
         }
+
+        class MediumGuard final
+        {
+          public:
+            explicit MediumGuard(STGMEDIUM &medium) : medium_{medium}
+            {
+            }
+
+            ~MediumGuard()
+            {
+                ReleaseStgMedium(&medium_);
+            }
+
+          private:
+            STGMEDIUM &medium_;
+        };
 
         HRESULT createOperation(IFileOperation **operation)
         {
@@ -197,7 +214,7 @@ namespace burlak::adapters::shell
         if (FAILED(api.bindDataObject(*array.Get(), data.GetAddressOf()))) {
             return std::unexpected(core::Error::Unavailable);
         }
-        if (preferredEffect && !setPreferredEffect(*data.Get(), *preferredEffect, api)) {
+        if (preferredEffect && !setDropEffect(*data.Get(), *preferredEffect, CFSTR_PREFERREDDROPEFFECT, api)) {
             return std::unexpected(core::Error::Unavailable);
         }
         return PreparedDataObject{.data = std::move(data), .parsedPaths = pidls.size()};
@@ -212,9 +229,79 @@ namespace burlak::adapters::shell
         return {.status = result, .effect = effect};
     }
 
+    bool offersFileDrop(IDataObject &data)
+    {
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        return SUCCEEDED(data.QueryGetData(&format));
+    }
+
+    std::expected<std::vector<std::wstring>, core::Error> fileDropPaths(IDataObject &data, std::size_t maximumPaths,
+                                                                        DragQueryFileCall query)
+    {
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        STGMEDIUM medium{};
+        if (FAILED(data.GetData(&format, &medium))) {
+            return std::unexpected(core::Error::NoSelection);
+        }
+        const MediumGuard guard{medium};
+        if (medium.tymed != TYMED_HGLOBAL || medium.hGlobal == nullptr) {
+            return std::unexpected(core::Error::NoSelection);
+        }
+        const auto drop = static_cast<HDROP>(medium.hGlobal);
+        const auto count = query(drop, 0xFFFFFFFFU, nullptr, 0);
+        if (count == 0 || count > maximumPaths) {
+            return std::unexpected(core::Error::NoSelection);
+        }
+        std::vector<std::wstring> paths;
+        paths.reserve(count);
+        std::size_t totalBytes{};
+        for (UINT index = 0; index < count; ++index) {
+            const auto length = query(drop, index, nullptr, 0);
+            const auto units = static_cast<std::size_t>(length) + 1U;
+            if (length == 0 || length > maximumDropPathCodeUnits ||
+                units > (maximumDropBytes - totalBytes) / sizeof(wchar_t)) {
+                return std::unexpected(core::Error::NoSelection);
+            }
+            totalBytes += units * sizeof(wchar_t);
+            std::vector<wchar_t> buffer(static_cast<std::size_t>(length) + 1U);
+            if (query(drop, index, buffer.data(), static_cast<UINT>(buffer.size())) != length) {
+                return std::unexpected(core::Error::NoSelection);
+            }
+            std::wstring path{buffer.data(), length};
+            if (!std::filesystem::path{path}.is_absolute()) {
+                return std::unexpected(core::Error::NoSelection);
+            }
+            paths.push_back(std::move(path));
+        }
+        return paths;
+    }
+
+    std::expected<void, core::Error> setPerformedEffect(IDataObject &data, core::Effect effect)
+    {
+        return setDropEffect(data, effect, CFSTR_PERFORMEDDROPEFFECT, calls);
+    }
+
     const ShellCalls &systemShellCalls()
     {
         return calls;
+    }
+
+    bool DropData::offersFileDrop(const std::uintptr_t data) const
+    {
+        return data != 0 && adapters::shell::offersFileDrop(*reinterpret_cast<IDataObject *>(data));
+    }
+
+    std::expected<std::vector<std::wstring>, core::Error> DropData::fileDropPaths(const std::uintptr_t data) const
+    {
+        return data != 0
+                   ? adapters::shell::fileDropPaths(*reinterpret_cast<IDataObject *>(data))
+                   : std::expected<std::vector<std::wstring>, core::Error>{std::unexpected(core::Error::NoSelection)};
+    }
+
+    std::expected<void, core::Error> DropData::setPerformedEffect(const std::uintptr_t data, core::Effect effect)
+    {
+        return data != 0 ? adapters::shell::setPerformedEffect(*reinterpret_cast<IDataObject *>(data), effect)
+                         : std::expected<void, core::Error>{std::unexpected(core::Error::Unavailable)};
     }
 
     Shell::Shell() : calls_{calls}

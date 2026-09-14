@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <variant>
 #include <vector>
 
 namespace burlak::core
@@ -93,6 +92,14 @@ namespace burlak::core
         Link
     };
 
+    struct AllowedEffects
+    {
+        bool copy{};
+        bool move{};
+
+        auto operator<=>(const AllowedEffects &) const = default;
+    };
+
     enum class PanelSide : std::uint8_t
     {
         Active,
@@ -132,6 +139,8 @@ namespace burlak::core
         std::size_t selectedItems{};
         std::size_t currentItem{};
         std::size_t topItem{};
+
+        bool operator==(const PanelInfo &) const = default;
     };
 
     struct Item
@@ -167,6 +176,8 @@ namespace burlak::core
         NativeWindow handle{};
         PixelRect rect{};
         bool topmost{};
+
+        bool operator==(const HostWindow &) const = default;
     };
 
     struct DropContext
@@ -212,111 +223,62 @@ namespace burlak::core
         constexpr bool operator==(const ReplayOutcome &) const = default;
     };
 
+    struct ExternalDragFacts
+    {
+        bool buttonDown{};
+        NativeWindow pressRoot{};
+        NativeWindow pointRoot{};
+        NativeWindow host{};
+        NativeWindow console{};
+        NativeWindow tool{};
+        std::optional<std::uint32_t> receiver;
+        bool receiverAlive{true};
+        std::uint32_t process{};
+        bool ownDragActive{};
+
+        auto operator<=>(const ExternalDragFacts &) const = default;
+    };
+
+    struct ReceiveSnapshot
+    {
+        bool panelsWindow{};
+        std::array<std::optional<PanelInfo>, 2> panels{};
+        std::array<std::optional<std::wstring>, 2> directories{};
+        std::optional<HostWindow> host;
+        std::optional<CellGeometry> geometry;
+
+        bool operator==(const ReceiveSnapshot &) const = default;
+    };
+
+    struct ReceiveDestination
+    {
+        PanelSide side{PanelSide::Active};
+        std::wstring directory;
+
+        bool operator==(const ReceiveDestination &) const = default;
+    };
+
+    struct ReceiveDropOutcome
+    {
+        Effect returnedEffect{Effect::None};
+        bool setPerformedNone{};
+
+        auto operator<=>(const ReceiveDropOutcome &) const = default;
+    };
+
+    enum class DropMenuChoice : std::uint8_t
+    {
+        Copy,
+        Move,
+        Cancel
+    };
+
     struct PluginModule
     {
         std::wstring path;
         PluginInstance instance{};
 
         bool operator==(const PluginModule &) const = default;
-    };
-
-    struct Peer
-    {
-        NativeWindow window{};
-        NativeWindow host{};
-        std::uint64_t lastFocus{};
-        std::uint32_t process{};
-        std::uint64_t nonce{};
-
-        auto operator<=>(const Peer &) const = default;
-    };
-
-    struct PeerIdentity
-    {
-        NativeWindow window{};
-        std::uint32_t process{};
-
-        auto operator<=>(const PeerIdentity &) const = default;
-    };
-
-    struct PeerTransportResult
-    {
-        std::intptr_t sent{};
-        std::uintptr_t receiver{};
-        std::uint32_t lastError{};
-        std::uint32_t timeoutError{};
-
-        auto operator<=>(const PeerTransportResult &) const = default;
-    };
-
-    enum class PeerSendOutcome : std::uint8_t
-    {
-        Failed,
-        Accepted,
-        Indeterminate
-    };
-
-    enum class PeerAnnouncementAction : std::uint8_t
-    {
-        Begin,
-        End
-    };
-
-    struct PeerAnnouncement
-    {
-        PeerAnnouncementAction action{PeerAnnouncementAction::Begin};
-        PeerIdentity source{};
-        std::uint64_t nonce{};
-
-        auto operator<=>(const PeerAnnouncement &) const = default;
-    };
-
-    struct PeerHello
-    {
-        std::uint32_t process{};
-        NativeWindow tool{};
-        NativeWindow host{};
-        std::uint64_t lastFocus{};
-        std::uint64_t echoNonce{};
-        std::uint64_t nonce{};
-
-        auto operator<=>(const PeerHello &) const = default;
-    };
-
-    struct Drop
-    {
-        std::vector<std::wstring> paths;
-        Point at{};
-        Effect effect{Effect::None};
-        std::uint64_t nonce{};
-
-        auto operator<=>(const Drop &) const = default;
-    };
-
-    using PeerPayload = std::variant<PeerHello, Drop>;
-
-    struct PeerEnvelope
-    {
-        PeerIdentity sender{};
-        PeerPayload payload;
-
-        auto operator<=>(const PeerEnvelope &) const = default;
-    };
-
-    struct PendingPeerDrop
-    {
-        Drop drop;
-        std::uint32_t sourceProcess{};
-
-        auto operator<=>(const PendingPeerDrop &) const = default;
-    };
-
-    struct AdoptedPeerPaths
-    {
-        std::vector<std::wstring> paths;
-        std::optional<std::wstring> cleanupDirectory;
-
-        auto operator<=>(const AdoptedPeerPaths &) const = default;
     };
 
     enum class Error : std::uint8_t

@@ -194,6 +194,9 @@ namespace
         if (containsInclude(includes, "plugin\\.hpp") && !farAdapter && !plugin) {
             violations.push_back({"plugin.hpp"});
         }
+        if (drag && containsInclude(includes, "adapters/[^>\"]+")) {
+            violations.push_back({"drag -> adapters"});
+        }
 
         const std::string code = codeOnly(source);
         static const std::regex ownership{R"(\b(new|delete|malloc|free|shared_ptr|weak_ptr)\b)"};
@@ -236,6 +239,7 @@ TEST_SUITE("source guard")
     {
         CHECK_FALSE(scan("src/core/Bad.cpp", "#include <windows.h>").empty());
         CHECK_FALSE(scan("src/drag/Bad.cpp", "#include <plugin.hpp>").empty());
+        CHECK_FALSE(scan("src/drag/Bad.cpp", "#include \"adapters/shell/Shell.hpp\"").empty());
         CHECK_FALSE(scan("src/core/Bad.cpp", "auto p = new Thing;").empty());
         CHECK_FALSE(scan("src/plugin/Bad.cpp", "__try {}").empty());
         CHECK_FALSE(scan("src/plugin/Composition.hpp", "struct Bad { PluginStartupInfo *startup_; };").empty());
