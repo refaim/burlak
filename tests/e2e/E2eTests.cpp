@@ -821,22 +821,16 @@ namespace
         return info;
     }
 
-} // namespace
-
-TEST_SUITE("e2e")
-{
-    TEST_CASE("the built DLL loads and all seven exports execute through Far-shaped stubs")
+    // Calls each of the seven exports of a loaded Burlak.dll through Far-shaped stubs and shuts the plugin down.
+    void runSevenExports(HMODULE module)
     {
-        Module module{BURLAK_DLL_PATH};
-        REQUIRE(module.get() != nullptr);
-
-        const auto global = load<decltype(&GetGlobalInfoW)>(module.get(), "GetGlobalInfoW");
-        const auto startup = load<decltype(&SetStartupInfoW)>(module.get(), "SetStartupInfoW");
-        const auto plugin = load<decltype(&GetPluginInfoW)>(module.get(), "GetPluginInfoW");
-        const auto open = load<decltype(&OpenW)>(module.get(), "OpenW");
-        const auto input = load<decltype(&ProcessConsoleInputW)>(module.get(), "ProcessConsoleInputW");
-        const auto synchro = load<decltype(&ProcessSynchroEventW)>(module.get(), "ProcessSynchroEventW");
-        const auto exit = load<decltype(&ExitFARW)>(module.get(), "ExitFARW");
+        const auto global = load<decltype(&GetGlobalInfoW)>(module, "GetGlobalInfoW");
+        const auto startup = load<decltype(&SetStartupInfoW)>(module, "SetStartupInfoW");
+        const auto plugin = load<decltype(&GetPluginInfoW)>(module, "GetPluginInfoW");
+        const auto open = load<decltype(&OpenW)>(module, "OpenW");
+        const auto input = load<decltype(&ProcessConsoleInputW)>(module, "ProcessConsoleInputW");
+        const auto synchro = load<decltype(&ProcessSynchroEventW)>(module, "ProcessSynchroEventW");
+        const auto exit = load<decltype(&ExitFARW)>(module, "ExitFARW");
         REQUIRE(global != nullptr);
         REQUIRE(startup != nullptr);
         REQUIRE(plugin != nullptr);
@@ -863,6 +857,28 @@ TEST_SUITE("e2e")
         event.Event = SE_COMMONSYNCHRO;
         CHECK(synchro(&event) == 0);
         exit(nullptr);
+    }
+
+} // namespace
+
+TEST_SUITE("e2e")
+{
+    TEST_CASE("the built DLL loads and all seven exports execute through Far-shaped stubs")
+    {
+        HMODULE unloaded{};
+        {
+            Module module{BURLAK_DLL_PATH};
+            REQUIRE(module.get() != nullptr);
+            unloaded = module.get();
+            runSevenExports(module.get());
+        }
+        // The plugin's tool-window class must not survive its DLL: a class left under far.exe's module handle
+        // with a window procedure in the unloaded image makes the next CreateWindowExW of that name fast-fail in
+        // USER32's control-flow-guard check.
+        WNDCLASSEXW leaked{};
+        leaked.cbSize = sizeof(leaked);
+        CHECK(GetClassInfoExW(GetModuleHandleW(nullptr), L"BurlakToolWindow", &leaked) == FALSE);
+        CHECK(GetClassInfoExW(unloaded, L"BurlakToolWindow", &leaked) == FALSE);
     }
 
     TEST_CASE("a plugin-panel drag advertises placeholders and extracts on the release synchro" *

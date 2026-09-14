@@ -1313,11 +1313,6 @@ namespace burlak::drag
             CHECK(delayedThread.windows == 0);
             CloseHandle(delayedThread.gate);
 
-            const HWND withoutState = CreateWindowExW(0, L"BurlakToolWindow", L"", WS_POPUP, 0, 0, 1, 1, nullptr,
-                                                      nullptr, GetModuleHandleW(nullptr), nullptr);
-            REQUIRE(withoutState != nullptr);
-            DestroyWindow(withoutState);
-
             for (const auto result : {JoinWaitResult::Failure, JoinWaitResult::WrongIndex}) {
                 resetHeadlessWindow();
                 joinWaitResult = result;
@@ -1325,10 +1320,68 @@ namespace burlak::drag
                 ToolWindow joined{screen,     input, shell,      dropData(), session,
                                   extraction, files, properties, menu,       headless};
                 REQUIRE(joined.start());
+                // The class exists only while a tool runs; a window of it with no state pointer takes the
+                // DefWindowProc path of the procedure.
+                const HWND withoutState = CreateWindowExW(0, L"BurlakToolWindow", L"", WS_POPUP, 0, 0, 1, 1, nullptr,
+                                                          nullptr, GetModuleHandleW(nullptr), nullptr);
+                REQUIRE(withoutState != nullptr);
+                DestroyWindow(withoutState);
                 joined.stop();
                 CHECK(joinWaitCalls == 1);
                 CHECK(joined.nativeWindow() == 0);
             }
+        }
+
+        TEST_CASE("the window class belongs to this code's module while a tool runs and is gone afterwards")
+        {
+            Screen screen;
+            Input input;
+            Shell shell;
+            DropSession session;
+            Extraction extraction;
+            Files files;
+            Properties properties;
+            Menu menu;
+            // The module that holds the window procedure is the one holding every function of ToolWindow.cpp.
+            HMODULE module{};
+            REQUIRE(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(&armTimerId), &module) != FALSE);
+            WNDCLASSEXW info{};
+            info.cbSize = sizeof(info);
+
+            resetHeadlessWindow();
+            ToolWindow tool{screen,     input, shell,      dropData(), session,
+                            extraction, files, properties, menu,       headlessCalls()};
+            REQUIRE(tool.start());
+            REQUIRE(GetClassInfoExW(module, L"BurlakToolWindow", &info) != FALSE);
+            CHECK(info.hInstance == module);
+            // A second tool in the same process finds the class registered by this very code and shares it.
+            ToolWindow second{screen,     input, shell,      dropData(), session,
+                              extraction, files, properties, menu,       headlessCalls()};
+            REQUIRE(second.start());
+            second.stop();
+            CHECK(GetClassInfoExW(module, L"BurlakToolWindow", &info) != FALSE);
+            tool.stop();
+            // Unregistered with the last window: a plugin DLL may be unloaded, and a class left behind under the
+            // host's module with a procedure in the unloaded image would make the next CreateWindowExW fast-fail.
+            CHECK(GetClassInfoExW(module, L"BurlakToolWindow", &info) == FALSE);
+
+            // A foreign class of the same name under this module is refused, not adopted or unregistered.
+            WNDCLASSEXW foreign{};
+            foreign.cbSize = sizeof(foreign);
+            foreign.lpfnWndProc = DefWindowProcW;
+            foreign.hInstance = module;
+            foreign.lpszClassName = L"BurlakToolWindow";
+            REQUIRE(RegisterClassExW(&foreign) != 0);
+            auto quick = headlessCalls();
+            quick.sleep = shortSleep;
+            ToolWindow refused{screen, input, shell, dropData(), session, extraction, files, properties, menu, quick};
+            CHECK_FALSE(refused.start());
+            CHECK(refused.nativeWindow() == 0);
+            REQUIRE(GetClassInfoExW(module, L"BurlakToolWindow", &info) != FALSE);
+            CHECK(info.lpfnWndProc == DefWindowProcW);
+            REQUIRE(UnregisterClassW(L"BurlakToolWindow", module) != FALSE);
         }
     }
 

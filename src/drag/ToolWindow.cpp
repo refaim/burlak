@@ -404,17 +404,37 @@ namespace burlak::drag
                 return 0;
             }
 
+            // The class is registered under the module that holds windowProcedure, not under the host executable:
+            // Far can unload a plugin DLL, and a class left under far.exe's handle with a procedure in the unloaded
+            // image makes the next CreateWindowExW of that name fast-fail in USER32's control-flow-guard check
+            // (observed in the e2e process, which unloads Burlak.dll between tests). The same module unregisters
+            // it below when the last window is gone.
+            HMODULE module{};
+            static_cast<void>(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                                     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                                 reinterpret_cast<LPCWSTR>(&windowProcedure), &module));
             WNDCLASSEXW windowClass{};
             windowClass.cbSize = sizeof(windowClass);
             windowClass.lpfnWndProc = windowProcedure;
-            windowClass.hInstance = GetModuleHandleW(nullptr);
+            windowClass.hInstance = module;
             windowClass.lpszClassName = toolClass;
-            static_cast<void>(RegisterClassExW(&windowClass));
+            bool registered = RegisterClassExW(&windowClass) != 0;
+            if (!registered) {
+                // Another instance in this process (the tests run several) has already registered this very class;
+                // any other class of the same name under this module is foreign and fails start() instead of being
+                // adopted with its procedure. A failed lookup leaves the zeroed record's procedure null, which is
+                // refused the same way.
+                WNDCLASSEXW existing{};
+                existing.cbSize = sizeof(existing);
+                static_cast<void>(GetClassInfoExW(module, toolClass, &existing));
+                registered = existing.lpfnWndProc == windowProcedure;
+            }
 
             const auto owner = reinterpret_cast<HWND>(screen_.hostWindowHandle());
-            UniqueWindow ownedWindow{calls_.createWindow(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, toolClass,
-                                                         nullptr, WS_POPUP, 0, 0, 1, 1, owner, nullptr,
-                                                         windowClass.hInstance, this)};
+            UniqueWindow ownedWindow{
+                registered ? calls_.createWindow(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, toolClass,
+                                                 nullptr, WS_POPUP, 0, 0, 1, 1, owner, nullptr, module, this)
+                           : nullptr};
             const auto window = ownedWindow.get();
             DragDropRegistration registration;
             if (window != nullptr) {
@@ -438,6 +458,10 @@ namespace burlak::drag
             registration.reset();
             ownedWindow.reset();
             window_.store(0);
+            if (registered) {
+                // Fails harmlessly while another instance still has a window of this class; the last one succeeds.
+                static_cast<void>(UnregisterClassW(toolClass, module));
+            }
             OleUninitialize();
             return 0;
         }
