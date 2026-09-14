@@ -280,18 +280,18 @@ namespace burlak::core
             CHECK_FALSE(allPathsAdvertised(2, 1));
         }
 
-        TEST_CASE("sweep policy removes this process and dead owners but ignores live and unrelated directories")
+        TEST_CASE("sweep policy removes only old runs whose owners are dead")
         {
-            CHECK(shouldSweepRun(L"42-1", 42, true));
-            CHECK(shouldSweepRun(L"17-old", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"17-old", 42, true));
-            CHECK_FALSE(shouldSweepRun(L"other", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"17", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"17-", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"-1", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"/-1", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"x-1", 42, false));
-            CHECK_FALSE(shouldSweepRun(L"42949672960-1", 42, false));
+            CHECK(shouldSweepRun(L"17-old", false, true));
+            CHECK_FALSE(shouldSweepRun(L"17-old", false, false));
+            CHECK_FALSE(shouldSweepRun(L"17-old", true, true));
+            CHECK_FALSE(shouldSweepRun(L"other", false, true));
+            CHECK_FALSE(shouldSweepRun(L"17", false, true));
+            CHECK_FALSE(shouldSweepRun(L"17-", false, true));
+            CHECK_FALSE(shouldSweepRun(L"-1", false, true));
+            CHECK_FALSE(shouldSweepRun(L"/-1", false, true));
+            CHECK_FALSE(shouldSweepRun(L"x-1", false, true));
+            CHECK_FALSE(shouldSweepRun(L"42949672960-1", false, true));
         }
 
         TEST_CASE("window placement follows the host and always demotes before ordinary placement")

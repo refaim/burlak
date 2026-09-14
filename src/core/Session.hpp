@@ -4,6 +4,7 @@
 #include "core/Interfaces.hpp"
 #include "core/Policies.hpp"
 
+#include <deque>
 #include <mutex>
 #include <optional>
 
@@ -16,12 +17,13 @@ namespace burlak::core
         Session(IPanels &panels, IFarHost &host, IScreen &screen, IInput &input, IFiles &files, IShell &shell);
         [[nodiscard]] bool begin(IDragTool &tool, DragStart start);
         [[nodiscard]] bool requestExtraction() override;
+        void retain() override;
         std::optional<bool> synchro();
         void cleanup() override;
         void prepare(DropContext context) override;
         [[nodiscard]] Effect effect(Point point, bool shift) const override;
         [[nodiscard]] Effect drop(Point point, bool shift) override;
-        void receivePeerDrop(Drop drop) override;
+        [[nodiscard]] bool receivePeerDrop(PendingPeerDrop drop) override;
 
       private:
         struct PendingDrop
@@ -43,7 +45,7 @@ namespace burlak::core
         std::optional<DropContext> hoverContext_;
         std::mutex pendingMutex_;
         std::optional<PendingDrop> pendingDrop_;
-        std::optional<Drop> pendingPeerDrop_;
+        std::deque<PendingPeerDrop> pendingPeerDrops_;
         std::optional<Plan> plan_;
         std::optional<std::wstring> pendingExtraction_;
         std::optional<std::wstring> cleanupDirectory_;

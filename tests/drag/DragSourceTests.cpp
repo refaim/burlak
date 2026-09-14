@@ -115,18 +115,34 @@ namespace burlak::drag
             {
                 ++cleanups;
             }
+
+            void retain() override
+            {
+            }
         };
 
         class Peers final : public core::IPeers
         {
           public:
-            std::uint64_t tick{100};
             core::PeerMenuChoice choice{core::PeerMenuChoice::Copy};
             std::vector<core::Drop> drops;
             std::vector<std::string> *callLog{};
             bool sendSucceeds{true};
 
-            [[nodiscard]] std::uint32_t announcementMessage() const override
+            [[nodiscard]] std::wstring_view toolWindowClass() const override
+            {
+                return L"BurlakToolWindow";
+            }
+            [[nodiscard]] bool isAnnouncementMessage(std::uint32_t) const override
+            {
+                return false;
+            }
+            [[nodiscard]] std::optional<core::PeerAnnouncement> receiveAnnouncement(std::uint32_t, std::uintptr_t,
+                                                                                    std::intptr_t) override
+            {
+                return std::nullopt;
+            }
+            [[nodiscard]] std::expected<std::uint64_t, core::Error> newNonce() const override
             {
                 return 1;
             }
@@ -134,26 +150,21 @@ namespace burlak::drag
             {
                 return 2;
             }
-            [[nodiscard]] std::uint64_t now() const override
-            {
-                return tick;
-            }
             [[nodiscard]] core::NativeWindow broadcastTarget() const override
             {
                 return 3;
             }
-            [[nodiscard]] bool allowMessages(core::NativeWindow) override
+            void announce(core::NativeWindow, core::NativeWindow, std::uint64_t) override
+            {
+            }
+            void endAnnouncement(core::NativeWindow, core::NativeWindow, std::uint64_t) override
+            {
+            }
+            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow, std::uint64_t, std::uint64_t) override
             {
                 return true;
             }
-            void announce(core::NativeWindow, core::NativeWindow) override
-            {
-            }
-            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow) override
-            {
-                return true;
-            }
-            [[nodiscard]] std::optional<core::PeerPayload> receive(std::intptr_t) override
+            [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
             {
                 return std::nullopt;
             }
@@ -188,6 +199,10 @@ namespace burlak::drag
             void cleanup() override
             {
             }
+
+            void retain() override
+            {
+            }
         };
 
         class PostedExtractionHost final : public core::IExtractionSession
@@ -202,6 +217,10 @@ namespace burlak::drag
             }
 
             void cleanup() override
+            {
+            }
+
+            void retain() override
             {
             }
         };
@@ -469,7 +488,10 @@ namespace burlak::drag
             Extraction extraction;
             Peers peers;
             core::PeerRegistry registry;
-            registry.add(core::PeerHello{.process = 9, .tool = 91, .host = 90, .lastFocus = 7}, peers.tick);
+            registry.begin(80);
+            REQUIRE(registry.add(
+                core::PeerHello{.process = 9, .tool = 91, .host = 90, .lastFocus = 7, .echoNonce = 80, .nonce = 81},
+                core::PeerIdentity{.window = 91, .process = 9}));
             const std::vector<std::wstring> paths{L"C:\\one.txt", L"C:\\two.txt"};
             std::vector<std::string> calls;
             extraction.callLog = &calls;
@@ -486,7 +508,8 @@ namespace burlak::drag
             CHECK(calls == std::vector<std::string>{"extract", "menu", "cancel", "send"});
             CHECK(source.peerHandoff());
             REQUIRE(peers.drops.size() == 1);
-            CHECK(peers.drops[0] == core::Drop{.paths = paths, .at = {10, 20}, .effect = core::Effect::Copy});
+            CHECK(peers.drops[0] ==
+                  core::Drop{.paths = paths, .at = {10, 20}, .effect = core::Effect::Copy, .nonce = 81});
         }
 
         TEST_CASE("peer release maps Shift to move and cancellation or extraction failure never sends")
@@ -496,7 +519,10 @@ namespace burlak::drag
             screen.window = 90;
             Peers peers;
             core::PeerRegistry registry;
-            registry.add(core::PeerHello{.process = 9, .tool = 91, .host = 90}, peers.tick);
+            registry.begin(80);
+            REQUIRE(registry.add(
+                core::PeerHello{.process = 9, .tool = 91, .host = 90, .lastFocus = 0, .echoNonce = 80, .nonce = 81},
+                core::PeerIdentity{.window = 91, .process = 9}));
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
 
             SUBCASE("left Shift move")

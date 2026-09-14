@@ -102,6 +102,9 @@ namespace burlak::tests
         std::optional<std::wstring> rejectedName;
         std::vector<std::pair<std::wstring, bool>> placeholders;
         std::vector<std::wstring> removed;
+        std::vector<std::vector<std::wstring>> peerPaths;
+        std::vector<std::uint32_t> peerProcesses;
+        std::optional<core::AdoptedPeerPaths> adoptedResult;
         int sweeps{};
         mutable std::size_t nameComparisons{};
 
@@ -124,6 +127,17 @@ namespace burlak::tests
         {
             removed.emplace_back(path);
             return {};
+        }
+
+        [[nodiscard]] core::AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
+                                                            std::uint32_t sourceProcess) override
+        {
+            peerPaths.emplace_back(paths.begin(), paths.end());
+            peerProcesses.push_back(sourceProcess);
+            if (adoptedResult) {
+                return std::exchange(adoptedResult, std::nullopt).value();
+            }
+            return {.paths = {paths.begin(), paths.end()}, .cleanupDirectory = std::nullopt};
         }
 
         [[nodiscard]] bool nameBefore(std::wstring_view left, std::wstring_view right) const override

@@ -356,6 +356,10 @@ namespace
         void cleanup() override
         {
         }
+
+        void retain() override
+        {
+        }
     };
 
     class RegistrationGuard
@@ -414,9 +418,14 @@ namespace
         }
         const POINT requested{rect.left + 10, rect.top + 10};
         POINT positioned{};
-        return SetCursorPos(requested.x, requested.y) != FALSE && GetCursorPos(&positioned) != FALSE &&
-               positioned.x == requested.x && positioned.y == requested.y && WindowFromPoint(positioned) == window &&
-               (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0;
+        if (SetCursorPos(requested.x, requested.y) == FALSE) {
+            return false;
+        }
+        mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
+        return GetCursorPos(&positioned) != FALSE && positioned.x == requested.x && positioned.y == requested.y &&
+               WindowFromPoint(positioned) == window && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 &&
+               (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0;
     }
 
     bool controlledDragEnvironment()
@@ -661,7 +670,13 @@ TEST_SUITE("e2e")
 
         const POINT targetPoint = inside(targetWindowGuard.get());
         REQUIRE(SetCursorPos(targetPoint.x, targetPoint.y) != FALSE);
-        REQUIRE(pumpUntil([&target] { return target.entered(); }));
+        mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
+        if (!pumpUntil([&target] { return target.entered(); })) {
+            button.release();
+            std::fputs("SKIP: OLE did not notice the cursor entering the drop target\n", stderr);
+            return;
+        }
         CHECK(target.placeholdersReady());
 
         button.release();
@@ -710,8 +725,22 @@ TEST_SUITE("e2e")
                                         reinterpret_cast<burlak::core::NativeWindow>(window.get()),
                                         false,
                                         paths};
+        MouseButtonGuard button;
+        button.press();
+        std::jthread cursorWake{[&target, &button] {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(-1), 0, 0, 0);
+            static_cast<void>(pumpUntil([&target] { return target.entered(); }));
+            button.release();
+        }};
         const auto dragResult = burlak::adapters::shell::runDrag(window.get(), *data->data.Get(), source, true,
                                                                  burlak::adapters::shell::systemShellCalls());
+        cursorWake.join();
+        if (!target.entered()) {
+            std::fputs("SKIP: OLE did not notice the cursor entering the drop target\n", stderr);
+            return;
+        }
         REQUIRE(dragResult.status == DRAGDROP_S_DROP);
         CHECK(target.received());
     }

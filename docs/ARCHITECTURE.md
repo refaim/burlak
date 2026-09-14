@@ -23,9 +23,13 @@ Three features are next, and the layering below is judged against them:
    `PCTL_FINDPLUGIN` + `PCTL_GETPLUGININFORMATION` give its module and `GlobalInfo::Instance`),
    exactly as Far itself does for plugin-to-plugin copy (`FileList::PluginGetFiles`, `OPM_SILENT`
    into a temp directory), then answers "drop". The call is wrapped in SEH so a crashing plugin
-   aborts the drag with a message instead of taking Burlak down. Temp files are removed at the
-   next start and at exit, and opportunistically after the drag (targets read them after the
-   drop, some asynchronously). The original `FCTL_GETSELECTEDPANELITEM` buffers stay alive in the
+   aborts the drag with a message instead of taking Burlak down. Ordinary OLE drops clean temp
+   files opportunistically after the drag (targets may still read them asynchronously). For a
+   peer drop, the receiver atomically renames an extraction run into its own
+   `<receiver-pid>-peer-<sequence>` namespace before copying and removes it afterward. If the
+   rename fails, the source leaves the run intact; startup sweep removes only runs whose owner
+   process is dead and whose last write is at least ten minutes old. The original
+   `FCTL_GETSELECTEDPANELITEM` buffers stay alive in the
    plan and are passed back as complete `PluginPanelItem` records, matching
    `FileList::CreatePluginItemList`. Release revalidates the panel, complete selection and owner
    module on Far's thread. A case-insensitive duplicate name cannot be represented faithfully in
@@ -38,16 +42,22 @@ Three features are next, and the layering below is judged against them:
    drag through `WriteConsoleInputW`: a left press at the cell the gesture started on, a release
    at the drop cell. Far's native `KEY_DRAGCOPY`/`KEY_DRAGMOVE` path does the copy, including
    plugin panels on either side. Burlak copies nothing itself here.
-3. **Drop into another Far window.** A drag broadcasts "Burlak is dragging"; every other Burlak
-   answers with the window of its terminal (`GetConsoleWindow()` under conhost; under Windows
-   Terminal `GetWindow(GetConsoleWindow(), GW_OWNER)`, verified on WT 1.24) and the time it last
-   had console focus (several Fars in one WT window share the owner; the most recently focused
-   pane is the visible one). At release, if the window under the cursor belongs to a peer, the
-   source cancels the OLE drop (so the terminal does not paste the path into the command line)
-   and hands the peer the paths, the screen point and the effect over `WM_COPYDATA`. The peer
-   maps the point to a panel and copies with `IFileOperation` into that panel's directory, then
-   `FCTL_UPDATEPANEL`/`FCTL_REDRAWPANEL`. Right-button menus are shown by the source (it holds
-   the foreground); the chosen effect travels with the message.
+3. **Drop into another Far window.** A drag broadcasts "Burlak is dragging" with a random nonce;
+   every other Burlak answers with that nonce, a fresh receiver nonce, the window of its terminal
+   (`GetConsoleWindow()` under conhost; under Windows Terminal
+   `GetWindow(GetConsoleWindow(), GW_OWNER)`, verified on WT 1.24), and the time it last had console
+   focus (several Fars in one WT window share the owner; the most recently focused pane is the
+   visible one). Tool-window class and process identity are verified on both routes, and the
+   receiver nonce authorizes exactly one drop from that source window. UIPI remains closed, so
+   elevated and non-elevated Fars do not exchange drops. Hello and Drop sends use a short
+   `SendMessageTimeoutW`; Drop is bounded to 1 MiB and 4096 absolute paths. Discovery is active
+   only for the drag, keeps at most 64 newest replies, and does not expire a reply mid-drag. At
+   release, if the window under the cursor belongs to a peer, the source cancels the OLE drop (so
+   the terminal does not paste the path into the command line) and hands the peer the paths, the
+   screen point and the effect over `WM_COPYDATA`. The peer queues accepted drops for Far's thread,
+   maps each point to a panel and copies with `IFileOperation` into that panel's directory, then
+   `FCTL_UPDATEPANEL`/`FCTL_REDRAWPANEL`. Right-button menus are shown by the source (it holds the
+   foreground); the chosen effect travels with the message.
 
 None of these needs hooks, injected DLLs or a drop target on the terminal's own window (which
 belongs to another process and already has one).
@@ -104,10 +114,10 @@ Interfaces core depends on (all pure virtual, all under `src/core/`, implemented
   MouseEvent>)` (WriteConsoleInputW).
 - `IShell` — `makeDataObject(paths)`, `runDrag(...)` (SHDoDragDrop with our IDropSource), `copy
   (paths, destination, Effect)` (IFileOperation).
-- `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, `sweep
-  (older runs)`.
-- `IPeers` — `announce()`, `peers()` (window, last-focus time, process), `send(peer, Drop)`; the
-  transport is the adapter's business.
+- `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, atomic
+  peer-run adoption, `sweep(older dead-owner runs)`.
+- `IPeers` — nonce creation, begin/end announcements, Hello/Drop receive and bounded send, and the
+  right-drag menu; the registered-message and `WM_COPYDATA` transport is the adapter's business.
 
 Core logic:
 
@@ -123,8 +133,8 @@ Core logic:
   own host window, decides one of `DropHere`, `Cancel`, `HandToPeer(peer, effect)`,
   `ExtractThenDrop` (feature 1) — the single place `DragSource::QueryContinueDrag` consults.
 - `DropPolicy`: for the own `IDropTarget`: effect for a point (feature 2) and the replay records.
-- `PeerRegistry` and the wire format of the peer protocol (feature 3), as plain structs and
-  encode/decode functions.
+- `PeerRegistry`, the single-use incoming-session registry, and the bounded wire format of the
+  peer protocol (feature 3), as plain structs and encode/decode functions.
 - `Session`: the object that owns one drag from threshold to cleanup and sequences the calls to
   the interfaces above; the composition root creates it with the real adapters, the tests with
   fakes.

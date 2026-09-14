@@ -174,10 +174,10 @@ namespace burlak::core
         return owner;
     }
 
-    bool shouldSweepRun(std::wstring_view name, std::uint32_t currentProcess, bool ownerAlive)
+    bool shouldSweepRun(std::wstring_view name, bool ownerAlive, bool oldEnough)
     {
         const auto owner = runOwner(name);
-        return owner && (*owner == currentProcess || !ownerAlive);
+        return owner && !ownerAlive && oldEnough;
     }
 
 } // namespace burlak::core

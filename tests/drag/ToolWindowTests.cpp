@@ -128,7 +128,8 @@ namespace burlak::drag
         {
           public:
             std::optional<core::DropContext> context;
-            std::vector<core::Drop> peerDrops;
+            std::vector<core::PendingPeerDrop> peerDrops;
+            bool accepts{true};
 
             void prepare(core::DropContext prepared) override
             {
@@ -143,9 +144,10 @@ namespace burlak::drag
                 return core::Effect::None;
             }
 
-            void receivePeerDrop(core::Drop drop) override
+            [[nodiscard]] bool receivePeerDrop(core::PendingPeerDrop drop) override
             {
                 peerDrops.push_back(std::move(drop));
+                return accepts;
             }
         };
 
@@ -154,6 +156,7 @@ namespace burlak::drag
           public:
             int calls{};
             int cleanups{};
+            int retains{};
 
             [[nodiscard]] bool extract() override
             {
@@ -165,54 +168,77 @@ namespace burlak::drag
             {
                 ++cleanups;
             }
+
+            void retain() override
+            {
+                ++retains;
+            }
         };
 
         class Peers final : public core::IPeers
         {
           public:
-            int allowed{};
             int announcements{};
+            int endings{};
             int replies{};
             int sends{};
             core::NativeWindow source{};
             core::NativeWindow target{};
-            std::optional<core::PeerPayload> payload;
+            std::uint64_t announcedNonce{};
+            std::expected<std::uint64_t, core::Error> nonce{100};
+            std::optional<core::PeerAnnouncement> announcement;
+            std::optional<core::PeerEnvelope> payload;
             core::PeerMenuChoice choice{core::PeerMenuChoice::Cancel};
+            bool replySucceeds{true};
+            bool throwAllocation{};
 
-            [[nodiscard]] std::uint32_t announcementMessage() const override
+            [[nodiscard]] std::wstring_view toolWindowClass() const override
             {
-                return WM_APP + 77;
+                return L"BurlakToolWindow";
+            }
+            [[nodiscard]] bool isAnnouncementMessage(std::uint32_t message) const override
+            {
+                return message == WM_APP + 77;
+            }
+            [[nodiscard]] std::optional<core::PeerAnnouncement> receiveAnnouncement(std::uint32_t, std::uintptr_t,
+                                                                                    std::intptr_t) override
+            {
+                return std::exchange(announcement, std::nullopt);
+            }
+            [[nodiscard]] std::expected<std::uint64_t, core::Error> newNonce() const override
+            {
+                return nonce;
             }
             [[nodiscard]] std::uint32_t processId() const override
             {
                 return 10;
             }
-            [[nodiscard]] std::uint64_t now() const override
-            {
-                return 100;
-            }
             [[nodiscard]] core::NativeWindow broadcastTarget() const override
             {
                 return 99;
             }
-            [[nodiscard]] bool allowMessages(core::NativeWindow) override
-            {
-                ++allowed;
-                return true;
-            }
-            void announce(core::NativeWindow announcedSource, core::NativeWindow announcedTarget) override
+            void announce(core::NativeWindow announcedSource, core::NativeWindow announcedTarget,
+                          std::uint64_t value) override
             {
                 ++announcements;
                 source = announcedSource;
                 target = announcedTarget;
+                announcedNonce = value;
             }
-            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow) override
+            void endAnnouncement(core::NativeWindow, core::NativeWindow, std::uint64_t) override
+            {
+                ++endings;
+            }
+            [[nodiscard]] bool reply(core::NativeWindow, core::NativeWindow, std::uint64_t, std::uint64_t) override
             {
                 ++replies;
-                return true;
+                return replySucceeds;
             }
-            [[nodiscard]] std::optional<core::PeerPayload> receive(std::intptr_t) override
+            [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
             {
+                if (throwAllocation) {
+                    throw std::bad_alloc{};
+                }
                 return std::exchange(payload, std::nullopt);
             }
             [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &, const core::Drop &) override
@@ -457,7 +483,6 @@ namespace burlak::drag
             CHECK(tool.start());
             CHECK(tool.start());
             REQUIRE(tool.nativeWindow() != 0);
-            CHECK(peers.allowed == 1);
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
             auto context = dropContext();
             context.host = core::HostWindow{42, {0, 0, 1, 1}, false};
@@ -465,6 +490,7 @@ namespace burlak::drag
             CHECK(peers.announcements == 1);
             CHECK(peers.source == tool.nativeWindow());
             CHECK(peers.target == peers.broadcastTarget());
+            CHECK(peers.announcedNonce == 100);
             CHECK(tool.hasData());
             CHECK(dropSession.context->press == core::Cell{5, 5});
             CHECK(dropSession.context->host->handle == 42);
@@ -480,6 +506,7 @@ namespace burlak::drag
             CHECK_FALSE(headlessWindow.visible);
             CHECK_FALSE(tool.hasData());
             CHECK(extraction.cleanups == 1);
+            CHECK(peers.endings == 1);
 
             tool.stop();
             tool.stop();
@@ -503,26 +530,81 @@ namespace burlak::drag
             ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
             REQUIRE(tool.start());
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
+            const std::vector<std::wstring> paths{L"C:\\one.txt"};
+            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
 
-            CHECK(SendMessageW(window, peers.announcementMessage(), peers.processId(), 123) == 1);
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
+            peers.announcement = core::PeerAnnouncement{.action = core::PeerAnnouncementAction::Begin,
+                                                        .source = {.window = 123, .process = peers.processId()},
+                                                        .nonce = 300};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
             CHECK(peers.replies == 0);
-            CHECK(SendMessageW(window, peers.announcementMessage(), peers.processId() + 1, 123) == 1);
+            peers.announcement = core::PeerAnnouncement{.action = core::PeerAnnouncementAction::Begin,
+                                                        .source = {.window = 123, .process = peers.processId() + 1},
+                                                        .nonce = 300};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
             CHECK(peers.replies == 1);
             CHECK(SendMessageW(window, WM_COPYDATA, 0, 0) == 0);
 
             std::byte wire{};
             COPYDATASTRUCT copy{.dwData = 1, .cbData = 1, .lpData = &wire};
             CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
-            peers.payload = core::PeerHello{.process = 2, .tool = 3, .host = 4, .lastFocus = 5};
+            peers.payload = core::PeerEnvelope{
+                .sender = {.window = 3, .process = 2},
+                .payload = core::PeerHello{
+                    .process = 2, .tool = 3, .host = 4, .lastFocus = 5, .echoNonce = 100, .nonce = 400}};
             CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
             CHECK(dropSession.peerDrops.empty());
-            const core::Drop drop{.paths = {L"C:\\one.txt"}, .at = {6, 7}, .effect = core::Effect::Move};
-            peers.payload = drop;
+            const core::Drop drop{.paths = {L"C:\\one.txt"}, .at = {6, 7}, .effect = core::Effect::Move, .nonce = 100};
+            peers.payload =
+                core::PeerEnvelope{.sender = {.window = 123, .process = peers.processId() + 1}, .payload = drop};
             CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
             REQUIRE(dropSession.peerDrops.size() == 1);
-            CHECK(dropSession.peerDrops[0].paths == drop.paths);
-            CHECK(dropSession.peerDrops[0].at == drop.at);
-            CHECK(dropSession.peerDrops[0].effect == drop.effect);
+            CHECK(dropSession.peerDrops[0] ==
+                  core::PendingPeerDrop{.drop = drop, .sourceProcess = peers.processId() + 1});
+
+            peers.announcement = core::PeerAnnouncement{.action = core::PeerAnnouncementAction::End,
+                                                        .source = {.window = 123, .process = peers.processId() + 1},
+                                                        .nonce = 300};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
+
+            peers.payload = core::PeerEnvelope{
+                .sender = {.window = 3, .process = 2},
+                .payload = core::PeerHello{
+                    .process = 2, .tool = 3, .host = 4, .lastFocus = 5, .echoNonce = 999, .nonce = 400}};
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
+
+            peers.nonce = std::unexpected(core::Error::Unavailable);
+            peers.announcement = core::PeerAnnouncement{
+                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 124, .process = 12}, .nonce = 301};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
+            peers.nonce = 100;
+
+            peers.announcement = core::PeerAnnouncement{
+                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 0, .process = 12}, .nonce = 302};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
+
+            peers.replySucceeds = false;
+            peers.announcement = core::PeerAnnouncement{
+                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 125, .process = 13}, .nonce = 303};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
+            peers.replySucceeds = true;
+
+            peers.announcement = core::PeerAnnouncement{
+                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 126, .process = 14}, .nonce = 304};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
+            dropSession.accepts = false;
+            const core::Drop rejected{
+                .paths = {L"C:\\two.txt"}, .at = {6, 7}, .effect = core::Effect::Copy, .nonce = 100};
+            peers.payload = core::PeerEnvelope{.sender = {.window = 126, .process = 14}, .payload = rejected};
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
+            dropSession.accepts = true;
+
+            peers.nonce = std::unexpected(core::Error::Unavailable);
+            CHECK(tool.prepare(paths, core::Button::Left, false, dropContext()));
+
+            peers.throwAllocation = true;
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
 
             tool.stop();
         }
@@ -548,7 +630,10 @@ namespace burlak::drag
 
             std::byte wire{};
             COPYDATASTRUCT copy{.dwData = 1, .cbData = 1, .lpData = &wire};
-            peers.payload = core::PeerHello{.process = 2, .tool = 91, .host = 90, .lastFocus = 5};
+            peers.payload = core::PeerEnvelope{
+                .sender = {.window = 91, .process = 2},
+                .payload = core::PeerHello{
+                    .process = 2, .tool = 91, .host = 90, .lastFocus = 5, .echoNonce = 100, .nonce = 200}};
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
             REQUIRE(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
             REQUIRE(tool.showAndArm());
@@ -562,6 +647,7 @@ namespace burlak::drag
             SendMessageW(window, WM_RBUTTONDOWN, 0, 0);
             CHECK(peers.sends == 1);
             CHECK(extraction.cleanups == 0);
+            CHECK(extraction.retains == 1);
             tool.stop();
         }
 

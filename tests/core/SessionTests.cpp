@@ -685,6 +685,29 @@ namespace burlak::core
             CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
         }
 
+        TEST_CASE("retaining a peer extraction detaches it from source-session cleanup")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            session.retain();
+            session.cleanup();
+            CHECK(files.removed.empty());
+        }
+
         TEST_CASE("a same-Far plugin-panel drop replays Far's copy without extracting placeholders")
         {
             auto panels = readyPanels();
@@ -891,23 +914,30 @@ namespace burlak::core
             tests::Shell shell;
             Session session{panels, host, screen, input, files, shell};
             const Drop drop{.paths = {L"C:\\source\\one.txt"}, .at = {5, 5}, .effect = Effect::Move};
+            files.adoptedResult = core::AdoptedPeerPaths{.paths = {L"C:\\Temp\\Burlak\\8-peer-1\\one.txt"},
+                                                         .cleanupDirectory = L"C:\\Temp\\Burlak\\8-peer-1"};
 
-            session.receivePeerDrop(drop);
-            CHECK(host.synchros == 1);
+            CHECK(session.receivePeerDrop(PendingPeerDrop{.drop = drop, .sourceProcess = 7}));
+            panels.panels[1]->realNames = true;
+            const Drop second{.paths = {L"C:\\source\\two.txt"}, .at = {45, 5}, .effect = Effect::Copy};
+            CHECK(session.receivePeerDrop(PendingPeerDrop{.drop = second, .sourceProcess = 9}));
+            CHECK(host.synchros == 2);
             CHECK(shell.copies.empty());
             session.synchro();
 
             REQUIRE(shell.copies.size() == 1);
-            CHECK(shell.copies[0].paths == drop.paths);
+            CHECK(shell.copies[0].paths == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\8-peer-1\\one.txt"});
             CHECK(shell.copies[0].effect == drop.effect);
             CHECK(shell.destinations == std::vector<std::wstring>{L"C:\\work"});
             CHECK(shell.owners == std::vector<NativeWindow>{1});
             CHECK(panels.updates == std::vector<PanelSide>{PanelSide::Active});
             CHECK(host.messages.empty());
+            CHECK(files.peerProcesses == std::vector<std::uint32_t>{7});
+            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\8-peer-1"});
 
-            panels.panels[1]->realNames = true;
-            session.receivePeerDrop(Drop{.paths = {L"C:\\source\\two.txt"}, .at = {45, 5}, .effect = Effect::Copy});
             session.synchro();
+            REQUIRE(shell.copies.size() == 2);
+            CHECK(shell.copies.back().paths == second.paths);
             CHECK(panels.updates.back() == PanelSide::Passive);
             CHECK(shell.destinations.back() == L"D:\\target");
         }
@@ -957,12 +987,35 @@ namespace burlak::core
                 shell.copyResult = std::unexpected(Error::ForeignCallFailed);
             }
 
-            session.receivePeerDrop(Drop{.paths = {L"C:\\source\\one.txt"}, .at = point, .effect = Effect::Copy});
+            CHECK(session.receivePeerDrop(
+                PendingPeerDrop{.drop = Drop{.paths = {L"C:\\source\\one.txt"}, .at = point, .effect = Effect::Copy},
+                                .sourceProcess = 7}));
             session.synchro();
             CHECK(panels.updates.empty());
             REQUIRE(host.messages.size() == 1);
             REQUIRE(host.messages[0].size() == 1);
             CHECK(host.messages[0][0].starts_with(L"Burlak: drop here is not possible: "));
+        }
+
+        TEST_CASE("the pending peer-drop queue rejects overflow instead of discarding an accepted drop")
+        {
+            auto panels = readyPanels();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            tests::Host host;
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+            const PendingPeerDrop drop{
+                .drop = Drop{.paths = {L"C:\\source\\one.txt"}, .at = {5, 5}, .effect = Effect::Copy},
+                .sourceProcess = 7};
+
+            for (std::size_t index = 0; index < peerRegistryLimit; ++index) {
+                CHECK(session.receivePeerDrop(drop));
+            }
+            CHECK_FALSE(session.receivePeerDrop(drop));
+            CHECK(host.synchros == peerRegistryLimit);
         }
 
         TEST_CASE("real-path plans neither request extraction nor ask the tool to clean temporary files")

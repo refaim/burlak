@@ -52,7 +52,7 @@ namespace burlak::drag
             if (point) {
                 const auto window = screen_.windowAt(*point);
                 overOwnWindow = needsExtraction_ && window == ownWindow_;
-                peer = registry_.select(window, ownHost_, peers_.now());
+                peer = registry_.select(window, ownHost_);
             }
         }
         const auto action = policy_.query(button_, escaped, leftDown, rightDown, lastEffect_, needsExtraction_,
@@ -69,7 +69,9 @@ namespace burlak::drag
                                     : ((keyState & MK_SHIFT) != 0 ? core::Effect::Move : core::Effect::Copy);
             if (chosen != core::Effect::None) {
                 pendingPeerHandoff_ = PendingPeerHandoff{
-                    .peer = *peer, .drop = {.paths = {paths_.begin(), paths_.end()}, .at = *point, .effect = chosen}};
+                    .peer = *peer,
+                    .drop = {
+                        .paths = {paths_.begin(), paths_.end()}, .at = *point, .effect = chosen, .nonce = peer->nonce}};
             }
             return DRAGDROP_S_CANCEL;
         }

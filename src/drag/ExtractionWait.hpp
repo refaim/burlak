@@ -27,6 +27,7 @@ namespace burlak::drag
         ExtractionWait(core::IExtractionSession &session, const ExtractionWaitCalls &calls);
 
         [[nodiscard]] bool extract() override;
+        void retain() override;
         void cleanup() override;
         void cancel() noexcept;
         void complete(bool succeeded) noexcept;

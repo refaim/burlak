@@ -21,12 +21,70 @@ namespace
     int panelRedraws{};
     std::wstring peerDirectory;
 
+    class PeerDropPeers final : public burlak::core::IPeers
+    {
+      public:
+        std::optional<burlak::core::PeerAnnouncement> announcement;
+        std::optional<burlak::core::PeerEnvelope> envelope;
+
+        [[nodiscard]] std::wstring_view toolWindowClass() const override
+        {
+            return L"BurlakToolWindow";
+        }
+        [[nodiscard]] bool isAnnouncementMessage(std::uint32_t message) const override
+        {
+            return message == WM_APP + 88;
+        }
+        [[nodiscard]] std::optional<burlak::core::PeerAnnouncement> receiveAnnouncement(std::uint32_t, std::uintptr_t,
+                                                                                        std::intptr_t) override
+        {
+            return std::exchange(announcement, std::nullopt);
+        }
+        [[nodiscard]] std::expected<std::uint64_t, burlak::core::Error> newNonce() const override
+        {
+            return 500;
+        }
+        [[nodiscard]] std::uint32_t processId() const override
+        {
+            return 10;
+        }
+        [[nodiscard]] burlak::core::NativeWindow broadcastTarget() const override
+        {
+            return 99;
+        }
+        void announce(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t) override
+        {
+        }
+        void endAnnouncement(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t) override
+        {
+        }
+        [[nodiscard]] bool reply(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t,
+                                 std::uint64_t) override
+        {
+            return true;
+        }
+        [[nodiscard]] std::optional<burlak::core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
+        {
+            return std::exchange(envelope, std::nullopt);
+        }
+        [[nodiscard]] std::expected<void, burlak::core::Error> send(const burlak::core::Peer &,
+                                                                    const burlak::core::Drop &) override
+        {
+            return {};
+        }
+        [[nodiscard]] burlak::core::PeerMenuChoice menu(burlak::core::NativeWindow, burlak::core::Point) override
+        {
+            return burlak::core::PeerMenuChoice::Cancel;
+        }
+    };
+
     class ExtractionSession final : public burlak::core::IExtractionSession
     {
       public:
         bool accepts{true};
         int requests{};
         int cleanups{};
+        int retained{};
 
         [[nodiscard]] bool requestExtraction() override
         {
@@ -37,6 +95,11 @@ namespace
         void cleanup() override
         {
             ++cleanups;
+        }
+
+        void retain() override
+        {
+            ++retained;
         }
     };
 
@@ -256,6 +319,8 @@ TEST_SUITE("plugin exports")
         CHECK(session.requests == 2);
         wait.cleanup();
         CHECK(session.cleanups == 1);
+        wait.retain();
+        CHECK(session.retained == 1);
 
         session.accepts = false;
         CHECK_FALSE(wait.extract());
@@ -343,7 +408,8 @@ TEST_SUITE("plugin exports")
     {
         PeerScreen screen;
         PeerShell shell;
-        burlak::plugin::composition().usePeerDropAdapters(screen, shell);
+        PeerDropPeers peers;
+        burlak::plugin::composition().usePeerDropAdapters(screen, shell, peers);
         const std::wstring source{L"C:\\source\\received.txt"};
         const std::wstring destination{L"D:\\destination"};
 
@@ -355,11 +421,14 @@ TEST_SUITE("plugin exports")
         SetStartupInfoW(&startupInfo);
         const auto tool = burlak::plugin::composition().toolWindow();
         REQUIRE(tool != 0);
-        const auto bytes =
-            burlak::core::encodePeerDrop({.paths = {source}, .at = {5, 5}, .effect = burlak::core::Effect::Copy});
-        COPYDATASTRUCT copy{.dwData = burlak::adapters::win::peerDropDataKind(),
-                            .cbData = static_cast<DWORD>(bytes.size()),
-                            .lpData = const_cast<std::byte *>(bytes.data())};
+        const burlak::core::PeerIdentity sender{.window = 123, .process = 77};
+        peers.announcement = burlak::core::PeerAnnouncement{
+            .action = burlak::core::PeerAnnouncementAction::Begin, .source = sender, .nonce = 400};
+        REQUIRE(SendMessageW(reinterpret_cast<HWND>(tool), WM_APP + 88, 0, 0) == 1);
+        const burlak::core::Drop drop{
+            .paths = {source}, .at = {5, 5}, .effect = burlak::core::Effect::Copy, .nonce = 500};
+        peers.envelope = burlak::core::PeerEnvelope{.sender = sender, .payload = drop};
+        COPYDATASTRUCT copy{};
         const auto before = synchros;
         REQUIRE(SendMessageW(reinterpret_cast<HWND>(tool), WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
         CHECK(synchros == before + 1);
@@ -376,6 +445,7 @@ TEST_SUITE("plugin exports")
 
         ExitFARW(nullptr);
         peerPanel = false;
+        burlak::plugin::composition().usePeerDropAdapters(screen, shell);
         burlak::plugin::composition().useDefaultAdapters();
     }
 

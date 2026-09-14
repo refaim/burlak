@@ -21,12 +21,15 @@ namespace burlak::plugin
       public:
         Runtime(const PluginStartupInfo &startupInfo,
                 const std::optional<std::reference_wrapper<core::IScreen>> &screenOverride,
-                const std::optional<std::reference_wrapper<core::IShell>> &shellOverride)
+                const std::optional<std::reference_wrapper<core::IShell>> &shellOverride,
+                const std::optional<std::reference_wrapper<core::IPeers>> &peersOverride)
             : startupInfo_{startupInfo}, panels_{startupInfo_}, host_{startupInfo_},
               screen_{screenOverride ? screenOverride->get() : static_cast<core::IScreen &>(realScreen_)},
               shell_{shellOverride ? shellOverride->get() : static_cast<core::IShell &>(realShell_)},
               gesture_{panels_, host_}, session_{panels_, host_, screen_, input_, files_, shell_},
-              extraction_{session_}, peers_{focus_}, tool_{screen_, input_, shell_, session_, extraction_, peers_}
+              extraction_{session_}, realPeers_{focus_},
+              peers_{peersOverride ? peersOverride->get() : static_cast<core::IPeers &>(realPeers_)},
+              tool_{screen_, input_, shell_, session_, extraction_, peers_}
         {
             files_.sweep();
             static_cast<void>(tool_.start());
@@ -85,7 +88,8 @@ namespace burlak::plugin
         core::Gesture gesture_;
         core::Session session_;
         drag::ExtractionWait extraction_;
-        adapters::win::Peers peers_;
+        adapters::win::Peers realPeers_;
+        core::IPeers &peers_;
         drag::ToolWindow tool_;
     };
 
@@ -99,7 +103,7 @@ namespace burlak::plugin
     void Composition::setStartupInfo(const PluginStartupInfo &info)
     {
         reset();
-        runtime_ = std::make_unique<Runtime>(info, screenOverride_, shellOverride_);
+        runtime_ = std::make_unique<Runtime>(info, screenOverride_, shellOverride_, peersOverride_);
     }
 
     void Composition::reset()
@@ -135,6 +139,15 @@ namespace burlak::plugin
         reset();
         screenOverride_ = screen;
         shellOverride_ = shell;
+        peersOverride_.reset();
+    }
+
+    void Composition::usePeerDropAdapters(core::IScreen &screen, core::IShell &shell, core::IPeers &peers)
+    {
+        reset();
+        screenOverride_ = screen;
+        shellOverride_ = shell;
+        peersOverride_ = peers;
     }
 
     void Composition::useDefaultAdapters()
@@ -142,6 +155,7 @@ namespace burlak::plugin
         reset();
         screenOverride_.reset();
         shellOverride_.reset();
+        peersOverride_.reset();
     }
 
     void Composition::synchro()

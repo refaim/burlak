@@ -226,8 +226,32 @@ namespace burlak::core
         NativeWindow host{};
         std::uint64_t lastFocus{};
         std::uint32_t process{};
+        std::uint64_t nonce{};
 
         auto operator<=>(const Peer &) const = default;
+    };
+
+    struct PeerIdentity
+    {
+        NativeWindow window{};
+        std::uint32_t process{};
+
+        auto operator<=>(const PeerIdentity &) const = default;
+    };
+
+    enum class PeerAnnouncementAction : std::uint8_t
+    {
+        Begin,
+        End
+    };
+
+    struct PeerAnnouncement
+    {
+        PeerAnnouncementAction action{PeerAnnouncementAction::Begin};
+        PeerIdentity source{};
+        std::uint64_t nonce{};
+
+        auto operator<=>(const PeerAnnouncement &) const = default;
     };
 
     struct PeerHello
@@ -236,6 +260,8 @@ namespace burlak::core
         NativeWindow tool{};
         NativeWindow host{};
         std::uint64_t lastFocus{};
+        std::uint64_t echoNonce{};
+        std::uint64_t nonce{};
 
         auto operator<=>(const PeerHello &) const = default;
     };
@@ -245,11 +271,36 @@ namespace burlak::core
         std::vector<std::wstring> paths;
         Point at{};
         Effect effect{Effect::None};
+        std::uint64_t nonce{};
 
         auto operator<=>(const Drop &) const = default;
     };
 
     using PeerPayload = std::variant<PeerHello, Drop>;
+
+    struct PeerEnvelope
+    {
+        PeerIdentity sender{};
+        PeerPayload payload;
+
+        auto operator<=>(const PeerEnvelope &) const = default;
+    };
+
+    struct PendingPeerDrop
+    {
+        Drop drop;
+        std::uint32_t sourceProcess{};
+
+        auto operator<=>(const PendingPeerDrop &) const = default;
+    };
+
+    struct AdoptedPeerPaths
+    {
+        std::vector<std::wstring> paths;
+        std::optional<std::wstring> cleanupDirectory;
+
+        auto operator<=>(const AdoptedPeerPaths &) const = default;
+    };
 
     enum class Error : std::uint8_t
     {

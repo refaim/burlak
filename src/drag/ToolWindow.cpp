@@ -27,8 +27,6 @@ namespace burlak::drag
         constexpr UINT armTimeoutMilliseconds = 1000;
         constexpr int startupPollAttempts = 200;
         constexpr DWORD startupPollMilliseconds = 5;
-        constexpr wchar_t toolClass[] = L"BurlakToolWindow";
-
         const ToolWindowCalls systemCalls{CreateThread,    Sleep,        CreateEventW, CreateWindowExW,
                                           IsWindowVisible, SetWindowPos, ShowWindow,   SetCapture,
                                           ReleaseCapture,  SetTimer,     KillTimer,    CoWaitForMultipleHandles};
@@ -205,18 +203,20 @@ namespace burlak::drag
             windowClass.cbSize = sizeof(windowClass);
             windowClass.lpfnWndProc = windowProcedure;
             windowClass.hInstance = GetModuleHandleW(nullptr);
-            windowClass.lpszClassName = toolClass;
+            // IPeers exposes a view backed by a terminated class-name literal for these Win32 calls.
+            windowClass.lpszClassName =
+                peers_.toolWindowClass().data(); // NOLINT(bugprone-suspicious-stringview-data-usage)
             static_cast<void>(RegisterClassExW(&windowClass));
 
-            UniqueWindow ownedWindow{calls_.createWindow(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, toolClass,
-                                                         nullptr, WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
-                                                         windowClass.hInstance, this)};
+            UniqueWindow ownedWindow{calls_.createWindow(
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                peers_.toolWindowClass().data(), // NOLINT(bugprone-suspicious-stringview-data-usage)
+                nullptr, WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, windowClass.hInstance, this)};
             const auto window = ownedWindow.get();
             DragDropRegistration registration;
             if (window != nullptr) {
                 static_cast<void>(SetLayeredWindowAttributes(window, 0, 1, LWA_ALPHA));
                 window_.store(reinterpret_cast<core::NativeWindow>(window));
-                static_cast<void>(peers_.allowMessages(reinterpret_cast<core::NativeWindow>(window)));
                 static_cast<void>(RegisterDragDrop(window, &dropTarget_));
                 registration.reset(window);
             }
@@ -243,31 +243,49 @@ namespace burlak::drag
                 SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
             }
             if (state != nullptr) {
-                return state->handleMessage(window, message, word, number);
+                try {
+                    return state->handleMessage(window, message, word, number);
+                } catch (const std::bad_alloc &) {
+                    return 0;
+                }
             }
             return DefWindowProcW(window, message, word, number);
         }
 
         LRESULT handleMessage(HWND window, UINT message, WPARAM word, LPARAM number)
         {
-            if (message == peers_.announcementMessage()) {
-                if (static_cast<std::uint32_t>(word) != peers_.processId()) {
-                    static_cast<void>(peers_.reply(static_cast<core::NativeWindow>(number),
-                                                   reinterpret_cast<core::NativeWindow>(window)));
+            if (peers_.isAnnouncementMessage(message)) {
+                const auto announcement = peers_.receiveAnnouncement(message, word, number);
+                if (!announcement || announcement->source.process == peers_.processId()) {
+                    return 1;
+                }
+                if (announcement->action == core::PeerAnnouncementAction::End) {
+                    incoming_.end(*announcement);
+                    return 1;
+                }
+                const auto nonce = peers_.newNonce();
+                if (!nonce || !incoming_.begin(*announcement, *nonce)) {
+                    return 0;
+                }
+                if (!peers_.reply(announcement->source.window, reinterpret_cast<core::NativeWindow>(window),
+                                  announcement->nonce, *nonce)) {
+                    incoming_.end(core::PeerAnnouncement{.action = core::PeerAnnouncementAction::End,
+                                                         .source = announcement->source,
+                                                         .nonce = announcement->nonce});
+                    return 0;
                 }
                 return 1;
             }
             if (message == WM_COPYDATA) {
-                const auto payload = peers_.receive(number);
-                if (!payload) {
+                auto envelope = peers_.receive(word, number);
+                if (!envelope) {
                     return 0;
                 }
-                if (std::holds_alternative<core::PeerHello>(*payload)) {
-                    registry_.add(std::get<core::PeerHello>(*payload), peers_.now());
-                } else {
-                    dropSession_.receivePeerDrop(std::get<core::Drop>(*payload));
+                if (std::holds_alternative<core::PeerHello>(envelope->payload)) {
+                    return registry_.add(std::get<core::PeerHello>(envelope->payload), envelope->sender) ? 1 : 0;
                 }
-                return 1;
+                auto accepted = incoming_.accept(envelope->sender, std::get<core::Drop>(std::move(envelope->payload)));
+                return accepted && dropSession_.receivePeerDrop(std::move(*accepted)) ? 1 : 0;
             }
             switch (message) {
             case prepareDragMessage: {
@@ -286,8 +304,11 @@ namespace burlak::drag
                                .value_or(0);
                 dropSession_.prepare(payload.context);
                 data_ = std::move(prepared->data);
-                registry_.clear();
-                peers_.announce(reinterpret_cast<core::NativeWindow>(window), peers_.broadcastTarget());
+                if (const auto nonce = peers_.newNonce()) {
+                    sourceNonce_ = *nonce;
+                    registry_.begin(*nonce);
+                    peers_.announce(reinterpret_cast<core::NativeWindow>(window), peers_.broadcastTarget(), *nonce);
+                }
                 return 1;
             }
             case startDragMessage:
@@ -385,14 +406,21 @@ namespace burlak::drag
 
         void clearDrag(bool preserveExtraction = false)
         {
+            if (sourceNonce_) {
+                peers_.endAnnouncement(window_.load(), peers_.broadcastTarget(), *sourceNonce_);
+                sourceNonce_.reset();
+            }
+            registry_.end();
             data_.reset();
             paths_.clear();
             ownHost_ = 0;
-            if (std::exchange(needsExtraction_, false) && !preserveExtraction) {
-                extraction_.cleanup();
+            if (std::exchange(needsExtraction_, false)) {
+                if (preserveExtraction) {
+                    extraction_.retain();
+                } else {
+                    extraction_.cleanup();
+                }
             }
-            // A peer only queues Far-thread work before WM_COPYDATA returns. Keeping extracted files until the
-            // session's next cleanup prevents the source from deleting them before that Far can start its copy.
         }
 
         core::IScreen &screen_;
@@ -415,6 +443,8 @@ namespace burlak::drag
         std::unique_ptr<core::IShell::DragData> data_;
         core::ReleasePolicy releasePolicy_;
         core::PeerRegistry registry_;
+        core::IncomingPeerRegistry incoming_;
+        std::optional<std::uint64_t> sourceNonce_;
         DropTarget dropTarget_;
     };
 

@@ -4,7 +4,9 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <system_error>
@@ -47,6 +49,16 @@ namespace burlak::adapters::win
                 return std::unexpected(core::Error::Unavailable);
             }
             return directory / L"Burlak";
+        }
+
+        [[nodiscard]] bool extractionRunName(std::wstring_view name, std::uint32_t sourceProcess)
+        {
+            const auto prefix = std::to_wstring(sourceProcess) + L"-";
+            if (!name.starts_with(prefix) || name.size() == prefix.size()) {
+                return false;
+            }
+            return std::ranges::all_of(name.substr(prefix.size()),
+                                       [](wchar_t character) { return character >= L'0' && character <= L'9'; });
         }
 
     } // namespace
@@ -119,6 +131,38 @@ namespace burlak::adapters::win
         return core::expectedOutcome(!error, core::Error::Unavailable);
     }
 
+    core::AdoptedPeerPaths Files::adoptPeerPaths(std::span<const std::wstring> paths, std::uint32_t sourceProcess)
+    {
+        core::AdoptedPeerPaths unchanged{.paths = {paths.begin(), paths.end()}, .cleanupDirectory = std::nullopt};
+        if (root_.empty() || paths.empty()) {
+            return unchanged;
+        }
+        const auto sourceDirectory = std::filesystem::path{paths.front()}.parent_path().lexically_normal();
+        if (sourceDirectory.parent_path() != root_.lexically_normal() ||
+            !extractionRunName(sourceDirectory.filename().wstring(), sourceProcess)) {
+            return unchanged;
+        }
+        for (const auto &path : paths) {
+            const auto candidate = std::filesystem::path{path}.lexically_normal();
+            if (candidate.parent_path() != sourceDirectory) {
+                return unchanged;
+            }
+        }
+
+        const auto destination = root_ / (std::to_wstring(process_) + L"-peer-" + std::to_wstring(++peerSequence_));
+        core::AdoptedPeerPaths adopted{.paths = {}, .cleanupDirectory = destination.wstring()};
+        adopted.paths.reserve(paths.size());
+        for (const auto &path : paths) {
+            adopted.paths.push_back((destination / std::filesystem::path{path}.filename()).wstring());
+        }
+        // Both names are under the user's one temporary root, so this directory move is an atomic same-volume
+        // ownership transfer. A failure deliberately leaves the sender's names usable until that process exits.
+        if (MoveFileExW(sourceDirectory.c_str(), destination.c_str(), 0) == FALSE) {
+            return unchanged;
+        }
+        return adopted;
+    }
+
     void Files::sweep()
     {
         if (root_.empty()) {
@@ -140,7 +184,12 @@ namespace burlak::adapters::win
                 continue;
             }
             const bool alive = *owner == process_ || processProbe_(*owner);
-            if (core::shouldSweepRun(entry->path().filename().wstring(), process_, alive)) {
+            const auto written = entry->last_write_time(error);
+            const auto cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::minutes{10};
+            const std::array ages{written <= cutoff, false};
+            const bool oldEnough = ages[static_cast<std::size_t>(static_cast<bool>(error))];
+            error.clear();
+            if (core::shouldSweepRun(entry->path().filename().wstring(), alive, oldEnough)) {
                 static_cast<void>(std::filesystem::remove_all(entry->path(), error));
                 error.clear();
             }

@@ -46,8 +46,9 @@ namespace burlak::drag
                 return dropped;
             }
 
-            void receivePeerDrop(core::Drop) override
+            [[nodiscard]] bool receivePeerDrop(core::PendingPeerDrop) override
             {
+                return true;
             }
         };
 

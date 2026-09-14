@@ -3,7 +3,10 @@
 #include "adapters/win/Focus.hpp"
 #include "core/Interfaces.hpp"
 
+#include <bcrypt.h>
 #include <windows.h>
+
+#include <array>
 
 namespace burlak::adapters::win
 {
@@ -11,11 +14,12 @@ namespace burlak::adapters::win
     struct PeerCalls
     {
         decltype(&RegisterWindowMessageW) registerMessage;
-        decltype(&ChangeWindowMessageFilterEx) changeFilter;
         decltype(&PostMessageW) postMessage;
-        decltype(&SendMessageW) sendMessage;
+        decltype(&SendMessageTimeoutW) sendMessageTimeout;
         decltype(&GetCurrentProcessId) getProcessId;
-        decltype(&GetTickCount64) getTickCount;
+        decltype(&GetClassNameW) getClassName;
+        decltype(&GetWindowThreadProcessId) getWindowProcess;
+        decltype(&BCryptGenRandom) random;
         decltype(&GetConsoleWindow) getConsoleWindow;
         decltype(&IsWindowVisible) isWindowVisible;
         decltype(&GetWindowRect) getWindowRect;
@@ -33,30 +37,47 @@ namespace burlak::adapters::win
         explicit Peers(Focus &focus);
         Peers(Focus &focus, const PeerCalls &calls);
 
-        [[nodiscard]] std::uint32_t announcementMessage() const override;
+        [[nodiscard]] std::wstring_view toolWindowClass() const override;
+        [[nodiscard]] bool isAnnouncementMessage(std::uint32_t message) const override;
+        [[nodiscard]] std::optional<core::PeerAnnouncement> receiveAnnouncement(std::uint32_t message,
+                                                                                std::uintptr_t word,
+                                                                                std::intptr_t number) override;
+        [[nodiscard]] std::expected<std::uint64_t, core::Error> newNonce() const override;
         [[nodiscard]] std::uint32_t processId() const override;
-        [[nodiscard]] std::uint64_t now() const override;
         [[nodiscard]] core::NativeWindow broadcastTarget() const override;
-        [[nodiscard]] bool allowMessages(core::NativeWindow tool) override;
-        void announce(core::NativeWindow source, core::NativeWindow target) override;
-        [[nodiscard]] bool reply(core::NativeWindow target, core::NativeWindow tool) override;
-        [[nodiscard]] std::optional<core::PeerPayload> receive(std::intptr_t nativePayload) override;
+        void announce(core::NativeWindow source, core::NativeWindow target, std::uint64_t nonce) override;
+        void endAnnouncement(core::NativeWindow source, core::NativeWindow target, std::uint64_t nonce) override;
+        [[nodiscard]] bool reply(core::NativeWindow target, core::NativeWindow tool, std::uint64_t echoNonce,
+                                 std::uint64_t nonce) override;
+        [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t sender,
+                                                                std::intptr_t nativePayload) override;
         [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &peer, const core::Drop &drop) override;
         [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow owner, core::Point point) override;
 
       private:
         [[nodiscard]] core::NativeWindow hostWindow() const;
+        [[nodiscard]] std::optional<core::PeerIdentity> toolIdentity(core::NativeWindow window) const;
+        void postAnnouncement(core::PeerAnnouncementAction action, core::NativeWindow source, core::NativeWindow target,
+                              std::uint64_t nonce);
         [[nodiscard]] bool sendBytes(core::NativeWindow target, std::uintptr_t kind,
                                      std::span<const std::byte> bytes) const;
 
+        struct AnnouncementHalf
+        {
+            core::PeerIdentity source{};
+            std::uint32_t low{};
+        };
+
         Focus &focus_;
         const PeerCalls &calls_;
-        std::uint32_t announcement_{};
+        std::array<std::uint32_t, 4> announcements_{};
+        std::array<std::optional<AnnouncementHalf>, 2> pendingAnnouncements_{};
         core::NativeWindow tool_{};
     };
 
     [[nodiscard]] const PeerCalls &systemPeerCalls();
     [[nodiscard]] std::uintptr_t peerHelloDataKind();
     [[nodiscard]] std::uintptr_t peerDropDataKind();
+    [[nodiscard]] std::uint32_t peerSendTimeoutMilliseconds();
 
 } // namespace burlak::adapters::win

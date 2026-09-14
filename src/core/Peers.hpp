@@ -13,27 +13,46 @@
 namespace burlak::core
 {
 
-    inline constexpr std::uint64_t peerExpiryTicks = 5000;
+    inline constexpr std::size_t peerRegistryLimit = 64;
 
     class PeerRegistry final
     {
       public:
-        void add(const PeerHello &hello, std::uint64_t now);
-        void expire(std::uint64_t now);
-        void clear();
-        [[nodiscard]] std::optional<Peer> select(NativeWindow host, NativeWindow ownHost, std::uint64_t now);
+        void begin(std::uint64_t nonce);
+        void end();
+        [[nodiscard]] bool add(const PeerHello &hello, PeerIdentity sender);
+        [[nodiscard]] std::optional<Peer> select(NativeWindow host, NativeWindow ownHost) const;
         [[nodiscard]] std::size_t size() const;
 
       private:
         struct Entry
         {
             Peer peer;
-            std::uint64_t seen{};
             std::uint64_t order{};
         };
 
         std::vector<Entry> entries_;
+        std::optional<std::uint64_t> nonce_;
         std::uint64_t nextOrder_{};
+    };
+
+    class IncomingPeerRegistry final
+    {
+      public:
+        [[nodiscard]] bool begin(const PeerAnnouncement &announcement, std::uint64_t receiverNonce);
+        void end(const PeerAnnouncement &announcement);
+        [[nodiscard]] std::optional<PendingPeerDrop> accept(PeerIdentity sender, Drop drop);
+        [[nodiscard]] std::size_t size() const;
+
+      private:
+        struct Entry
+        {
+            PeerIdentity source{};
+            std::uint64_t sourceNonce{};
+            std::uint64_t receiverNonce{};
+        };
+
+        std::vector<Entry> entries_;
     };
 
     enum class PeerMenuChoice : std::uint8_t

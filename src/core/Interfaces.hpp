@@ -88,20 +88,28 @@ namespace burlak::core
                                                                              bool directory) = 0;
         [[nodiscard]] virtual bool nameBefore(std::wstring_view left, std::wstring_view right) const = 0;
         [[nodiscard]] virtual std::expected<void, Error> removeTree(std::wstring_view path) = 0;
+        [[nodiscard]] virtual AdoptedPeerPaths adoptPeerPaths(std::span<const std::wstring> paths,
+                                                              std::uint32_t sourceProcess) = 0;
         virtual void sweep() = 0;
     };
 
     class IPeers
     {
       public:
-        [[nodiscard]] virtual std::uint32_t announcementMessage() const = 0;
+        [[nodiscard]] virtual std::wstring_view toolWindowClass() const = 0;
+        [[nodiscard]] virtual bool isAnnouncementMessage(std::uint32_t message) const = 0;
+        [[nodiscard]] virtual std::optional<PeerAnnouncement> receiveAnnouncement(std::uint32_t message,
+                                                                                  std::uintptr_t word,
+                                                                                  std::intptr_t number) = 0;
+        [[nodiscard]] virtual std::expected<std::uint64_t, Error> newNonce() const = 0;
         [[nodiscard]] virtual std::uint32_t processId() const = 0;
-        [[nodiscard]] virtual std::uint64_t now() const = 0;
         [[nodiscard]] virtual NativeWindow broadcastTarget() const = 0;
-        [[nodiscard]] virtual bool allowMessages(NativeWindow tool) = 0;
-        virtual void announce(NativeWindow source, NativeWindow target) = 0;
-        [[nodiscard]] virtual bool reply(NativeWindow target, NativeWindow tool) = 0;
-        [[nodiscard]] virtual std::optional<PeerPayload> receive(std::intptr_t nativePayload) = 0;
+        virtual void announce(NativeWindow source, NativeWindow target, std::uint64_t nonce) = 0;
+        virtual void endAnnouncement(NativeWindow source, NativeWindow target, std::uint64_t nonce) = 0;
+        [[nodiscard]] virtual bool reply(NativeWindow target, NativeWindow tool, std::uint64_t echoNonce,
+                                         std::uint64_t nonce) = 0;
+        [[nodiscard]] virtual std::optional<PeerEnvelope> receive(std::uintptr_t sender,
+                                                                  std::intptr_t nativePayload) = 0;
         [[nodiscard]] virtual std::expected<void, Error> send(const Peer &peer, const Drop &drop) = 0;
         [[nodiscard]] virtual PeerMenuChoice menu(NativeWindow owner, Point point) = 0;
     };
@@ -123,6 +131,7 @@ namespace burlak::core
       public:
         virtual ~IExtraction() = default;
         [[nodiscard]] virtual bool extract() = 0;
+        virtual void retain() = 0;
         virtual void cleanup() = 0;
     };
 
@@ -131,6 +140,7 @@ namespace burlak::core
       public:
         virtual ~IExtractionSession() = default;
         [[nodiscard]] virtual bool requestExtraction() = 0;
+        virtual void retain() = 0;
         virtual void cleanup() = 0;
     };
 
@@ -140,7 +150,7 @@ namespace burlak::core
         virtual void prepare(DropContext context) = 0;
         [[nodiscard]] virtual Effect effect(Point point, bool shift) const = 0;
         [[nodiscard]] virtual Effect drop(Point point, bool shift) = 0;
-        virtual void receivePeerDrop(Drop drop) = 0;
+        [[nodiscard]] virtual bool receivePeerDrop(PendingPeerDrop drop) = 0;
     };
 
 } // namespace burlak::core

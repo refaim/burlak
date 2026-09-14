@@ -199,15 +199,18 @@ namespace burlak::core
         return decision.effect;
     }
 
-    void Session::receivePeerDrop(Drop drop)
+    bool Session::receivePeerDrop(PendingPeerDrop drop)
     {
-        {
-            const std::lock_guard lock{pendingMutex_};
-            // The protocol accepts any sender process: it can only name source paths and request a copy into the
-            // real directory currently displayed by this Far, which is revalidated on Far's own thread below.
-            pendingPeerDrop_ = std::move(drop);
+        std::unique_lock lock{pendingMutex_};
+        // Any same-integrity process that completes the one-drag protocol can name source paths, but it can
+        // only request a copy into the real directory this Far revalidates on its own thread below.
+        if (pendingPeerDrops_.size() == peerRegistryLimit) {
+            return false;
         }
+        pendingPeerDrops_.push_back(std::move(drop));
+        lock.unlock();
         host_.postSynchro();
+        return true;
     }
 
     bool Session::requestExtraction()
@@ -228,13 +231,15 @@ namespace burlak::core
     {
         std::optional<std::wstring> extraction;
         std::optional<PendingDrop> pending;
-        std::optional<Drop> peerDrop;
+        std::optional<PendingPeerDrop> peerDrop;
         {
             const std::lock_guard lock{pendingMutex_};
             extraction = std::exchange(pendingExtraction_, std::nullopt);
             if (!extraction) {
-                peerDrop = std::exchange(pendingPeerDrop_, std::nullopt);
-                if (!peerDrop) {
+                if (!pendingPeerDrops_.empty()) {
+                    peerDrop = std::move(pendingPeerDrops_.front());
+                    pendingPeerDrops_.pop_front();
+                } else {
                     pending = std::exchange(pendingDrop_, std::nullopt);
                 }
             }
@@ -252,23 +257,28 @@ namespace burlak::core
                 .value_or(false);
         }
         if (peerDrop) {
-            const auto host = screen_.hostWindowAt(peerDrop->at);
+            const auto host = screen_.hostWindowAt(peerDrop->drop.at);
             if (!host) {
                 reportPeerRefusal(host_, refusalText(PeerDropRefusal::HostUnavailable));
                 return std::nullopt;
             }
-            const auto geometry = screen_.cellGeometryAt(peerDrop->at);
+            const auto geometry = screen_.cellGeometryAt(peerDrop->drop.at);
             const PeerReceiveContext context{
                 .panelsWindow = panels_.currentWindowIsPanels(),
                 .panels = {panels_.panel(PanelSide::Active), panels_.panel(PanelSide::Passive)},
                 .directories = {panels_.directory(PanelSide::Active), panels_.directory(PanelSide::Passive)},
                 .geometry = geometry ? std::optional{*geometry} : std::nullopt};
-            const auto destination = peerDropPolicy_.destination(context, peerDrop->at);
+            const auto destination = peerDropPolicy_.destination(context, peerDrop->drop.at);
             if (!destination) {
                 reportPeerRefusal(host_, refusalText(destination.error()));
                 return std::nullopt;
             }
-            if (!shell_.copy(peerDrop->paths, destination->directory, peerDrop->effect, host->handle)) {
+            auto adopted = files_.adoptPeerPaths(peerDrop->drop.paths, peerDrop->sourceProcess);
+            const auto copied = shell_.copy(adopted.paths, destination->directory, peerDrop->drop.effect, host->handle);
+            if (adopted.cleanupDirectory) {
+                static_cast<void>(files_.removeTree(*adopted.cleanupDirectory));
+            }
+            if (!copied) {
                 reportPeerRefusal(host_, L"the shell copy failed");
                 return std::nullopt;
             }
@@ -381,6 +391,14 @@ namespace burlak::core
             // Drop targets may keep reading after OLE returns; a sharing failure is intentionally left for sweep.
             static_cast<void>(files_.removeTree(*directory));
         }
+    }
+
+    void Session::retain()
+    {
+        const std::lock_guard lock{pendingMutex_};
+        // A successful peer handoff transfers the run by rename. If that rename later fails, leaving the source
+        // run here lets the receiving shell finish even when this drag session or Far shuts down meanwhile.
+        cleanupDirectory_.reset();
     }
 
 } // namespace burlak::core

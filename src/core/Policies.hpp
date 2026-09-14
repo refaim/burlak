@@ -52,6 +52,6 @@ namespace burlak::core
     [[nodiscard]] std::expected<void, Error> extractionOutcome(bool crashed, std::intptr_t result);
     [[nodiscard]] bool allPathsAdvertised(std::size_t requested, std::size_t parsed);
     [[nodiscard]] std::optional<std::uint32_t> runOwner(std::wstring_view name);
-    [[nodiscard]] bool shouldSweepRun(std::wstring_view name, std::uint32_t currentProcess, bool ownerAlive);
+    [[nodiscard]] bool shouldSweepRun(std::wstring_view name, bool ownerAlive, bool oldEnough);
 
 } // namespace burlak::core

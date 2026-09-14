@@ -9,32 +9,43 @@
 namespace burlak::core
 {
 
-    void PeerRegistry::add(const PeerHello &hello, std::uint64_t now)
+    void PeerRegistry::begin(std::uint64_t nonce)
     {
+        entries_.clear();
+        nextOrder_ = 0;
+        nonce_ = nonce == 0 ? std::nullopt : std::optional{nonce};
+    }
+
+    void PeerRegistry::end()
+    {
+        entries_.clear();
+        nonce_.reset();
+    }
+
+    bool PeerRegistry::add(const PeerHello &hello, PeerIdentity sender)
+    {
+        if (!nonce_ || hello.echoNonce != *nonce_ || hello.nonce == 0 || sender.process == 0 || sender.window == 0 ||
+            sender.process != hello.process || sender.window != hello.tool) {
+            return false;
+        }
         const auto samePeer = [&](const Entry &entry) {
             return entry.peer.process == hello.process && entry.peer.window == hello.tool;
         };
         std::erase_if(entries_, samePeer);
-        entries_.push_back(Entry{
-            .peer = {.window = hello.tool, .host = hello.host, .lastFocus = hello.lastFocus, .process = hello.process},
-            .seen = now,
-            .order = nextOrder_++});
+        if (entries_.size() == peerRegistryLimit) {
+            entries_.erase(entries_.begin());
+        }
+        entries_.push_back(Entry{.peer = {.window = hello.tool,
+                                          .host = hello.host,
+                                          .lastFocus = hello.lastFocus,
+                                          .process = hello.process,
+                                          .nonce = hello.nonce},
+                                 .order = nextOrder_++});
+        return true;
     }
 
-    void PeerRegistry::expire(std::uint64_t now)
+    std::optional<Peer> PeerRegistry::select(NativeWindow host, NativeWindow ownHost) const
     {
-        std::erase_if(entries_,
-                      [now](const Entry &entry) { return now >= entry.seen && now - entry.seen > peerExpiryTicks; });
-    }
-
-    void PeerRegistry::clear()
-    {
-        entries_.clear();
-    }
-
-    std::optional<Peer> PeerRegistry::select(NativeWindow host, NativeWindow ownHost, std::uint64_t now)
-    {
-        expire(now);
         if (host == ownHost) {
             return std::nullopt;
         }
@@ -55,6 +66,50 @@ namespace burlak::core
     }
 
     std::size_t PeerRegistry::size() const
+    {
+        return entries_.size();
+    }
+
+    bool IncomingPeerRegistry::begin(const PeerAnnouncement &announcement, std::uint64_t receiverNonce)
+    {
+        if (announcement.action != PeerAnnouncementAction::Begin || announcement.source.process == 0 ||
+            announcement.source.window == 0 || announcement.nonce == 0 || receiverNonce == 0) {
+            return false;
+        }
+        const auto sameSource = [&](const Entry &entry) { return entry.source == announcement.source; };
+        std::erase_if(entries_, sameSource);
+        if (entries_.size() == peerRegistryLimit) {
+            entries_.erase(entries_.begin());
+        }
+        entries_.push_back(
+            Entry{.source = announcement.source, .sourceNonce = announcement.nonce, .receiverNonce = receiverNonce});
+        return true;
+    }
+
+    void IncomingPeerRegistry::end(const PeerAnnouncement &announcement)
+    {
+        if (announcement.action != PeerAnnouncementAction::End) {
+            return;
+        }
+        std::erase_if(entries_, [&](const Entry &entry) {
+            return entry.source == announcement.source && entry.sourceNonce == announcement.nonce;
+        });
+    }
+
+    std::optional<PendingPeerDrop> IncomingPeerRegistry::accept(PeerIdentity sender, Drop drop)
+    {
+        const auto entry = std::find_if(entries_.begin(), entries_.end(), [&](const Entry &candidate) {
+            return candidate.source == sender && candidate.receiverNonce == drop.nonce;
+        });
+        if (entry == entries_.end()) {
+            return std::nullopt;
+        }
+        const auto process = entry->source.process;
+        entries_.erase(entry);
+        return PendingPeerDrop{.drop = std::move(drop), .sourceProcess = process};
+    }
+
+    std::size_t IncomingPeerRegistry::size() const
     {
         return entries_.size();
     }

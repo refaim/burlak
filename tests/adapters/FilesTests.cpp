@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -136,26 +137,83 @@ namespace burlak::adapters::win
             CloseHandle(lock);
         }
 
-        TEST_CASE("sweep removes this process and dead owners but preserves live and unrelated runs")
+        TEST_CASE("sweep removes only old runs whose owner is dead")
         {
             DirectoryGuard root{testRoot()};
             std::filesystem::create_directories(root.path() / L"700-old");
             std::filesystem::create_directories(root.path() / L"701-old");
             std::filesystem::create_directories(root.path() / L"702-old");
+            std::filesystem::create_directories(root.path() / L"702-recent");
             std::filesystem::create_directories(root.path() / L"noise");
             std::ofstream unrelatedFile{root.path() / L"703-file"};
             unrelatedFile.close();
+            const auto old = std::filesystem::file_time_type::clock::now() - std::chrono::minutes{11};
+            std::filesystem::last_write_time(root.path() / L"700-old", old);
+            std::filesystem::last_write_time(root.path() / L"701-old", old);
+            std::filesystem::last_write_time(root.path() / L"702-old", old);
             checkedProcesses.clear();
 
             Files files{root.path(), 700, fakeProcessAlive};
             files.sweep();
 
-            CHECK_FALSE(std::filesystem::exists(root.path() / L"700-old"));
+            CHECK(std::filesystem::exists(root.path() / L"700-old"));
             CHECK(std::filesystem::exists(root.path() / L"701-old"));
             CHECK_FALSE(std::filesystem::exists(root.path() / L"702-old"));
+            CHECK(std::filesystem::exists(root.path() / L"702-recent"));
             CHECK(std::filesystem::exists(root.path() / L"noise"));
             CHECK(std::filesystem::exists(root.path() / L"703-file"));
-            CHECK(checkedProcesses == std::vector<std::uint32_t>{701, 702});
+            CHECK(checkedProcesses == std::vector<std::uint32_t>{701, 702, 702});
+        }
+
+        TEST_CASE("peer extraction runs transfer by directory rename and ordinary paths stay untouched")
+        {
+            DirectoryGuard root{testRoot()};
+            const auto source = root.path() / L"702-1";
+            std::filesystem::create_directories(source);
+            std::ofstream{source / L"one.txt"} << "one";
+            std::filesystem::create_directory(source / L"folder");
+            Files files{root.path(), 700, fakeProcessAlive};
+            const std::vector<std::wstring> sourcePaths{(source / L"one.txt").wstring(),
+                                                        (source / L"folder").wstring()};
+
+            const auto adopted = files.adoptPeerPaths(sourcePaths, 702);
+            REQUIRE(adopted.cleanupDirectory.has_value());
+            CHECK(std::filesystem::path{*adopted.cleanupDirectory}.filename() == L"700-peer-1");
+            CHECK_FALSE(std::filesystem::exists(source));
+            CHECK(std::filesystem::is_regular_file(adopted.paths[0]));
+            CHECK(std::filesystem::is_directory(adopted.paths[1]));
+
+            const std::vector<std::wstring> ordinary{L"C:\\source\\one.txt"};
+            CHECK(files.adoptPeerPaths(ordinary, 702) ==
+                  core::AdoptedPeerPaths{.paths = ordinary, .cleanupDirectory = std::nullopt});
+        }
+
+        TEST_CASE("a failed peer-run rename leaves the source paths in place")
+        {
+            DirectoryGuard root{testRoot()};
+            const auto missingRun = root.path() / L"702-1";
+            const std::vector<std::wstring> paths{(missingRun / L"one.txt").wstring()};
+            Files files{root.path(), 700, fakeProcessAlive};
+
+            CHECK(files.adoptPeerPaths(paths, 702) ==
+                  core::AdoptedPeerPaths{.paths = paths, .cleanupDirectory = std::nullopt});
+
+            const std::vector<std::wstring> empty;
+            CHECK(files.adoptPeerPaths(empty, 702) ==
+                  core::AdoptedPeerPaths{.paths = empty, .cleanupDirectory = std::nullopt});
+            Files noRoot{std::filesystem::path{}, 700, fakeProcessAlive};
+            CHECK(noRoot.adoptPeerPaths(paths, 702) ==
+                  core::AdoptedPeerPaths{.paths = paths, .cleanupDirectory = std::nullopt});
+
+            for (const auto &name : {L"other-1", L"702-", L"702-peer-1", L"702-!"}) {
+                const std::vector<std::wstring> invalid{(root.path() / name / L"one.txt").wstring()};
+                CHECK(files.adoptPeerPaths(invalid, 702) ==
+                      core::AdoptedPeerPaths{.paths = invalid, .cleanupDirectory = std::nullopt});
+            }
+            const std::vector<std::wstring> splitRuns{(root.path() / L"702-1" / L"one.txt").wstring(),
+                                                      (root.path() / L"702-2" / L"two.txt").wstring()};
+            CHECK(files.adoptPeerPaths(splitRuns, 702) ==
+                  core::AdoptedPeerPaths{.paths = splitRuns, .cleanupDirectory = std::nullopt});
         }
 
         TEST_CASE("filesystem failures stay expected and an absent sweep root is harmless")

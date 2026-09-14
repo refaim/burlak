@@ -5,7 +5,9 @@
 
 #include <windows.h>
 
+#include <cstring>
 #include <optional>
+#include <vector>
 
 namespace burlak::adapters::win
 {
@@ -14,23 +16,51 @@ namespace burlak::adapters::win
     {
 
         std::uint64_t fakeTick{123};
+        std::uint64_t fakeNonce{0x1122334455667788ULL};
+        NTSTATUS randomStatus{};
         HWND fakeConsole{};
         HWND fakeOwner{};
         bool fakeVisible{true};
         bool fakeRectSucceeds{true};
         RECT fakeRect{1, 2, 101, 202};
-        std::vector<UINT> allowedMessages;
-        bool filterSucceeds{true};
-        int filterCalls{};
-        int filterFailure{};
         UINT menuCommand{};
         bool foregroundCalled{};
         int appendCalls{};
         int appendFailure{};
+        int timedSendCalls{};
+        UINT timedSendFlags{};
+        UINT timedSendTimeout{};
+        bool timedSendFails{};
+        bool timedSendRejects{};
+        int registerCalls{};
 
         ULONGLONG WINAPI tick()
         {
             return fakeTick;
+        }
+
+        NTSTATUS WINAPI randomBytes(BCRYPT_ALG_HANDLE, PUCHAR buffer, ULONG size, ULONG flags)
+        {
+            CHECK(size == sizeof(fakeNonce));
+            CHECK(flags == BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+            std::memcpy(buffer, &fakeNonce, sizeof(fakeNonce));
+            return randomStatus;
+        }
+
+        LRESULT WINAPI timedSend(HWND window, UINT message, WPARAM word, LPARAM number, UINT flags, UINT timeout,
+                                 PDWORD_PTR result)
+        {
+            ++timedSendCalls;
+            timedSendFlags = flags;
+            timedSendTimeout = timeout;
+            if (timedSendFails) {
+                return 0;
+            }
+            if (timedSendRejects) {
+                *result = 0;
+                return 1;
+            }
+            return SendMessageTimeoutW(window, message, word, number, flags, timeout, result);
         }
 
         HWND WINAPI consoleWindow()
@@ -52,14 +82,6 @@ namespace burlak::adapters::win
         {
             *rect = fakeRect;
             return fakeRectSucceeds ? TRUE : FALSE;
-        }
-
-        BOOL WINAPI allowMessage(HWND, UINT message, DWORD action, PCHANGEFILTERSTRUCT)
-        {
-            CHECK(action == MSGFLT_ALLOW);
-            allowedMessages.push_back(message);
-            ++filterCalls;
-            return filterSucceeds && filterCalls != filterFailure ? TRUE : FALSE;
         }
 
         BOOL WINAPI chooseMenu(HMENU, UINT flags, int x, int y, int, HWND, const RECT *)
@@ -94,10 +116,31 @@ namespace burlak::adapters::win
             return 0;
         }
 
+        UINT WINAPI partialRegisterMessage(LPCWSTR name)
+        {
+            ++registerCalls;
+            return registerCalls == 2 ? 0 : RegisterWindowMessageW(name);
+        }
+
+        DWORD WINAPI failWindowProcess(HWND, LPDWORD process)
+        {
+            *process = 0;
+            return 0;
+        }
+
+        DWORD WINAPI zeroWindowProcess(HWND, LPDWORD process)
+        {
+            *process = 0;
+            return 1;
+        }
+
         struct Router
         {
             Peers *peers{};
-            std::optional<core::PeerPayload> received;
+            std::optional<core::PeerEnvelope> received;
+            std::optional<core::PeerAnnouncement> announcement;
+            std::uint64_t receiverNonce{222};
+            bool answer{true};
         };
 
         LRESULT CALLBACK routerProcedure(HWND window, UINT message, WPARAM word, LPARAM number)
@@ -109,26 +152,34 @@ namespace burlak::adapters::win
                 SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(router));
             }
             if (router != nullptr && router->peers != nullptr) {
-                if (message == router->peers->announcementMessage()) {
-                    return router->peers->reply(static_cast<core::NativeWindow>(number),
-                                                reinterpret_cast<core::NativeWindow>(window))
-                               ? 1
-                               : 0;
+                if (router->peers->isAnnouncementMessage(message)) {
+                    const auto announcement = router->peers->receiveAnnouncement(message, word, number);
+                    if (announcement) {
+                        router->announcement = announcement;
+                        if (router->answer && announcement->action == core::PeerAnnouncementAction::Begin) {
+                            return router->peers->reply(announcement->source.window,
+                                                        reinterpret_cast<core::NativeWindow>(window),
+                                                        announcement->nonce, router->receiverNonce)
+                                       ? 1
+                                       : 0;
+                        }
+                    }
+                    return 1;
                 }
                 if (message == WM_COPYDATA) {
-                    router->received = router->peers->receive(number);
+                    router->received = router->peers->receive(word, number);
                     return router->received ? 1 : 0;
                 }
             }
             return DefWindowProcW(window, message, word, number);
         }
 
-        HWND routerWindow(Router &router)
+        HWND routerWindow(Router &router, std::wstring_view className = L"BurlakToolWindow")
         {
             WNDCLASSW windowClass{};
             windowClass.lpfnWndProc = routerProcedure;
             windowClass.hInstance = GetModuleHandleW(nullptr);
-            windowClass.lpszClassName = L"BurlakPeerAdapterTest";
+            windowClass.lpszClassName = className.data();
             static_cast<void>(RegisterClassW(&windowClass));
             return CreateWindowExW(0, windowClass.lpszClassName, L"", WS_POPUP, 0, 0, 10, 10, nullptr, nullptr,
                                    windowClass.hInstance, &router);
@@ -137,8 +188,8 @@ namespace burlak::adapters::win
         PeerCalls fakeHostCalls()
         {
             auto calls = systemPeerCalls();
-            calls.changeFilter = allowMessage;
-            calls.getTickCount = tick;
+            calls.sendMessageTimeout = timedSend;
+            calls.random = randomBytes;
             calls.getConsoleWindow = consoleWindow;
             calls.isWindowVisible = visible;
             calls.getWindowRect = windowRect;
@@ -146,11 +197,13 @@ namespace burlak::adapters::win
             return calls;
         }
 
-        void pumpOneMessage()
+        void pumpMessages(std::size_t count)
         {
-            MSG message{};
-            REQUIRE(PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE);
-            static_cast<void>(DispatchMessageW(&message));
+            for (std::size_t index = 0; index < count; ++index) {
+                MSG message{};
+                REQUIRE(PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE);
+                static_cast<void>(DispatchMessageW(&message));
+            }
         }
 
     } // namespace
@@ -168,7 +221,7 @@ namespace burlak::adapters::win
             CHECK(systemFocusCalls().tickCount == GetTickCount64);
         }
 
-        TEST_CASE("two real tool windows announce, answer, and send a drop without broadcasting")
+        TEST_CASE("two real tool windows complete a nonce-bound exchange without broadcasting")
         {
             Focus firstFocus;
             Focus secondFocus;
@@ -181,33 +234,51 @@ namespace burlak::adapters::win
             Peers second{secondFocus, calls};
             firstRouter.peers = &first;
             secondRouter.peers = &second;
-            const HWND firstWindow = routerWindow(firstRouter);
-            const HWND secondWindow = routerWindow(secondRouter);
+            const HWND firstWindow = routerWindow(firstRouter, first.toolWindowClass());
+            const HWND secondWindow = routerWindow(secondRouter, second.toolWindowClass());
             REQUIRE(firstWindow != nullptr);
             REQUIRE(secondWindow != nullptr);
             fakeConsole = secondWindow;
-            allowedMessages.clear();
-            filterSucceeds = true;
-            CHECK(first.allowMessages(reinterpret_cast<core::NativeWindow>(firstWindow)));
+            timedSendCalls = 0;
+            timedSendFails = false;
+            timedSendRejects = false;
             CHECK(first.broadcastTarget() == reinterpret_cast<core::NativeWindow>(HWND_BROADCAST));
-            CHECK(allowedMessages == std::vector<UINT>{first.announcementMessage(), WM_COPYDATA});
 
+            constexpr std::uint64_t sourceNonce = 0x8877665544332211ULL;
             first.announce(reinterpret_cast<core::NativeWindow>(firstWindow),
-                           reinterpret_cast<core::NativeWindow>(secondWindow));
-            pumpOneMessage();
+                           reinterpret_cast<core::NativeWindow>(secondWindow), sourceNonce);
+            pumpMessages(2);
+            REQUIRE(secondRouter.announcement.has_value());
+            CHECK(secondRouter.announcement->nonce == sourceNonce);
             REQUIRE(firstRouter.received.has_value());
-            REQUIRE(std::holds_alternative<core::PeerHello>(*firstRouter.received));
-            const auto hello = std::get<core::PeerHello>(*firstRouter.received);
+            REQUIRE(std::holds_alternative<core::PeerHello>(firstRouter.received->payload));
+            const auto hello = std::get<core::PeerHello>(firstRouter.received->payload);
+            CHECK(firstRouter.received->sender ==
+                  core::PeerIdentity{reinterpret_cast<core::NativeWindow>(secondWindow), GetCurrentProcessId()});
             CHECK(hello.process == GetCurrentProcessId());
             CHECK(hello.tool == reinterpret_cast<core::NativeWindow>(secondWindow));
             CHECK(hello.host == reinterpret_cast<core::NativeWindow>(secondWindow));
+            CHECK(hello.echoNonce == sourceNonce);
+            CHECK(hello.nonce == secondRouter.receiverNonce);
+            CHECK(timedSendFlags == (SMTO_ABORTIFHUNG | SMTO_BLOCK));
+            CHECK(timedSendTimeout == peerSendTimeoutMilliseconds());
 
-            const core::Peer peer{.window = reinterpret_cast<core::NativeWindow>(secondWindow)};
-            const core::Drop drop{.paths = {L"C:\\one.txt"}, .at = {5, 6}, .effect = core::Effect::Copy};
+            const core::Peer peer{.window = reinterpret_cast<core::NativeWindow>(secondWindow),
+                                  .nonce = secondRouter.receiverNonce};
+            const core::Drop drop{.paths = {L"C:\\one.txt"},
+                                  .at = {5, 6},
+                                  .effect = core::Effect::Copy,
+                                  .nonce = secondRouter.receiverNonce};
             CHECK(first.send(peer, drop).has_value());
             REQUIRE(secondRouter.received.has_value());
-            REQUIRE(std::holds_alternative<core::Drop>(*secondRouter.received));
-            CHECK(std::get<core::Drop>(*secondRouter.received) == drop);
+            REQUIRE(std::holds_alternative<core::Drop>(secondRouter.received->payload));
+            CHECK(std::get<core::Drop>(secondRouter.received->payload) == drop);
+
+            first.endAnnouncement(reinterpret_cast<core::NativeWindow>(firstWindow),
+                                  reinterpret_cast<core::NativeWindow>(secondWindow), sourceNonce);
+            pumpMessages(2);
+            CHECK(secondRouter.announcement->action == core::PeerAnnouncementAction::End);
+            CHECK(timedSendCalls == 2);
 
             DestroyWindow(secondWindow);
             DestroyWindow(firstWindow);
@@ -222,82 +293,162 @@ namespace burlak::adapters::win
             Peers peers{focus, calls};
             Router router;
             router.peers = &peers;
-            const HWND recipient = routerWindow(router);
+            router.answer = false;
+            const HWND recipient = routerWindow(router, peers.toolWindowClass());
             REQUIRE(recipient != nullptr);
+            const auto tool = reinterpret_cast<core::NativeWindow>(recipient);
 
             fakeConsole = reinterpret_cast<HWND>(10);
             fakeOwner = reinterpret_cast<HWND>(20);
             fakeVisible = true;
             fakeRectSucceeds = true;
             fakeRect = {0, 0, 100, 100};
-            CHECK(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
-            CHECK(std::get<core::PeerHello>(*router.received).host == 10);
+            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(std::get<core::PeerHello>(router.received->payload).host == 10);
 
             fakeVisible = false;
-            CHECK(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
-            CHECK(std::get<core::PeerHello>(*router.received).host == 20);
+            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
             fakeVisible = true;
             fakeRect = {0, 0, 0, 100};
-            CHECK(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
-            CHECK(std::get<core::PeerHello>(*router.received).host == 20);
+            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
             fakeRect = {0, 0, 100, 0};
-            CHECK(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
-            CHECK(std::get<core::PeerHello>(*router.received).host == 20);
+            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
             fakeRectSucceeds = false;
-            CHECK(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
-            CHECK(std::get<core::PeerHello>(*router.received).host == 20);
+            CHECK(peers.reply(tool, tool, 11, 22));
+            CHECK(std::get<core::PeerHello>(router.received->payload).host == 20);
 
             fakeConsole = reinterpret_cast<HWND>(10);
             fakeOwner = nullptr;
-            CHECK_FALSE(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
+            CHECK_FALSE(peers.reply(tool, tool, 11, 22));
             fakeConsole = nullptr;
-            CHECK_FALSE(peers.reply(reinterpret_cast<core::NativeWindow>(recipient), 30));
+            CHECK_FALSE(peers.reply(tool, tool, 11, 22));
             DestroyWindow(recipient);
         }
 
-        TEST_CASE("message filters, invalid payloads, failed sends, and menu outcomes are bounded")
+        TEST_CASE("announcement assembly, random failures, identities, and timed sends reject invalid input")
         {
-            const FocusCalls focusCalls{tick};
-            Focus focus{focusCalls};
+            Focus focus;
             auto calls = fakeHostCalls();
             Peers peers{focus, calls};
-            CHECK(peers.now() == fakeTick);
-            allowedMessages.clear();
-            filterSucceeds = false;
-            filterCalls = 0;
-            filterFailure = 0;
-            CHECK_FALSE(peers.allowMessages(1));
+            Router router;
+            router.peers = &peers;
+            const HWND valid = routerWindow(router, peers.toolWindowClass());
+            Router otherRouter;
+            const HWND other = routerWindow(otherRouter, peers.toolWindowClass());
+            Router foreignRouter;
+            const HWND foreign = routerWindow(foreignRouter, L"BurlakPeerForeignTest");
+            REQUIRE(valid != nullptr);
+            REQUIRE(other != nullptr);
+            REQUIRE(foreign != nullptr);
 
-            allowedMessages.clear();
-            filterSucceeds = true;
-            filterCalls = 0;
-            filterFailure = 2;
-            CHECK_FALSE(peers.allowMessages(1));
-            CHECK(allowedMessages == std::vector<UINT>{peers.announcementMessage(), WM_COPYDATA});
-            filterFailure = 0;
+            randomStatus = 0;
+            fakeNonce = 123;
+            CHECK(peers.newNonce() == std::expected<std::uint64_t, core::Error>{123});
+            fakeNonce = 0;
+            CHECK(peers.newNonce() == std::unexpected(core::Error::Unavailable));
+            fakeNonce = 123;
+            randomStatus = static_cast<NTSTATUS>(-1);
+            CHECK(peers.newNonce() == std::unexpected(core::Error::Unavailable));
+            randomStatus = 0;
 
-            CHECK_FALSE(peers.receive(0).has_value());
+            CHECK_FALSE(peers.isAnnouncementMessage(0));
+            CHECK_FALSE(peers.isAnnouncementMessage(WM_APP));
+            CHECK_FALSE(peers.receiveAnnouncement(0, reinterpret_cast<WPARAM>(valid), 1));
+            CHECK_FALSE(peers.receiveAnnouncement(WM_APP, reinterpret_cast<WPARAM>(valid), 1));
+            peers.announce(reinterpret_cast<core::NativeWindow>(valid), reinterpret_cast<core::NativeWindow>(valid),
+                           0x100000002ULL);
+            MSG low{};
+            MSG high{};
+            REQUIRE(PeekMessageW(&low, nullptr, 0, 0, PM_REMOVE) != FALSE);
+            REQUIRE(PeekMessageW(&high, nullptr, 0, 0, PM_REMOVE) != FALSE);
+            CHECK_FALSE(peers.receiveAnnouncement(high.message, high.wParam, high.lParam));
+            CHECK_FALSE(peers.receiveAnnouncement(low.message, reinterpret_cast<WPARAM>(foreign), low.lParam));
+            CHECK_FALSE(peers.receiveAnnouncement(low.message, low.wParam, low.lParam));
+            CHECK_FALSE(peers.receiveAnnouncement(high.message, reinterpret_cast<WPARAM>(other), high.lParam));
+            CHECK_FALSE(peers.receiveAnnouncement(low.message, low.wParam, low.lParam));
+            CHECK_FALSE(peers.receiveAnnouncement(high.message, reinterpret_cast<WPARAM>(foreign), high.lParam));
+            CHECK_FALSE(peers.receiveAnnouncement(low.message, low.wParam, 0));
+            CHECK_FALSE(peers.receiveAnnouncement(high.message, high.wParam, 0));
+
+            CHECK_FALSE(peers.receive(0, 0));
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), 0));
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(foreign), 1));
             COPYDATASTRUCT copy{};
-            CHECK_FALSE(peers.receive(reinterpret_cast<std::intptr_t>(&copy)).has_value());
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), reinterpret_cast<std::intptr_t>(&copy)));
             std::byte one{};
             copy = {.dwData = 999, .cbData = 0, .lpData = &one};
-            CHECK_FALSE(peers.receive(reinterpret_cast<std::intptr_t>(&copy)).has_value());
-            copy = {.dwData = 999, .cbData = 1, .lpData = &one};
-            CHECK_FALSE(peers.receive(reinterpret_cast<std::intptr_t>(&copy)).has_value());
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), reinterpret_cast<std::intptr_t>(&copy)));
+            copy.cbData = 1;
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), reinterpret_cast<std::intptr_t>(&copy)));
             copy.dwData = peerHelloDataKind();
-            CHECK_FALSE(peers.receive(reinterpret_cast<std::intptr_t>(&copy)).has_value());
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), reinterpret_cast<std::intptr_t>(&copy)));
             copy.dwData = peerDropDataKind();
-            CHECK_FALSE(peers.receive(reinterpret_cast<std::intptr_t>(&copy)).has_value());
-            CHECK(peers.send(core::Peer{}, core::Drop{}) == std::unexpected(core::Error::Unavailable));
-            CHECK(peers.send(core::Peer{.window = 777}, core::Drop{}) == std::unexpected(core::Error::Unavailable));
+            CHECK_FALSE(peers.receive(reinterpret_cast<WPARAM>(valid), reinterpret_cast<std::intptr_t>(&copy)));
 
-            auto noAnnouncementCalls = calls;
-            noAnnouncementCalls.registerMessage = failRegisterMessage;
-            Peers noAnnouncement{focus, noAnnouncementCalls};
-            allowedMessages.clear();
-            CHECK_FALSE(noAnnouncement.allowMessages(1));
-            CHECK(allowedMessages == std::vector<UINT>{WM_COPYDATA});
+            const core::Drop validDrop{.paths = {L"C:\\one.txt"}, .effect = core::Effect::Copy, .nonce = 5};
+            CHECK(peers.send(core::Peer{}, validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = 0, .host = 0, .lastFocus = 0, .process = 0, .nonce = 5}, validDrop) ==
+                  std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 6},
+                             validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(foreign), .nonce = 5},
+                             validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = 777, .host = 0, .lastFocus = 0, .process = 0, .nonce = 5},
+                             validDrop) == std::unexpected(core::Error::Unavailable));
+            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 5},
+                             core::Drop{.paths = {}, .at = {}, .effect = core::Effect::Copy, .nonce = 5}) ==
+                  std::unexpected(core::Error::Unavailable));
 
+            peers.announce(reinterpret_cast<core::NativeWindow>(valid), reinterpret_cast<core::NativeWindow>(valid), 5);
+            pumpMessages(2);
+            timedSendFails = true;
+            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 5},
+                             validDrop) == std::unexpected(core::Error::Unavailable));
+            timedSendFails = false;
+            timedSendRejects = true;
+            CHECK(peers.send(core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .nonce = 5},
+                             validDrop) == std::unexpected(core::Error::Unavailable));
+            timedSendRejects = false;
+
+            auto noProcessCalls = calls;
+            noProcessCalls.getWindowProcess = failWindowProcess;
+            Peers noProcess{focus, noProcessCalls};
+            CHECK_FALSE(noProcess.receive(reinterpret_cast<WPARAM>(valid), 1));
+            noProcessCalls.getWindowProcess = zeroWindowProcess;
+            Peers zeroProcess{focus, noProcessCalls};
+            CHECK_FALSE(zeroProcess.receive(reinterpret_cast<WPARAM>(valid), 1));
+
+            peers.announce(0, reinterpret_cast<core::NativeWindow>(valid), 5);
+            peers.announce(reinterpret_cast<core::NativeWindow>(valid), 0, 5);
+            peers.announce(reinterpret_cast<core::NativeWindow>(valid), reinterpret_cast<core::NativeWindow>(valid), 0);
+
+            auto noMessagesCalls = calls;
+            noMessagesCalls.registerMessage = failRegisterMessage;
+            Peers noMessages{focus, noMessagesCalls};
+            noMessages.announce(reinterpret_cast<core::NativeWindow>(valid),
+                                reinterpret_cast<core::NativeWindow>(valid), 5);
+            noMessages.endAnnouncement(reinterpret_cast<core::NativeWindow>(valid),
+                                       reinterpret_cast<core::NativeWindow>(valid), 5);
+            CHECK_FALSE(noMessages.isAnnouncementMessage(0));
+            auto partialMessagesCalls = calls;
+            registerCalls = 0;
+            partialMessagesCalls.registerMessage = partialRegisterMessage;
+            Peers partialMessages{focus, partialMessagesCalls};
+            partialMessages.announce(reinterpret_cast<core::NativeWindow>(valid),
+                                     reinterpret_cast<core::NativeWindow>(valid), 5);
+
+            DestroyWindow(foreign);
+            DestroyWindow(other);
+            DestroyWindow(valid);
+        }
+
+        TEST_CASE("popup menu returns copy, move, or cancel and contains construction failures")
+        {
+            Focus focus;
+            auto calls = fakeHostCalls();
             calls.trackMenu = chooseMenu;
             calls.setForegroundWindow = foreground;
             Peers menus{focus, calls};
@@ -321,7 +472,8 @@ namespace burlak::adapters::win
                 CHECK(noItems.menu(1, {7, 9}) == core::PeerMenuChoice::Cancel);
                 CHECK(appendCalls == appendFailure);
             }
-            CHECK(systemPeerCalls().sendMessage == SendMessageW);
+            CHECK(systemPeerCalls().sendMessageTimeout == SendMessageTimeoutW);
+            CHECK(systemPeerCalls().random == BCryptGenRandom);
             CHECK(peerHelloDataKind() != peerDropDataKind());
         }
     }

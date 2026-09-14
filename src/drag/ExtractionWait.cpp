@@ -61,6 +61,11 @@ namespace burlak::drag
         session_.cleanup();
     }
 
+    void ExtractionWait::retain()
+    {
+        session_.retain();
+    }
+
     void ExtractionWait::cancel() noexcept
     {
         if (state_.exchange(State::Cancelled) != State::Waiting) {

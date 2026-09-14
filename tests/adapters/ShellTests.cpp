@@ -13,6 +13,33 @@ namespace burlak::adapters::shell
     namespace
     {
 
+        class DirectoryGuard
+        {
+          public:
+            explicit DirectoryGuard(std::filesystem::path path) : path_{std::move(path)}
+            {
+                std::error_code ignored;
+                std::filesystem::remove_all(path_, ignored);
+            }
+
+            ~DirectoryGuard()
+            {
+                std::error_code ignored;
+                std::filesystem::remove_all(path_, ignored);
+            }
+
+            DirectoryGuard(const DirectoryGuard &) = delete;
+            DirectoryGuard &operator=(const DirectoryGuard &) = delete;
+
+            [[nodiscard]] const std::filesystem::path &path() const
+            {
+                return path_;
+            }
+
+          private:
+            std::filesystem::path path_;
+        };
+
         HRESULT WINAPI parseNull(PCWSTR, IBindCtx *, PIDLIST_ABSOLUTE *parsed, SFGAOF, SFGAOF *)
         {
             *parsed = nullptr;
@@ -262,9 +289,11 @@ namespace burlak::adapters::shell
         TEST_CASE("IFileOperation copies a real file between temporary directories")
         {
             REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
-            const auto root = std::filesystem::temp_directory_path() / L"burlak-shell-copy";
-            const auto source = root / L"source";
-            const auto destination = root / L"destination";
+            DirectoryGuard root{std::filesystem::temp_directory_path() /
+                                (L"burlak-shell-copy-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                 std::to_wstring(GetTickCount64()))};
+            const auto source = root.path() / L"source";
+            const auto destination = root.path() / L"destination";
             std::filesystem::create_directories(source);
             std::filesystem::create_directories(destination);
             const auto file = source / L"copied.txt";
@@ -296,7 +325,6 @@ namespace burlak::adapters::shell
             CHECK(shell.copy(missing, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
-            std::filesystem::remove_all(root);
             OleUninitialize();
         }
 

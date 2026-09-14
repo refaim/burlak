@@ -63,7 +63,7 @@ add_library(
   src/adapters/win/Peers.cpp
   src/adapters/shell/Shell.cpp)
 target_include_directories(burlak_adapters PUBLIC src PRIVATE sdk)
-target_link_libraries(burlak_adapters PUBLIC burlak_core burlak_options PRIVATE ole32 shell32 user32)
+target_link_libraries(burlak_adapters PUBLIC burlak_core burlak_options PRIVATE bcrypt ole32 shell32 user32)
 
 add_library(
   burlak_drag STATIC
