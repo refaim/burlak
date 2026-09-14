@@ -162,10 +162,11 @@ fine for hitting a panel).
 Far's thread and the tool thread stay explicit (`WM_PREPARE_DRAG`, `WM_START_DRAG`,
 `WM_ABORT_DRAG`, the arm timer) and are the only cross-thread traffic. Every private `WM_USER`
 message carries zero parameters: the Far-thread caller first stores its by-value request in a
-mutex-protected slot owned by the tool-window state, and the tool thread consumes that slot. An
-unsolicited message with no queued request is inert, so another same-integrity process cannot make
-the responder interpret an un-marshalled pointer. Far's API is called on Far's thread only, which
-the tool thread reaches through `IFarHost::postSynchro`.
+mutex-protected slot owned by the tool-window state, and the tool thread validates both parameters
+before consuming that slot. A nonzero parameter or an unsolicited message with no queued request
+is inert, so another same-integrity process cannot consume a pending request or make the responder
+interpret an un-marshalled pointer. Far's API is called on Far's thread only, which the tool thread
+reaches through `IFarHost::postSynchro`.
 
 ### plugin
 

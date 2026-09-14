@@ -15,6 +15,7 @@ namespace burlak::drag
         decltype(&Sleep) sleep;
         decltype(&CreateEventW) createEvent;
         decltype(&CreateWindowExW) createWindow;
+        decltype(&SendMessageW) sendMessage;
         decltype(&IsWindowVisible) isWindowVisible;
         decltype(&SetWindowPos) setWindowPos;
         decltype(&ShowWindow) showWindow;

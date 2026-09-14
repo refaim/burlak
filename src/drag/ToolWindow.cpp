@@ -30,9 +30,19 @@ namespace burlak::drag
         constexpr UINT armTimeoutMilliseconds = 1000;
         constexpr int startupPollAttempts = 200;
         constexpr DWORD startupPollMilliseconds = 5;
-        const ToolWindowCalls systemCalls{CreateThread,    Sleep,        CreateEventW, CreateWindowExW,
-                                          IsWindowVisible, SetWindowPos, ShowWindow,   SetCapture,
-                                          ReleaseCapture,  SetTimer,     KillTimer,    CoWaitForMultipleHandles};
+        const ToolWindowCalls systemCalls{CreateThread,
+                                          Sleep,
+                                          CreateEventW,
+                                          CreateWindowExW,
+                                          SendMessageW,
+                                          IsWindowVisible,
+                                          SetWindowPos,
+                                          ShowWindow,
+                                          SetCapture,
+                                          ReleaseCapture,
+                                          SetTimer,
+                                          KillTimer,
+                                          CoWaitForMultipleHandles};
 
         struct HandleCloser
         {
@@ -153,7 +163,7 @@ namespace burlak::drag
                 preparePayload_.emplace(PreparePayload{std::vector<std::wstring>{paths.begin(), paths.end()}, button,
                                                        needsExtraction, std::move(context)});
             }
-            const auto result = SendMessageW(windowHandle(), prepareDragMessage, 0, 0);
+            const auto result = calls_.sendMessage(windowHandle(), prepareDragMessage, 0, 0);
             {
                 const std::lock_guard lock{privateMessageMutex_};
                 preparePayload_.reset();
@@ -198,7 +208,7 @@ namespace burlak::drag
                 const std::lock_guard lock{privateMessageMutex_};
                 request = true;
             }
-            const auto result = SendMessageW(windowHandle(), message, 0, 0);
+            const auto result = calls_.sendMessage(windowHandle(), message, 0, 0);
             {
                 const std::lock_guard lock{privateMessageMutex_};
                 request = false;
@@ -216,6 +226,11 @@ namespace burlak::drag
         {
             const std::lock_guard lock{privateMessageMutex_};
             return std::exchange(preparePayload_, std::nullopt);
+        }
+
+        [[nodiscard]] static bool validPrivateMessageParameters(WPARAM word, LPARAM number)
+        {
+            return word == 0 && number == 0;
         }
 
         static DWORD WINAPI threadEntry(void *parameter)
@@ -328,6 +343,11 @@ namespace burlak::drag
             }
             switch (message) {
             case prepareDragMessage: {
+                // A foreign sender can race a legitimate queued request, so parameters are checked against the
+                // private zero/zero shape before the state slot can be consumed.
+                if (!validPrivateMessageParameters(word, number)) {
+                    return 0;
+                }
                 auto payload = takePreparePayload();
                 // Predictable WM_USER messages can cross a same-integrity process boundary without pointer
                 // marshalling. Only a request placed in this process's mutex-protected slot is actionable.
@@ -356,17 +376,26 @@ namespace burlak::drag
                 return 1;
             }
             case startDragMessage:
+                if (!validPrivateMessageParameters(word, number)) {
+                    return 0;
+                }
                 if (!takePrivateRequest(startRequested_)) {
                     return 0;
                 }
                 return showAndArm(window);
             case abortDragMessage:
+                if (!validPrivateMessageParameters(word, number)) {
+                    return 0;
+                }
                 if (!takePrivateRequest(abortRequested_)) {
                     return 0;
                 }
                 clearDrag();
                 return 0;
             case hasDataMessage:
+                if (!validPrivateMessageParameters(word, number)) {
+                    return 0;
+                }
                 if (!takePrivateRequest(hasDataRequested_)) {
                     return 0;
                 }

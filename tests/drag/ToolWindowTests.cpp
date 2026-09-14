@@ -175,6 +175,28 @@ namespace burlak::drag
             }
         };
 
+        struct PrivateMessageProbe
+        {
+            Input *input{};
+            Extraction *extraction{};
+            std::vector<LRESULT> hostileResults;
+            std::optional<std::size_t> startPressesBeforeLegitimate;
+            std::optional<int> abortCleanupsBeforeLegitimate;
+        } privateMessageProbe;
+
+        LRESULT WINAPI sendPrivateWithHostileParameters(HWND window, UINT message, WPARAM word, LPARAM number)
+        {
+            privateMessageProbe.hostileResults.push_back(SendMessageW(window, message, 1, 0));
+            privateMessageProbe.hostileResults.push_back(SendMessageW(window, message, 0, 1));
+            if (message == WM_USER + 0x102) {
+                privateMessageProbe.startPressesBeforeLegitimate = privateMessageProbe.input->presses.size();
+            }
+            if (message == WM_USER + 0x103) {
+                privateMessageProbe.abortCleanupsBeforeLegitimate = privateMessageProbe.extraction->cleanups;
+            }
+            return SendMessageW(window, message, word, number);
+        }
+
         class Peers final : public core::IPeers
         {
           public:
@@ -635,25 +657,41 @@ namespace burlak::drag
             DropSession dropSession;
             Extraction extraction;
             Peers peers;
-            const auto calls = headlessCalls();
+            auto calls = headlessCalls();
+            calls.sendMessage = sendPrivateWithHostileParameters;
             ToolWindow tool{screen, input, shell, dropSession, extraction, peers, calls};
             REQUIRE(tool.start());
             const auto window = reinterpret_cast<HWND>(tool.nativeWindow());
             constexpr LPARAM garbage = 1;
 
             CHECK(SendMessageW(window, WM_USER + 0x101, 0, garbage) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x102, 0, garbage) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x103, 0, garbage) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x104, 0, garbage) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x101, 0, 0) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x102, 0, 0) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x103, 0, 0) == 0);
+            CHECK(SendMessageW(window, WM_USER + 0x104, 0, 0) == 0);
+            privateMessageProbe = {};
+            privateMessageProbe.input = &input;
+            privateMessageProbe.extraction = &extraction;
             CHECK_FALSE(tool.hasData());
 
             const std::vector<std::wstring> paths{L"C:\\one.txt"};
-            REQUIRE(tool.prepare(paths, core::Button::Left, false, dropContext()));
-            CHECK(SendMessageW(window, WM_USER + 0x102, 0, garbage) == 0);
-            CHECK(input.presses.empty());
-            CHECK(SendMessageW(window, WM_USER + 0x104, 0, garbage) == 0);
-            CHECK(SendMessageW(window, WM_USER + 0x103, 0, garbage) == 0);
+            CHECK(tool.prepare(paths, core::Button::Left, true, dropContext()));
             CHECK(tool.hasData());
+            CHECK(tool.showAndArm());
+            CHECK(privateMessageProbe.startPressesBeforeLegitimate == 0);
+            CHECK(input.presses.size() == 1);
 
             tool.abort();
+            CHECK(privateMessageProbe.abortCleanupsBeforeLegitimate == 0);
+            CHECK(extraction.cleanups == 1);
             CHECK_FALSE(tool.hasData());
+            CHECK(privateMessageProbe.hostileResults.size() == 12);
+            for (const auto result : privateMessageProbe.hostileResults) {
+                CHECK(result == 0);
+            }
             CHECK(IsWindow(window) != FALSE);
             tool.stop();
         }
