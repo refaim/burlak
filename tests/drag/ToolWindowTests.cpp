@@ -189,7 +189,8 @@ namespace burlak::drag
             std::optional<core::PeerAnnouncement> announcement;
             std::optional<core::PeerEnvelope> payload;
             core::PeerMenuChoice choice{core::PeerMenuChoice::Cancel};
-            bool replySucceeds{true};
+            std::expected<core::PeerTransportResult, core::Error> replyResult{
+                core::PeerTransportResult{.sent = 1, .receiver = 1}};
             bool throwAllocation{};
 
             [[nodiscard]] std::wstring_view toolWindowClass() const override
@@ -229,10 +230,12 @@ namespace burlak::drag
             {
                 ++endings;
             }
-            [[nodiscard]] bool reply(core::PeerIdentity, core::NativeWindow, std::uint64_t, std::uint64_t) override
+            [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> reply(core::PeerIdentity,
+                                                                                      core::NativeWindow, std::uint64_t,
+                                                                                      std::uint64_t) override
             {
                 ++replies;
-                return replySucceeds;
+                return replyResult;
             }
             [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
             {
@@ -241,10 +244,11 @@ namespace burlak::drag
                 }
                 return std::exchange(payload, std::nullopt);
             }
-            [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &, const core::Drop &) override
+            [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> send(const core::Peer &,
+                                                                                     const core::Drop &) override
             {
                 ++sends;
-                return {};
+                return core::PeerTransportResult{.sent = 1, .receiver = 1};
             }
             [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow, core::Point) override
             {
@@ -584,20 +588,32 @@ namespace burlak::drag
                 .action = core::PeerAnnouncementAction::Begin, .source = {.window = 0, .process = 12}, .nonce = 302};
             CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
 
-            peers.replySucceeds = false;
+            peers.replyResult = std::unexpected(core::Error::Unavailable);
             peers.announcement = core::PeerAnnouncement{
                 .action = core::PeerAnnouncementAction::Begin, .source = {.window = 125, .process = 13}, .nonce = 303};
             CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 0);
-            peers.replySucceeds = true;
+            peers.replyResult =
+                core::PeerTransportResult{.sent = 0, .receiver = 0, .lastError = 1460, .timeoutError = 1460};
 
             peers.announcement = core::PeerAnnouncement{
                 .action = core::PeerAnnouncementAction::Begin, .source = {.window = 126, .process = 14}, .nonce = 304};
             CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
+            const core::Drop lateHello{
+                .paths = {L"C:\\two.txt"}, .at = {6, 7}, .effect = core::Effect::Copy, .nonce = 100};
+            peers.payload = core::PeerEnvelope{.sender = {.window = 126, .process = 14}, .payload = lateHello};
+            CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 1);
+            CHECK(dropSession.peerDrops.size() == 2);
+
+            peers.replyResult = core::PeerTransportResult{.sent = 1, .receiver = 1};
+            peers.announcement = core::PeerAnnouncement{
+                .action = core::PeerAnnouncementAction::Begin, .source = {.window = 127, .process = 15}, .nonce = 305};
+            CHECK(SendMessageW(window, WM_APP + 77, 0, 0) == 1);
             dropSession.accepts = false;
             const core::Drop rejected{
-                .paths = {L"C:\\two.txt"}, .at = {6, 7}, .effect = core::Effect::Copy, .nonce = 100};
-            peers.payload = core::PeerEnvelope{.sender = {.window = 126, .process = 14}, .payload = rejected};
+                .paths = {L"C:\\three.txt"}, .at = {6, 7}, .effect = core::Effect::Copy, .nonce = 100};
+            peers.payload = core::PeerEnvelope{.sender = {.window = 127, .process = 15}, .payload = rejected};
             CHECK(SendMessageW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy)) == 0);
+            CHECK(dropSession.peerDrops.size() == 3);
             dropSession.accepts = true;
 
             peers.nonce = std::unexpected(core::Error::Unavailable);

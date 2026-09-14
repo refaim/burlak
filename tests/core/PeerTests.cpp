@@ -117,6 +117,19 @@ namespace burlak::core
             CHECK(registry.select(200 + peerRegistryLimit + 1, 0).has_value());
         }
 
+        TEST_CASE("peer transport maps only a Windows timeout to an indeterminate send")
+        {
+            constexpr std::uint32_t timeout = 1460;
+            CHECK(peerSendOutcome(std::unexpected(Error::Unavailable)) == PeerSendOutcome::Failed);
+            CHECK(peerSendOutcome(PeerTransportResult{.sent = 1, .receiver = 1}) == PeerSendOutcome::Accepted);
+            CHECK(peerSendOutcome(PeerTransportResult{.sent = 1, .receiver = 0}) == PeerSendOutcome::Failed);
+            CHECK(peerSendOutcome(
+                      PeerTransportResult{.sent = 0, .receiver = 0, .lastError = timeout, .timeoutError = timeout}) ==
+                  PeerSendOutcome::Indeterminate);
+            CHECK(peerSendOutcome(PeerTransportResult{
+                      .sent = 0, .receiver = 0, .lastError = 5, .timeoutError = timeout}) == PeerSendOutcome::Failed);
+        }
+
         TEST_CASE("incoming nonces are identity-bound, single-use, ended explicitly, and capped")
         {
             IncomingPeerRegistry incoming;

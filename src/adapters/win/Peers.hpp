@@ -19,6 +19,7 @@ namespace burlak::adapters::win
         decltype(&GetCurrentProcessId) getProcessId;
         decltype(&GetClassNameW) getClassName;
         decltype(&GetWindowThreadProcessId) getWindowProcess;
+        decltype(&GetLastError) getLastError;
         decltype(&BCryptGenRandom) random;
         decltype(&GetConsoleWindow) getConsoleWindow;
         decltype(&IsWindowVisible) isWindowVisible;
@@ -47,11 +48,14 @@ namespace burlak::adapters::win
         [[nodiscard]] core::NativeWindow broadcastTarget() const override;
         void announce(core::NativeWindow source, core::NativeWindow target, std::uint64_t nonce) override;
         void endAnnouncement(core::NativeWindow source, core::NativeWindow target, std::uint64_t nonce) override;
-        [[nodiscard]] bool reply(core::PeerIdentity target, core::NativeWindow tool, std::uint64_t echoNonce,
-                                 std::uint64_t nonce) override;
+        [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> reply(core::PeerIdentity target,
+                                                                                  core::NativeWindow tool,
+                                                                                  std::uint64_t echoNonce,
+                                                                                  std::uint64_t nonce) override;
         [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t sender,
                                                                 std::intptr_t nativePayload) override;
-        [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &peer, const core::Drop &drop) override;
+        [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> send(const core::Peer &peer,
+                                                                                 const core::Drop &drop) override;
         [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow owner, core::Point point) override;
 
       private:
@@ -61,9 +65,9 @@ namespace burlak::adapters::win
                                           std::wstring_view expectedClass) const;
         void postAnnouncement(core::PeerAnnouncementAction action, core::NativeWindow source, core::NativeWindow target,
                               std::uint64_t nonce);
-        [[nodiscard]] std::expected<void, core::Error> sendBytes(core::PeerIdentity target,
-                                                                 std::wstring_view expectedClass, std::uintptr_t kind,
-                                                                 std::span<const std::byte> bytes) const;
+        [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> sendBytes(
+            core::PeerIdentity target, std::wstring_view expectedClass, std::uintptr_t kind,
+            std::span<const std::byte> bytes) const;
 
         struct AnnouncementHalf
         {

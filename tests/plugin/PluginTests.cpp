@@ -58,19 +58,19 @@ namespace
         void endAnnouncement(burlak::core::NativeWindow, burlak::core::NativeWindow, std::uint64_t) override
         {
         }
-        [[nodiscard]] bool reply(burlak::core::PeerIdentity, burlak::core::NativeWindow, std::uint64_t,
-                                 std::uint64_t) override
+        [[nodiscard]] std::expected<burlak::core::PeerTransportResult, burlak::core::Error> reply(
+            burlak::core::PeerIdentity, burlak::core::NativeWindow, std::uint64_t, std::uint64_t) override
         {
-            return true;
+            return burlak::core::PeerTransportResult{.sent = 1, .receiver = 1};
         }
         [[nodiscard]] std::optional<burlak::core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
         {
             return std::exchange(envelope, std::nullopt);
         }
-        [[nodiscard]] std::expected<void, burlak::core::Error> send(const burlak::core::Peer &,
-                                                                    const burlak::core::Drop &) override
+        [[nodiscard]] std::expected<burlak::core::PeerTransportResult, burlak::core::Error> send(
+            const burlak::core::Peer &, const burlak::core::Drop &) override
         {
-            return {};
+            return burlak::core::PeerTransportResult{.sent = 1, .receiver = 1};
         }
         [[nodiscard]] burlak::core::PeerMenuChoice menu(burlak::core::NativeWindow, burlak::core::Point) override
         {

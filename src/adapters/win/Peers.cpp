@@ -26,21 +26,14 @@ namespace burlak::adapters::win
         constexpr UINT moveCommand = 2;
         constexpr UINT cancelCommand = 3;
 
-        const PeerCalls calls{RegisterWindowMessageW,
-                              PostMessageW,
-                              SendMessageTimeoutW,
-                              GetCurrentProcessId,
-                              GetClassNameW,
-                              GetWindowThreadProcessId,
-                              BCryptGenRandom,
-                              GetConsoleWindow,
-                              IsWindowVisible,
-                              GetWindowRect,
-                              GetWindow,
-                              CreatePopupMenu,
-                              AppendMenuW,
-                              TrackPopupMenu,
-                              DestroyMenu,
+        const PeerCalls calls{RegisterWindowMessageW, PostMessageW,
+                              SendMessageTimeoutW,    GetCurrentProcessId,
+                              GetClassNameW,          GetWindowThreadProcessId,
+                              GetLastError,           BCryptGenRandom,
+                              GetConsoleWindow,       IsWindowVisible,
+                              GetWindowRect,          GetWindow,
+                              CreatePopupMenu,        AppendMenuW,
+                              TrackPopupMenu,         DestroyMenu,
                               SetForegroundWindow};
 
         struct MenuDestroyer
@@ -196,11 +189,13 @@ namespace burlak::adapters::win
         return reinterpret_cast<core::NativeWindow>(console == nullptr ? nullptr : calls_.getWindow(console, GW_OWNER));
     }
 
-    bool Peers::reply(core::PeerIdentity target, core::NativeWindow tool, std::uint64_t echoNonce, std::uint64_t nonce)
+    std::expected<core::PeerTransportResult, core::Error> Peers::reply(core::PeerIdentity target,
+                                                                       core::NativeWindow tool, std::uint64_t echoNonce,
+                                                                       std::uint64_t nonce)
     {
         const auto host = hostWindow();
         if (host == 0) {
-            return false;
+            return std::unexpected(core::Error::Unavailable);
         }
         const auto bytes = core::encodePeerHello({.process = processId(),
                                                   .tool = tool,
@@ -210,7 +205,7 @@ namespace burlak::adapters::win
                                                   .nonce = nonce});
         const auto previous = tool_;
         tool_ = tool;
-        const bool sent = sendBytes(target, toolClass, helloKind, bytes).has_value();
+        auto sent = sendBytes(target, toolClass, helloKind, bytes);
         tool_ = previous;
         return sent;
     }
@@ -237,8 +232,10 @@ namespace burlak::adapters::win
         return std::nullopt;
     }
 
-    std::expected<void, core::Error> Peers::sendBytes(core::PeerIdentity target, std::wstring_view expectedClass,
-                                                      std::uintptr_t kind, std::span<const std::byte> bytes) const
+    std::expected<core::PeerTransportResult, core::Error> Peers::sendBytes(core::PeerIdentity target,
+                                                                           std::wstring_view expectedClass,
+                                                                           std::uintptr_t kind,
+                                                                           std::span<const std::byte> bytes) const
     {
         if (bytes.empty() || !expectedWindow(target.window, target.process, expectedClass)) {
             return std::unexpected(core::Error::Unavailable);
@@ -250,13 +247,11 @@ namespace burlak::adapters::win
         const auto sent = calls_.sendMessageTimeout(reinterpret_cast<HWND>(target.window), WM_COPYDATA,
                                                     static_cast<WPARAM>(tool_), reinterpret_cast<LPARAM>(&copy),
                                                     SMTO_ABORTIFHUNG | SMTO_BLOCK, sendTimeoutMilliseconds, &result);
-        if (sent == 0) {
-            return std::unexpected(core::Error::Indeterminate);
-        }
-        return core::expectedOutcome(result != 0, core::Error::Unavailable);
+        return core::PeerTransportResult{
+            .sent = sent, .receiver = result, .lastError = calls_.getLastError(), .timeoutError = ERROR_TIMEOUT};
     }
 
-    std::expected<void, core::Error> Peers::send(const core::Peer &peer, const core::Drop &drop)
+    std::expected<core::PeerTransportResult, core::Error> Peers::send(const core::Peer &peer, const core::Drop &drop)
     {
         if (peer.nonce == 0 || drop.nonce != peer.nonce) {
             return std::unexpected(core::Error::Unavailable);

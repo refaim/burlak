@@ -15,6 +15,8 @@ namespace burlak::core
 
     inline constexpr std::size_t peerRegistryLimit = 64;
 
+    [[nodiscard]] PeerSendOutcome peerSendOutcome(const std::expected<PeerTransportResult, Error> &transport);
+
     class PeerRegistry final
     {
       public:

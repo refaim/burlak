@@ -127,7 +127,8 @@ namespace burlak::drag
             core::PeerMenuChoice choice{core::PeerMenuChoice::Copy};
             std::vector<core::Drop> drops;
             std::vector<std::string> *callLog{};
-            std::optional<core::Error> sendFailure;
+            std::expected<core::PeerTransportResult, core::Error> sendResult{
+                core::PeerTransportResult{.sent = 1, .receiver = 1}};
 
             [[nodiscard]] std::wstring_view toolWindowClass() const override
             {
@@ -160,21 +161,24 @@ namespace burlak::drag
             void endAnnouncement(core::NativeWindow, core::NativeWindow, std::uint64_t) override
             {
             }
-            [[nodiscard]] bool reply(core::PeerIdentity, core::NativeWindow, std::uint64_t, std::uint64_t) override
+            [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> reply(core::PeerIdentity,
+                                                                                      core::NativeWindow, std::uint64_t,
+                                                                                      std::uint64_t) override
             {
-                return true;
+                return core::PeerTransportResult{.sent = 1, .receiver = 1};
             }
             [[nodiscard]] std::optional<core::PeerEnvelope> receive(std::uintptr_t, std::intptr_t) override
             {
                 return std::nullopt;
             }
-            [[nodiscard]] std::expected<void, core::Error> send(const core::Peer &, const core::Drop &drop) override
+            [[nodiscard]] std::expected<core::PeerTransportResult, core::Error> send(const core::Peer &,
+                                                                                     const core::Drop &drop) override
             {
                 if (callLog != nullptr) {
                     callLog->emplace_back("send");
                 }
                 drops.push_back(drop);
-                return sendFailure ? std::unexpected(*sendFailure) : std::expected<void, core::Error>{};
+                return sendResult;
             }
             [[nodiscard]] core::PeerMenuChoice menu(core::NativeWindow, core::Point) override
             {
@@ -579,7 +583,7 @@ namespace burlak::drag
             SUBCASE("send failure")
             {
                 Extraction extraction;
-                peers.sendFailure = core::Error::Unavailable;
+                peers.sendResult = std::unexpected(core::Error::Unavailable);
                 DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, false, paths};
                 REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
                 CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
@@ -589,7 +593,8 @@ namespace burlak::drag
             SUBCASE("an indeterminate extracted send preserves the run")
             {
                 Extraction extraction;
-                peers.sendFailure = core::Error::Indeterminate;
+                peers.sendResult =
+                    core::PeerTransportResult{.sent = 0, .receiver = 0, .lastError = 1460, .timeoutError = 1460};
                 DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, paths};
                 REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
                 CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);
@@ -599,7 +604,8 @@ namespace burlak::drag
             SUBCASE("a definite extracted-send refusal does not preserve the run")
             {
                 Extraction extraction;
-                peers.sendFailure = core::Error::Unavailable;
+                peers.sendResult =
+                    core::PeerTransportResult{.sent = 0, .receiver = 0, .lastError = 5, .timeoutError = 1460};
                 DragSource source{policy, screen, extraction, peers, registry, core::Button::Left, 7, 8, true, paths};
                 REQUIRE(source.GiveFeedback(DROPEFFECT_COPY) == DRAGDROP_S_USEDEFAULTCURSORS);
                 CHECK(source.QueryContinueDrag(FALSE, 0) == DRAGDROP_S_CANCEL);

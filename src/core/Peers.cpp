@@ -9,6 +9,18 @@
 namespace burlak::core
 {
 
+    PeerSendOutcome peerSendOutcome(const std::expected<PeerTransportResult, Error> &transport)
+    {
+        if (!transport) {
+            return PeerSendOutcome::Failed;
+        }
+        if (transport->sent == 0) {
+            return transport->lastError == transport->timeoutError ? PeerSendOutcome::Indeterminate
+                                                                   : PeerSendOutcome::Failed;
+        }
+        return transport->receiver != 0 ? PeerSendOutcome::Accepted : PeerSendOutcome::Failed;
+    }
+
     void PeerRegistry::begin(std::uint64_t nonce)
     {
         entries_.clear();

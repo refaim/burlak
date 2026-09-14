@@ -267,8 +267,11 @@ namespace burlak::drag
                 if (!nonce || !incoming_.begin(*announcement, *nonce)) {
                     return 0;
                 }
-                if (!peers_.reply(announcement->source, reinterpret_cast<core::NativeWindow>(window),
-                                  announcement->nonce, *nonce)) {
+                const auto reply = core::peerSendOutcome(peers_.reply(
+                    announcement->source, reinterpret_cast<core::NativeWindow>(window), announcement->nonce, *nonce));
+                // A timed-out Hello can still complete on the source thread, so only a definite failure revokes
+                // the receiver nonce; the matching end announcement clears indeterminate authorization normally.
+                if (reply == core::PeerSendOutcome::Failed) {
                     incoming_.end(core::PeerAnnouncement{.action = core::PeerAnnouncementAction::End,
                                                          .source = announcement->source,
                                                          .nonce = announcement->nonce});

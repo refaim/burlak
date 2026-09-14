@@ -106,11 +106,12 @@ namespace burlak::core
         [[nodiscard]] virtual NativeWindow broadcastTarget() const = 0;
         virtual void announce(NativeWindow source, NativeWindow target, std::uint64_t nonce) = 0;
         virtual void endAnnouncement(NativeWindow source, NativeWindow target, std::uint64_t nonce) = 0;
-        [[nodiscard]] virtual bool reply(PeerIdentity target, NativeWindow tool, std::uint64_t echoNonce,
-                                         std::uint64_t nonce) = 0;
+        [[nodiscard]] virtual std::expected<PeerTransportResult, Error> reply(PeerIdentity target, NativeWindow tool,
+                                                                              std::uint64_t echoNonce,
+                                                                              std::uint64_t nonce) = 0;
         [[nodiscard]] virtual std::optional<PeerEnvelope> receive(std::uintptr_t sender,
                                                                   std::intptr_t nativePayload) = 0;
-        [[nodiscard]] virtual std::expected<void, Error> send(const Peer &peer, const Drop &drop) = 0;
+        [[nodiscard]] virtual std::expected<PeerTransportResult, Error> send(const Peer &peer, const Drop &drop) = 0;
         [[nodiscard]] virtual PeerMenuChoice menu(NativeWindow owner, Point point) = 0;
     };
 

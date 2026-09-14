@@ -239,6 +239,23 @@ namespace burlak::core
         auto operator<=>(const PeerIdentity &) const = default;
     };
 
+    struct PeerTransportResult
+    {
+        std::intptr_t sent{};
+        std::uintptr_t receiver{};
+        std::uint32_t lastError{};
+        std::uint32_t timeoutError{};
+
+        auto operator<=>(const PeerTransportResult &) const = default;
+    };
+
+    enum class PeerSendOutcome : std::uint8_t
+    {
+        Failed,
+        Accepted,
+        Indeterminate
+    };
+
     enum class PeerAnnouncementAction : std::uint8_t
     {
         Begin,
@@ -310,8 +327,7 @@ namespace burlak::core
         DirectoryUnavailable,
         NoSelection,
         ForeignCallFailed,
-        ForeignCallCrashed,
-        Indeterminate
+        ForeignCallCrashed
     };
 
 } // namespace burlak::core

@@ -32,6 +32,7 @@ namespace burlak::adapters::win
         UINT timedSendTimeout{};
         bool timedSendFails{};
         bool timedSendRejects{};
+        DWORD timedSendLastError{};
         int registerCalls{};
 
         ULONGLONG WINAPI tick()
@@ -61,6 +62,11 @@ namespace burlak::adapters::win
                 return 1;
             }
             return SendMessageTimeoutW(window, message, word, number, flags, timeout, result);
+        }
+
+        DWORD WINAPI sendLastError()
+        {
+            return timedSendLastError;
         }
 
         HWND WINAPI consoleWindow()
@@ -157,11 +163,10 @@ namespace burlak::adapters::win
                     if (announcement) {
                         router->announcement = announcement;
                         if (router->answer && announcement->action == core::PeerAnnouncementAction::Begin) {
-                            return router->peers->reply(announcement->source,
-                                                        reinterpret_cast<core::NativeWindow>(window),
-                                                        announcement->nonce, router->receiverNonce)
-                                       ? 1
-                                       : 0;
+                            const auto outcome = core::peerSendOutcome(
+                                router->peers->reply(announcement->source, reinterpret_cast<core::NativeWindow>(window),
+                                                     announcement->nonce, router->receiverNonce));
+                            return outcome == core::PeerSendOutcome::Failed ? 0 : 1;
                         }
                     }
                     return 1;
@@ -189,6 +194,7 @@ namespace burlak::adapters::win
         {
             auto calls = systemPeerCalls();
             calls.sendMessageTimeout = timedSend;
+            calls.getLastError = sendLastError;
             calls.random = randomBytes;
             calls.getConsoleWindow = consoleWindow;
             calls.isWindowVisible = visible;
@@ -270,7 +276,7 @@ namespace burlak::adapters::win
                                   .at = {5, 6},
                                   .effect = core::Effect::Copy,
                                   .nonce = secondRouter.receiverNonce};
-            CHECK(first.send(peer, drop).has_value());
+            CHECK(core::peerSendOutcome(first.send(peer, drop)) == core::PeerSendOutcome::Accepted);
             REQUIRE(secondRouter.received.has_value());
             REQUIRE(std::holds_alternative<core::Drop>(secondRouter.received->payload));
             CHECK(std::get<core::Drop>(secondRouter.received->payload) == drop);
@@ -420,14 +426,27 @@ namespace burlak::adapters::win
             peers.announce(reinterpret_cast<core::NativeWindow>(valid), reinterpret_cast<core::NativeWindow>(valid), 5);
             pumpMessages(2);
             timedSendFails = true;
-            CHECK(peers.send(
-                      core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
-                      validDrop) == std::unexpected(core::Error::Indeterminate));
+            timedSendLastError = ERROR_TIMEOUT;
+            const auto timedOut = peers.send(
+                core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
+                validDrop);
+            REQUIRE(timedOut.has_value());
+            CHECK(*timedOut ==
+                  core::PeerTransportResult{
+                      .sent = 0, .receiver = 0, .lastError = ERROR_TIMEOUT, .timeoutError = ERROR_TIMEOUT});
+            CHECK(core::peerSendOutcome(timedOut) == core::PeerSendOutcome::Indeterminate);
+            timedSendLastError = ERROR_INVALID_WINDOW_HANDLE;
+            const auto failed = peers.send(
+                core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
+                validDrop);
+            REQUIRE(failed.has_value());
+            CHECK(failed->lastError == ERROR_INVALID_WINDOW_HANDLE);
+            CHECK(core::peerSendOutcome(failed) == core::PeerSendOutcome::Failed);
             timedSendFails = false;
             timedSendRejects = true;
-            CHECK(peers.send(
+            CHECK(core::peerSendOutcome(peers.send(
                       core::Peer{.window = reinterpret_cast<core::NativeWindow>(valid), .process = process, .nonce = 5},
-                      validDrop) == std::unexpected(core::Error::Unavailable));
+                      validDrop)) == core::PeerSendOutcome::Failed);
             timedSendRejects = false;
 
             auto noProcessCalls = calls;

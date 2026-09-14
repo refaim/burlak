@@ -50,8 +50,11 @@ Three features are next, and the layering below is judged against them:
    visible one). Tool-window class and process identity are verified on both routes, and the
    receiver nonce authorizes exactly one drop from that source window. UIPI remains closed, so
    elevated and non-elevated Fars do not exchange drops. Hello and Drop sends use a short
-   `SendMessageTimeoutW`; a timed-out extracted Drop is indeterminate, so its source run remains
-   for the dead-owner sweep instead of being deleted during drag cleanup. Drop is bounded to
+   `SendMessageTimeoutW`; core treats only a zero result with `ERROR_TIMEOUT` as indeterminate,
+   while every other zero is a definite failure. An indeterminate Hello keeps its receiver
+   authorization until the drag ends because the source handler may still register it. An
+   indeterminate extracted Drop leaves its source run for the dead-owner sweep instead of deleting
+   it during drag cleanup. Drop is bounded to
    1 MiB and 4096 absolute paths. Discovery is active
    only for the drag, keeps at most 64 newest replies, and does not expire a reply mid-drag. At
    release, if the window under the cursor belongs to a peer, the source cancels the OLE drop (so
