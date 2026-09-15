@@ -605,7 +605,7 @@ TEST_SUITE("plugin exports")
 
         auto left = inputInfo({5, 5}, FROM_LEFT_1ST_BUTTON_PRESSED);
         CHECK(ProcessConsoleInputW(&left) == 0);
-        auto shortMove = inputInfo({7, 5}, FROM_LEFT_1ST_BUTTON_PRESSED, MOUSE_MOVED);
+        auto shortMove = inputInfo({6, 5}, FROM_LEFT_1ST_BUTTON_PRESSED, MOUSE_MOVED);
         CHECK(ProcessConsoleInputW(&shortMove) == 1);
         auto threshold = inputInfo({8, 5}, FROM_LEFT_1ST_BUTTON_PRESSED, MOUSE_MOVED);
         CHECK(ProcessConsoleInputW(&threshold) == 2);
@@ -716,6 +716,7 @@ TEST_SUITE("plugin exports")
 
         bool moving{};
         bool rightButton{};
+        bool declined{};
         SUBCASE("copy")
         {
             moving = false;
@@ -729,6 +730,12 @@ TEST_SUITE("plugin exports")
             rightButton = true;
             menu.choice = burlak::core::DropMenuChoice::Copy;
         }
+        SUBCASE("right-button menu cancelled")
+        {
+            rightButton = true;
+            declined = true;
+            menu.choice = burlak::core::DropMenuChoice::Cancel;
+        }
         const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
         const auto keys = moving ? static_cast<std::uint32_t>(MK_SHIFT) : (rightButton ? MK_RBUTTON : 0U);
         const auto expectedHover = moving ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
@@ -737,17 +744,28 @@ TEST_SUITE("plugin exports")
         screen.leftDown = false;
         const auto returned =
             burlak::plugin::composition().dropOnToolWindow(nativeData, keys, {5, 5}, DROPEFFECT_COPY | DROPEFFECT_MOVE);
-        CHECK(returned == (moving ? DROPEFFECT_NONE : DROPEFFECT_COPY));
+        // A move is announced through CFSTR_PERFORMEDDROPEFFECT = NONE and still answers COPY: a NONE return makes
+        // ole32 treat the drop as refused and paste the path into the console that owns the overlay.
+        CHECK(returned == DROPEFFECT_COPY);
         // The popup must be owned by the tool window of this thread: TrackPopupMenu refuses the host, which belongs
         // to conhost or Windows Terminal, and would otherwise cancel every right-button drop.
         CHECK(menu.owner == (rightButton ? std::optional{tool} : std::nullopt));
-        // The receiver copies exactly the paths the data object names; the shell names them canonically.
-        CHECK(TemporaryDropFiles::canonical(shell.paths) == TemporaryDropFiles::canonical(paths));
-        CHECK(shell.destination == receiveDirectory);
-        CHECK(shell.effect == (moving ? burlak::core::Effect::Move : burlak::core::Effect::Copy));
-        CHECK(shell.owner == 99);
-        CHECK(panelUpdates == 1);
-        CHECK(panelRedraws == 1);
+        if (declined) {
+            // The user was offered the menu and said no: nothing is copied or redrawn, and OLE is still answered COPY
+            // so that nothing is pasted into the console either.
+            CHECK(shell.paths.empty());
+            CHECK(shell.effect == burlak::core::Effect::None);
+            CHECK(panelUpdates == 0);
+            CHECK(panelRedraws == 0);
+        } else {
+            // The receiver copies exactly the paths the data object names; the shell names them canonically.
+            CHECK(TemporaryDropFiles::canonical(shell.paths) == TemporaryDropFiles::canonical(paths));
+            CHECK(shell.destination == receiveDirectory);
+            CHECK(shell.effect == (moving ? burlak::core::Effect::Move : burlak::core::Effect::Copy));
+            CHECK(shell.owner == 99);
+            CHECK(panelUpdates == 1);
+            CHECK(panelRedraws == 1);
+        }
 
         const auto formatId = RegisterClipboardFormatW(CFSTR_PERFORMEDDROPEFFECT);
         REQUIRE(formatId != 0);

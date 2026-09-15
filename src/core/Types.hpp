@@ -143,6 +143,16 @@ namespace burlak::core
         bool operator==(const PanelInfo &) const = default;
     };
 
+    // FCTL_GETPANELDIRECTORY as Far reports it: the directory shown, and for a plugin panel the host file it was
+    // opened from (Arclite: the archive path). Together with the plugin handle and owner they identify the panel.
+    struct PanelDirectory
+    {
+        std::wstring name;
+        std::wstring file;
+
+        bool operator==(const PanelDirectory &) const = default;
+    };
+
     struct Item
     {
         std::vector<std::byte> identity{};

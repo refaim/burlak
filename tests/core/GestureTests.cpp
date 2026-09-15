@@ -20,9 +20,10 @@ namespace burlak::core
 
             auto press = mouse({5, 5}, true, false);
             CHECK(gesture.feed(press).action == VerdictAction::Pass);
-            auto shortMove = mouse({7, 7}, true, false, true);
+            // One cell sideways is still a click; two cells sideways (16 px at an 8 px font) start the drag.
+            auto shortMove = mouse({6, 5}, true, false, true);
             CHECK(gesture.feed(shortMove).action == VerdictAction::Hold);
-            auto threshold = mouse({8, 5}, true, false, true);
+            auto threshold = mouse({7, 5}, true, false, true);
             const auto verdict = gesture.feed(threshold);
             CHECK(verdict.action == VerdictAction::Replace);
             auto release = mouse({5, 5}, false, false);
@@ -31,6 +32,31 @@ namespace burlak::core
             CHECK(host.synchros == 1);
             CHECK(gesture.synchro() == DragStart{Button::Left, {5, 5}});
             CHECK_FALSE(gesture.synchro().has_value());
+        }
+
+        TEST_CASE("one row of vertical travel starts the drag for either button")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            tests::Host host;
+            Gesture gesture{panels, host};
+
+            // A row is about 16 px, well past Explorer's 4 px drag rectangle, so the release cannot become a click
+            // that opens Far's context menu.
+            auto press = mouse({5, 5}, true, false);
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            auto diagonal = mouse({6, 6}, true, false, true);
+            CHECK(gesture.feed(diagonal).action == VerdictAction::Replace);
+            CHECK(gesture.synchro() == DragStart{Button::Left, {5, 5}});
+
+            gesture.reset();
+            auto rightPress = mouse({5, 5}, false, true);
+            CHECK(gesture.feed(rightPress).action == VerdictAction::Hold);
+            auto stillAClick = mouse({6, 5}, false, true, true);
+            CHECK(gesture.feed(stillAClick).action == VerdictAction::Hold);
+            auto downOneRow = mouse({5, 6}, false, true, true);
+            CHECK(gesture.feed(downOneRow).action == VerdictAction::Replace);
+            CHECK(gesture.synchro() == DragStart{Button::Right, {5, 5}});
         }
 
         TEST_CASE("right click replays its press and right drag primes Far with a left-held move")

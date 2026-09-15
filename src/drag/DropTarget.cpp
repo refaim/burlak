@@ -204,24 +204,27 @@ namespace burlak::drag
             return S_OK;
         }
 
+        // None until Burlak takes part: no CF_HDROP, or a point outside the item rows (hover already said so).
         core::ReceiveDropOutcome outcome;
-        const auto paths =
-            fileData_
-                ? dropData_.fileDropPaths(reinterpret_cast<std::uintptr_t>(data))
-                : std::expected<std::vector<std::wstring>, core::Error>{std::unexpected(core::Error::NoSelection)};
-        if (paths && chosen != core::Effect::None) {
-            if (rightButton_) {
+        if (chosen != core::Effect::None) {
+            // The hover promised an effect, so from here Burlak has taken part: a CF_HDROP that cannot be read or
+            // fails the path bounds, a Cancel from the menu the user was offered, or a refused refresh must leave
+            // nothing behind, and the answer is the declined outcome, not None with its console paste.
+            outcome = core::declinedReceiveOutcome();
+            const auto paths = dropData_.fileDropPaths(reinterpret_cast<std::uintptr_t>(data));
+            if (paths && rightButton_) {
                 // TrackPopupMenu pumps COM, so another source's refused DragEnter can run resetEntry() while the
                 // menu is up; the mask this drop was entered with is taken before the call, not read after it.
                 const auto allowed = allowed_;
                 chosen = core::dropMenuEffect(menu_.choose(lifecycle_.menuOwner(), at, allowed), allowed);
             }
-            if (chosen != core::Effect::None && lifecycle_.refreshReceive(at)) {
+            if (paths && chosen != core::Effect::None && lifecycle_.refreshReceive(at)) {
                 outcome = session_.receiveDrop(*paths, at, chosen);
                 if (outcome.setPerformedNone) {
                     // Windows reference: Handling Shell Data Transfer Scenarios, "Handling Optimized Move Operations"
                     // (learn.microsoft.com/windows/win32/shell/datascenarios#handling-optimized-move-operations).
-                    // NONE in both channels prevents the source from deleting originals that no longer exist.
+                    // The performed effect NONE tells the source the receiver already moved the data, so it deletes
+                    // nothing; the value returned to OLE stays COPY (see core::receiveDropOutcome for why not NONE).
                     static_cast<void>(
                         dropData_.setPerformedEffect(reinterpret_cast<std::uintptr_t>(data), core::Effect::None));
                 }

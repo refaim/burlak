@@ -15,6 +15,7 @@ namespace burlak::adapters::far_api
         [[nodiscard]] std::optional<core::PanelInfo> panel(core::PanelSide side) override;
         [[nodiscard]] std::vector<core::Item> selectedItems(core::PanelSide side) override;
         [[nodiscard]] std::optional<std::wstring> directory(core::PanelSide side) override;
+        [[nodiscard]] std::optional<core::PanelDirectory> pluginDirectory(core::PanelSide side) override;
         [[nodiscard]] bool currentWindowIsPanels() override;
         void updateAndRedraw(core::PanelSide side) override;
 

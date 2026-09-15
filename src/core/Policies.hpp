@@ -69,8 +69,8 @@ namespace burlak::core
     [[nodiscard]] std::optional<Effect> preferredDropEffect(bool needsExtraction);
     [[nodiscard]] std::expected<int, Error> consoleRowOffset(int bufferHeight, int windowTop, int windowBottom);
     [[nodiscard]] std::optional<std::uint32_t> runOwner(std::wstring_view name);
-    inline constexpr auto extractionRunGracePeriod = std::chrono::minutes{3};
-    inline constexpr auto extractionSweepInterval = std::chrono::minutes{1};
+    inline constexpr auto extractionRunGracePeriod = std::chrono::minutes{1};
+    inline constexpr auto extractionSweepInterval = std::chrono::seconds{15};
     inline constexpr auto externalDragPollInterval = std::chrono::milliseconds{50};
     // The tool thread waits at most this long for Far's thread to answer the drop-time identity refresh.
     inline constexpr auto receiveDropTimeout = std::chrono::seconds{10};
@@ -84,6 +84,7 @@ namespace burlak::core
     [[nodiscard]] bool shouldSweepRun(bool ownRun, bool ownerAlive, bool oldEnough, bool inUse);
     [[nodiscard]] bool retainExtractedRun(bool extractionRan, DragLoopOutcome outcome, std::int32_t droppedStatus);
     [[nodiscard]] ReceiveDropOutcome receiveDropOutcome(Effect effect, bool completed);
+    [[nodiscard]] ReceiveDropOutcome declinedReceiveOutcome();
     [[nodiscard]] Effect dropMenuEffect(DropMenuChoice choice, AllowedEffects allowed = {.copy = true, .move = true});
 
 } // namespace burlak::core

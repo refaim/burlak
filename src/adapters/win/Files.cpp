@@ -195,7 +195,7 @@ namespace burlak::adapters::win
             const bool inUse = candidate && runInUse(entry->path());
             if (core::shouldSweepRun(ownRun, alive, oldEnough, inUse)) {
                 // Telegram and Chrome hold large files open while transferring them, so a sharing violation keeps
-                // the whole run. Targets that queued a path but have not opened it yet rely on the three-minute grace.
+                // the whole run. Targets that queued a path but have not opened it yet rely on the one-minute grace.
                 static_cast<void>(std::filesystem::remove_all(entry->path(), error));
                 error.clear();
             }

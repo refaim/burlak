@@ -83,6 +83,9 @@ namespace burlak::core
             CHECK(plan->extraction->module.path == L"Archive.dll");
             CHECK(plan->extraction->module.instance == 42);
             CHECK(plan->extraction->directory == L"C:\\Temp\\Burlak\\7-1");
+            // The location (inner directory and host archive) identifies the archive at release, where the handle is
+            // a reusable heap pointer.
+            CHECK(plan->extraction->location == panels.locations[0]);
             CHECK(files.placeholders ==
                   std::vector<std::pair<std::wstring, bool>>{{L"one.txt", false}, {L"folder", true}});
             CHECK(host.requestedOwner == panels.panels[0]->owner);
@@ -165,6 +168,13 @@ namespace burlak::core
             CHECK(files.placeholders.empty());
 
             host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            // Without a location identity the release could not prove it still faces the same archive: no run is even
+            // created.
+            panels.locations[0].reset();
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::DirectoryUnavailable);
+            CHECK(files.placeholders.empty());
+            CHECK(files.removed.empty());
+            panels.locations[0] = PanelDirectory{.name = L"", .file = L"C:\\archives\\host.zip"};
             files.directory = std::unexpected(Error::Unavailable);
             CHECK(DragPlan{panels, host, files}.build().error() == Error::Unavailable);
 

@@ -18,6 +18,10 @@ namespace burlak::tests
         std::array<std::optional<core::PanelInfo>, 2> panels{};
         std::array<std::vector<core::Item>, 2> items{};
         std::array<std::optional<std::wstring>, 2> directories{};
+        // The plugin-panel location identity (inner directory and host archive) is available by default so that
+        // every virtual-panel plan can be built; tests change or clear it to model another archive or a failure.
+        std::array<std::optional<core::PanelDirectory>, 2> locations{
+            core::PanelDirectory{.name = L"", .file = L"C:\\archives\\host.zip"}, std::nullopt};
         bool panelsWindow{true};
         std::vector<core::PanelSide> updates;
 
@@ -34,6 +38,11 @@ namespace burlak::tests
         [[nodiscard]] std::optional<std::wstring> directory(core::PanelSide side) override
         {
             return directories.at(index(side));
+        }
+
+        [[nodiscard]] std::optional<core::PanelDirectory> pluginDirectory(core::PanelSide side) override
+        {
+            return locations.at(index(side));
         }
 
         [[nodiscard]] bool currentWindowIsPanels() override

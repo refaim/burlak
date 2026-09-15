@@ -308,9 +308,17 @@ namespace burlak::core
         TEST_CASE("receive outcomes implement optimized move semantics")
         {
             CHECK(receiveDropOutcome(Effect::Copy, true) == ReceiveDropOutcome{Effect::Copy, false});
-            CHECK(receiveDropOutcome(Effect::Move, true) == ReceiveDropOutcome{Effect::None, true});
-            CHECK(receiveDropOutcome(Effect::Copy, false) == ReceiveDropOutcome{});
+            // An optimized move answers COPY, never NONE: ole32 treats a NONE from the target under the cursor as a
+            // refused drop and falls back to WM_DROPFILES on the overlay's owner, the console, which pastes the path.
+            CHECK(receiveDropOutcome(Effect::Move, true) == ReceiveDropOutcome{Effect::Copy, true});
+            // A drop Burlak took part in but declined (the shell operation failed or was cancelled) also answers COPY
+            // without a performed effect: an Explorer source then does nothing, and nothing is pasted either.
+            CHECK(receiveDropOutcome(Effect::Copy, false) == ReceiveDropOutcome{Effect::Copy, false});
+            CHECK(receiveDropOutcome(Effect::Move, false) == ReceiveDropOutcome{Effect::Copy, false});
+            CHECK(declinedReceiveOutcome() == ReceiveDropOutcome{Effect::Copy, false});
+            // None is reserved for a drop Burlak never took part in.
             CHECK(receiveDropOutcome(Effect::None, true) == ReceiveDropOutcome{});
+            CHECK(receiveDropOutcome(Effect::Link, true) == ReceiveDropOutcome{});
             CHECK(dropMenuEffect(DropMenuChoice::Copy) == Effect::Copy);
             CHECK(dropMenuEffect(DropMenuChoice::Move) == Effect::Move);
             CHECK(dropMenuEffect(DropMenuChoice::Cancel) == Effect::None);
@@ -588,8 +596,8 @@ namespace burlak::core
             CHECK(shouldSweepRun(false, false, true, false));
             CHECK_FALSE(shouldSweepRun(true, true, true, true));
             CHECK_FALSE(shouldSweepRun(false, false, true, true));
-            CHECK(extractionRunGracePeriod == std::chrono::minutes{3});
-            CHECK(extractionSweepInterval == std::chrono::minutes{1});
+            CHECK(extractionRunGracePeriod == std::chrono::minutes{1});
+            CHECK(extractionSweepInterval == std::chrono::seconds{15});
             CHECK(externalDragPollInterval == std::chrono::milliseconds{50});
             CHECK(receiveDropTimeout == std::chrono::seconds{10});
             CHECK(receiveEnteredTimeout == std::chrono::minutes{2});

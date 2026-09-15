@@ -676,7 +676,9 @@ namespace burlak::drag
             effect = DROPEFFECT_COPY | DROPEFFECT_MOVE;
             CHECK(target.DragEnter(data->data.Get(), moving ? MK_SHIFT : 0, {5, 5}, &effect) == S_OK);
             CHECK(target.Drop(data->data.Get(), moving ? MK_SHIFT : 0, {5, 5}, &effect) == S_OK);
-            CHECK(effect == (moving ? DROPEFFECT_NONE : DROPEFFECT_COPY));
+            // Both answer COPY to OLE: the moved files are announced through CFSTR_PERFORMEDDROPEFFECT = NONE below,
+            // while a NONE return would make ole32 fall back to WM_DROPFILES on the overlay's owner.
+            CHECK(effect == DROPEFFECT_COPY);
             CHECK(std::filesystem::exists(destination / L"one.txt"));
             CHECK(lifecycle.finishes == 1);
             CHECK(host.synchros == 1);
@@ -732,9 +734,12 @@ namespace burlak::drag
                 InvalidFileData data{mode};
                 DropTarget target{session, dropData(), menu, lifecycle};
                 CHECK(target.DragEnter(&data, 0, {5, 5}, &effect) == S_OK);
-                CHECK(effect == (mode == InvalidFileData::Mode::Missing ? DROPEFFECT_NONE : DROPEFFECT_COPY));
+                const bool promised = mode != InvalidFileData::Mode::Missing;
+                CHECK(effect == (promised ? DROPEFFECT_COPY : DROPEFFECT_NONE));
                 CHECK(target.Drop(&data, 0, {5, 5}, &effect) == S_OK);
-                CHECK(effect == DROPEFFECT_NONE);
+                // No CF_HDROP at all: Burlak never took part, none. A CF_HDROP that then cannot be read (or fails the
+                // path bounds) after a hover that promised COPY: declined, so the console does not paste the list.
+                CHECK(effect == (promised ? DROPEFFECT_COPY : DROPEFFECT_NONE));
             }
             CHECK(session.receiveDrops == 0);
             CHECK(lifecycle.finishes == 4);
@@ -781,7 +786,8 @@ namespace burlak::drag
 
             REQUIRE(target.DragEnter(data->data.Get(), 0, {5, 5}, &effect) == S_OK);
             CHECK(target.Drop(data->data.Get(), 0, {5, 5}, &effect) == S_OK);
-            CHECK(effect == DROPEFFECT_NONE);
+            // Burlak accepted the drop and then refused it on Far's thread (with its own message): declined, not None.
+            CHECK(effect == DROPEFFECT_COPY);
             CHECK(lifecycle.refreshes == 1);
             CHECK(session.receiveDrops == 0);
         }
@@ -793,7 +799,7 @@ namespace burlak::drag
                                              ThrowingDropData::Operation::Performed}) {
                     DropSession session;
                     if (operation == ThrowingDropData::Operation::Performed) {
-                        session.receiveOutcome = {.returnedEffect = core::Effect::None, .setPerformedNone = true};
+                        session.receiveOutcome = {.returnedEffect = core::Effect::Copy, .setPerformedNone = true};
                     }
                     ThrowingDropData data;
                     data.operation = operation;
@@ -886,7 +892,7 @@ namespace burlak::drag
             SUBCASE("move")
             {
                 menu.choice = core::DropMenuChoice::Move;
-                session.receiveOutcome = {core::Effect::None, true};
+                session.receiveOutcome = {core::Effect::Copy, true};
                 expected = core::Effect::Move;
             }
             SUBCASE("cancel")
@@ -903,6 +909,9 @@ namespace burlak::drag
             CHECK(menu.owner != session.owner);
             CHECK(session.received == expected);
             CHECK(session.receiveDrops == (expected == core::Effect::None ? 0 : 1));
+            // The user was offered the menu and answered, so every outcome is COPY to OLE: a Cancel leaves nothing
+            // behind and must not fall back to the console's own paste.
+            CHECK(effect == DROPEFFECT_COPY);
             CHECK(lifecycle.finishes == 1);
         }
 
@@ -938,11 +947,11 @@ namespace burlak::drag
             SUBCASE("move-only source without Shift")
             {
                 effect = DROPEFFECT_MOVE;
-                session.receiveOutcome = {core::Effect::None, true};
+                session.receiveOutcome = {core::Effect::Copy, true};
                 CHECK(target.DragEnter(data->data.Get(), 0, {5, 5}, &effect) == S_OK);
                 CHECK(effect == DROPEFFECT_MOVE);
                 CHECK(target.Drop(data->data.Get(), 0, {5, 5}, &effect) == S_OK);
-                CHECK(effect == DROPEFFECT_NONE);
+                CHECK(effect == DROPEFFECT_COPY);
                 CHECK(session.received == core::Effect::Move);
             }
             SUBCASE("right-menu choice not allowed by the source")
@@ -951,7 +960,7 @@ namespace burlak::drag
                 menu.choice = core::DropMenuChoice::Move;
                 CHECK(target.DragEnter(data->data.Get(), MK_RBUTTON, {5, 5}, &effect) == S_OK);
                 CHECK(target.Drop(data->data.Get(), 0, {5, 5}, &effect) == S_OK);
-                CHECK(effect == DROPEFFECT_NONE);
+                CHECK(effect == DROPEFFECT_COPY); // declined after the menu, not refused
                 CHECK(menu.allowed == core::AllowedEffects{.copy = true, .move = false});
                 CHECK(session.receiveDrops == 0);
             }

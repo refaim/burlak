@@ -79,6 +79,10 @@ namespace burlak::core
                 if (!module) {
                     return std::unexpected(Error::Unavailable);
                 }
+                const auto location = panels_.pluginDirectory(PanelSide::Active);
+                if (!location) {
+                    return std::unexpected(Error::DirectoryUnavailable);
+                }
                 const auto directory = files_.runDirectory();
                 if (!directory) {
                     return std::unexpected(directory.error());
@@ -97,6 +101,7 @@ namespace burlak::core
                 return Plan{.paths = std::move(paths),
                             .extraction = ExtractionRecipe{.panel = panel->handle,
                                                            .owner = panel->owner,
+                                                           .location = *location,
                                                            .items = std::move(items),
                                                            .module = *module,
                                                            .directory = *directory}};

@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 namespace burlak::adapters::far_api
@@ -20,6 +21,7 @@ namespace burlak::adapters::far_api
         bool panelsWindow{true};
         bool advFailure{};
         std::wstring directoryName{L"C:\\panel"};
+        std::optional<std::wstring> directoryFile{L"C:\\archives\\host.zip"};
         std::wstring selectedName{L"selected.txt"};
         bool detailedItem{};
         PLUGINPANELITEMFLAGS selectedFlags{PPIF_SELECTED};
@@ -77,7 +79,9 @@ namespace burlak::adapters::far_api
                 return 1;
             }
             if (command == FCTL_GETPANELDIRECTORY) {
-                const auto bytes = sizeof(FarPanelDirectory) + (directoryName.size() + 1) * sizeof(wchar_t);
+                const auto fileText = directoryFile.value_or(L"");
+                const auto bytes = sizeof(FarPanelDirectory) + (directoryName.size() + 1) * sizeof(wchar_t) +
+                                   (fileText.size() + 1) * sizeof(wchar_t);
                 if (param2 == nullptr) {
                     return panelFailure == PanelFailure::DirectorySize ? 0 : static_cast<intptr_t>(bytes);
                 }
@@ -87,7 +91,11 @@ namespace burlak::adapters::far_api
                 auto &directory = *static_cast<FarPanelDirectory *>(param2);
                 auto *name = reinterpret_cast<wchar_t *>(static_cast<std::byte *>(param2) + sizeof(FarPanelDirectory));
                 std::memcpy(name, directoryName.c_str(), (directoryName.size() + 1) * sizeof(wchar_t));
+                auto *file = name + directoryName.size() + 1;
+                std::memcpy(file, fileText.c_str(), (fileText.size() + 1) * sizeof(wchar_t));
                 directory.Name = panelFailure == PanelFailure::DirectoryName ? nullptr : name;
+                // A plain directory panel leaves File null; a plugin panel names its host file (the archive).
+                directory.File = directoryFile ? file : nullptr;
                 return static_cast<intptr_t>(bytes);
             }
             if (command == FCTL_GETSELECTEDPANELITEM) {
@@ -250,6 +258,13 @@ namespace burlak::adapters::far_api
             CHECK(passive->rect == core::CellRect{40, 0, 79, 24});
 
             CHECK(panels.directory(core::PanelSide::Active) == directoryName);
+            // FCTL_GETPANELDIRECTORY names the inner directory and, for a plugin panel, its host file (the archive).
+            CHECK(panels.pluginDirectory(core::PanelSide::Active) ==
+                  core::PanelDirectory{.name = directoryName, .file = *directoryFile});
+            directoryFile.reset();
+            CHECK(panels.pluginDirectory(core::PanelSide::Active) ==
+                  core::PanelDirectory{.name = directoryName, .file = L""});
+            directoryFile = L"C:\\archives\\host.zip";
             const auto items = panels.selectedItems(core::PanelSide::Active);
             REQUIRE(items.size() == 1);
             CHECK(items[0].name == selectedName);
@@ -292,6 +307,7 @@ namespace burlak::adapters::far_api
             FarPanels panels{info};
             CHECK_FALSE(panels.panel(core::PanelSide::Active).has_value());
             CHECK_FALSE(panels.directory(core::PanelSide::Active).has_value());
+            CHECK_FALSE(panels.pluginDirectory(core::PanelSide::Active).has_value());
             CHECK(panels.selectedItems(core::PanelSide::Active).empty());
             CHECK_FALSE(panels.currentWindowIsPanels());
             panels.updateAndRedraw(core::PanelSide::Active);
@@ -303,10 +319,13 @@ namespace burlak::adapters::far_api
 
             panelFailure = PanelFailure::DirectorySize;
             CHECK_FALSE(failing.directory(core::PanelSide::Active).has_value());
+            CHECK_FALSE(failing.pluginDirectory(core::PanelSide::Active).has_value());
             panelFailure = PanelFailure::DirectoryFill;
             CHECK_FALSE(failing.directory(core::PanelSide::Active).has_value());
+            CHECK_FALSE(failing.pluginDirectory(core::PanelSide::Active).has_value());
             panelFailure = PanelFailure::DirectoryName;
             CHECK_FALSE(failing.directory(core::PanelSide::Active).has_value());
+            CHECK_FALSE(failing.pluginDirectory(core::PanelSide::Active).has_value());
 
             panelFailure = PanelFailure::ItemSize;
             CHECK(failing.selectedItems(core::PanelSide::Active).empty());

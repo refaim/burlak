@@ -158,6 +158,11 @@ namespace burlak::adapters::far_api
 
     std::optional<std::wstring> FarPanels::directory(core::PanelSide side)
     {
+        return pluginDirectory(side).transform([](const core::PanelDirectory &location) { return location.name; });
+    }
+
+    std::optional<core::PanelDirectory> FarPanels::pluginDirectory(core::PanelSide side)
+    {
         if (info_.PanelControl == nullptr) {
             return std::nullopt;
         }
@@ -172,7 +177,9 @@ namespace burlak::adapters::far_api
             directory.Name == nullptr) {
             return std::nullopt;
         }
-        return std::wstring{directory.Name};
+        // File is the host file a plugin panel was opened from and stays null for a plain directory panel.
+        return core::PanelDirectory{.name = directory.Name,
+                                    .file = directory.File == nullptr ? std::wstring{} : std::wstring{directory.File}};
     }
 
     bool FarPanels::currentWindowIsPanels()

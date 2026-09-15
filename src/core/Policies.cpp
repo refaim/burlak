@@ -279,13 +279,31 @@ namespace burlak::core
         return extractionRan && outcome.status == droppedStatus && outcome.effect != 0;
     }
 
+    ReceiveDropOutcome declinedReceiveOutcome()
+    {
+        // Burlak took part in this drop and then declined it: the user chose Cancel in the right-button menu, the
+        // identity refresh refused, or the shell operation failed or was cancelled. Nothing happens, and OLE is still
+        // answered COPY without a performed effect: an Explorer source does nothing with that, a Burlak source keeps
+        // its temp run for the sweep, and the NONE fallback described below cannot paste the path into the console.
+        return ReceiveDropOutcome{Effect::Copy, false};
+    }
+
     ReceiveDropOutcome receiveDropOutcome(Effect effect, bool completed)
     {
-        if (!completed || (effect != Effect::Copy && effect != Effect::Move)) {
+        // None is reserved for a drop Burlak never took part in (no CF_HDROP, a point outside the item rows).
+        if (effect != Effect::Copy && effect != Effect::Move) {
             return {};
         }
-        return effect == Effect::Copy ? ReceiveDropOutcome{Effect::Copy, false}
-                                      : ReceiveDropOutcome{Effect::None, true};
+        if (!completed) {
+            return declinedReceiveOutcome();
+        }
+        // A completed move is an optimized move: the receiver moved the data itself and tells the source so through
+        // CFSTR_PERFORMEDDROPEFFECT = NONE, so the source deletes nothing. The value returned from Drop is COPY, not
+        // NONE, although the reference allows either: ole32 treats NONE from the target under the cursor as a refused
+        // drop and falls back to WM_DROPFILES on the window chain that accepts files, which is the console that owns
+        // the overlay, and conhost then pastes the quoted path into the command line (established by experiment on
+        // Windows 10 with both DoDragDrop and SHDoDragDrop; a COPY return produces no fallback).
+        return ReceiveDropOutcome{Effect::Copy, effect == Effect::Move};
     }
 
     Effect dropMenuEffect(DropMenuChoice choice, AllowedEffects allowed)

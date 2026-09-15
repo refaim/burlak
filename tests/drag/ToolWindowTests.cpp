@@ -643,7 +643,7 @@ namespace burlak::drag
             REQUIRE(window != nullptr);
             REQUIRE(headlessWindow.timers.size() == 2);
             CHECK(headlessWindow.timers[0] == std::pair<UINT_PTR, UINT>{externalDragPollTimerId(), 50});
-            CHECK(headlessWindow.timers[1] == std::pair<UINT_PTR, UINT>{extractionSweepTimerId(), 60000});
+            CHECK(headlessWindow.timers[1] == std::pair<UINT_PTR, UINT>{extractionSweepTimerId(), 15000});
 
             SendMessageW(window, WM_TIMER, externalDragPollTimerId(), 0);
             CHECK(session.snapshotRequests.empty());
@@ -953,7 +953,8 @@ namespace burlak::drag
                 const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
                 REQUIRE(tool.dragEnter(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
 
-                CHECK(tool.drop(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_NONE);
+                // Accepted, then refused before the shell operation: declined (COPY to OLE, nothing done), never None.
+                CHECK(tool.drop(nativeData, 0, {108, 200}, DROPEFFECT_COPY) == DROPEFFECT_COPY);
                 CHECK(session.refreshRequests == 1);
                 CHECK(session.receiveDrops == 0);
                 CHECK(refreshWaitMilliseconds == (scenario == 1 || scenario == 2 ? 10000U : 0U));

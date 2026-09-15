@@ -12,7 +12,7 @@ the receiving Far. Both Fars need Burlak for a Far-to-Far drop. If several Fars 
 Terminal window, the drop goes to the tab that most recently had focus.
 Files and selections can also be dragged out of archive, FTP/SFTP, and other plugin panels;
 after release they are extracted as copies for the target, so these plugin-panel drags do not offer shortcuts.
-Files dragged out of a plugin panel are extracted into `%TEMP%\Burlak` and removed a few minutes
+Files dragged out of a plugin panel are extracted into `%TEMP%\Burlak` and removed about a minute
 later, giving the receiving program time to read them.
 A drop into a plugin panel (such as an archive or FTP) is not supported yet and the terminal
 pastes the path as before; Windows also blocks a drop from a non-elevated program into elevated Far.

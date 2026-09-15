@@ -11,7 +11,12 @@ namespace burlak::core
     namespace
     {
 
-        constexpr int dragThresholdCells = 3;
+        // A drag starts at two cells sideways or one row down (about 16 px either way with a common console
+        // font), for both buttons. Cells are half as tall as they are wide, so three cells on both axes meant 24 px
+        // sideways but 48 px vertically; a right-button release inside that box is a click, and Far opens its context
+        // menu on it. Both distances stay well above Explorer's 4 px drag rectangle.
+        constexpr int dragThresholdColumns = 2;
+        constexpr int dragThresholdRows = 1;
 
         [[nodiscard]] bool held(Button button, const MouseEvent &event)
         {
@@ -72,7 +77,7 @@ namespace burlak::core
 
         const int dx = std::abs(event.at.x - press_.at.x);
         const int dy = std::abs(event.at.y - press_.at.y);
-        if (dx < dragThresholdCells && dy < dragThresholdCells) {
+        if (dx < dragThresholdColumns && dy < dragThresholdRows) {
             return {.action = VerdictAction::Hold, .replacement = {}};
         }
 

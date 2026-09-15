@@ -38,18 +38,14 @@ namespace burlak::core
         [[nodiscard]] bool extractRecipe(IPanels &panels, IFarHost &host, const ExtractionRecipe &recipe,
                                          std::wstring_view requestedDirectory)
         {
+            // Only the panel's identity matters: the same open archive of the same plugin, still a virtual file
+            // panel. GetFilesW receives the recipe's own item records, so Far's current cursor and selection, which
+            // move whenever the user drags across the panel, are deliberately not compared. The handle alone is a
+            // heap pointer the plugin can reuse for an archive opened during the drag, so the location (inner
+            // directory and host archive) is compared as well.
             const auto panel = panels.panel(PanelSide::Active);
-            if (!panels.currentWindowIsPanels() || !extractionPanelMatches(panel, recipe)) {
-                report(host, L"Plugin panel changed during the drag; the drop was cancelled.");
-                return false;
-            }
-            auto items = panels.selectedItems(PanelSide::Active);
-            const auto selectedCount =
-                panel.transform([](const PanelInfo &current) { return current.selectedItems; }).value_or(0);
-            const bool completeSnapshot = items.size() == selectedCount;
-            std::erase_if(
-                items, [](const Item &item) { return item.name.empty() || item.name == L"." || item.name == L".."; });
-            if (!completeSnapshot || items != recipe.items) {
+            if (!panels.currentWindowIsPanels() || !extractionPanelMatches(panel, recipe) ||
+                panels.pluginDirectory(PanelSide::Active) != recipe.location) {
                 report(host, L"Plugin panel changed during the drag; the drop was cancelled.");
                 return false;
             }

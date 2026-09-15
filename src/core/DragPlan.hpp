@@ -13,6 +13,9 @@ namespace burlak::core
     {
         PanelHandle panel{};
         Guid owner{};
+        // The panel handle is the plugin's own heap pointer, which a reopened archive can reuse; the location
+        // (inner directory and host archive) is what proves the release still faces the archive planned here.
+        PanelDirectory location;
         std::vector<Item> items;
         PluginModule module;
         std::wstring directory;

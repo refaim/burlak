@@ -891,7 +891,7 @@ namespace burlak::core
             CHECK(host.messages[0][0].find(L"NetBox.dll") != std::wstring::npos);
         }
 
-        TEST_CASE("plugin extraction revalidates the panel selection owner and module on Far's thread")
+        TEST_CASE("plugin extraction revalidates the panel, its owner and module on Far's thread")
         {
             auto panels = readyPanels();
             panels.panels[0]->realNames = false;
@@ -943,17 +943,19 @@ namespace burlak::core
             {
                 panels.panelsWindow = false;
             }
-            SUBCASE("selection changed")
+            // The handle is the plugin's own heap pointer, which a reopened archive can reuse; the location proves it
+            // is the same archive and the same inner directory.
+            SUBCASE("another archive under the same handle")
             {
-                panels.items[0][0].size = 20;
+                panels.locations[0]->file = L"C:\\archives\\other.zip";
             }
-            SUBCASE("a pointer-backed selection field changed")
+            SUBCASE("a different inner directory of the same archive")
             {
-                panels.items[0][0].identity = {std::byte{1}};
+                panels.locations[0]->name = L"sub";
             }
-            SUBCASE("the selected-item snapshot became incomplete")
+            SUBCASE("the plugin directory became unavailable")
             {
-                panels.panels[0]->selectedItems = 2;
+                panels.locations[0].reset();
             }
             SUBCASE("owner module disappeared")
             {
@@ -967,6 +969,58 @@ namespace burlak::core
             CHECK(session.synchro() == std::optional{false});
             CHECK(host.extractedPanels.empty());
             CHECK(host.messages.size() == 1);
+        }
+
+        TEST_CASE("plugin extraction ignores the panel cursor and selection, which the recipe already carries")
+        {
+            auto panels = readyPanels();
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {{.name = L"one.txt", .size = 19, .selected = true}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            std::vector<std::string> calls;
+            Screen screen{calls};
+            Input input{calls};
+            Tool tool{calls};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+            tests::Shell shell;
+            Session session{panels, host, screen, input, files, shell};
+            REQUIRE(session.begin(tool, DragStart{Button::Left, {5, 5}}));
+            REQUIRE(session.requestExtraction());
+            const auto recipeItems = panels.items[0];
+
+            // Moving the cursor inside the archive during the drag changes Far's implicit selection; GetFilesW receives
+            // the recipe's own item records, so only the panel, its owner and module must still be the same.
+            SUBCASE("the cursor moved to another item")
+            {
+                panels.items[0] = {{.name = L"other.txt", .size = 7, .selected = true}};
+                panels.panels[0]->currentItem = 3;
+            }
+            SUBCASE("the selection grew")
+            {
+                panels.items[0].push_back({.name = L"two.txt", .size = 5, .selected = true});
+                panels.panels[0]->selectedItems = 2;
+            }
+            SUBCASE("the selection cleared")
+            {
+                panels.items[0].clear();
+                panels.panels[0]->selectedItems = 0;
+            }
+            SUBCASE("a pointer-backed selection field changed")
+            {
+                panels.items[0][0].identity = {std::byte{1}};
+            }
+
+            const auto result = session.synchro();
+            REQUIRE(result.has_value());
+            CHECK(*result);
+            CHECK(host.messages.empty());
+            CHECK(host.extractedPanels == std::vector<PanelHandle>{11});
+            CHECK(host.extractedItems == std::vector<std::vector<Item>>{recipeItems});
+            CHECK(host.extractedModules[0].path == L"Archive.dll");
         }
 
         TEST_CASE("real-path plans neither request extraction nor ask the tool to clean temporary files")
@@ -1080,7 +1134,8 @@ namespace burlak::core
                                                    .geometry = *screen.pointGeometry});
             const std::vector<std::wstring> paths{L"C:\\source\\one.txt"};
 
-            CHECK(session.receiveDrop(paths, {45, 5}, Effect::Move) == ReceiveDropOutcome{});
+            // A failed shell operation is a drop Burlak took part in: declined, so COPY without a performed effect.
+            CHECK(session.receiveDrop(paths, {45, 5}, Effect::Move) == ReceiveDropOutcome{Effect::Copy, false});
             CHECK(session.receiveDrop({}, {45, 5}, Effect::Copy) == ReceiveDropOutcome{});
             CHECK(session.receiveDrop(paths, {45, 5}, Effect::None) == ReceiveDropOutcome{});
             CHECK(session.receiveDrop(paths, {5, 0}, Effect::Copy) == ReceiveDropOutcome{});

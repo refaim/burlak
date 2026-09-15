@@ -25,14 +25,20 @@ The three 1.3.0 capabilities, against which the layering below is judged, are:
    exactly as Far itself does for plugin-to-plugin copy (`FileList::PluginGetFiles`, `OPM_SILENT`
    into a temp directory), then answers "drop". The call is wrapped in SEH so a crashing plugin
    aborts the drag with a message instead of taking Burlak down. A completed ordinary OLE drop
-   refreshes the run timestamp and retains extracted files for three minutes so asynchronous
-   targets can read them. A one-minute tool-window timer plus startup and shutdown sweeps remove
+   refreshes the run timestamp and retains extracted files for one minute so asynchronous
+   targets can read them. A fifteen-second tool-window timer plus startup and shutdown sweeps remove
    old own runs and old runs whose owner process is dead. A sweep first opens every regular file
    with read access and no sharing; one sharing violation marks the whole run in use and preserves
    it until a later sweep. The original `FCTL_GETSELECTEDPANELITEM` buffers stay alive in the
    plan and are passed back as complete `PluginPanelItem` records, matching
-   `FileList::CreatePluginItemList`. Release revalidates the panel, complete selection and owner
-   module on Far's thread. A case-insensitive duplicate name cannot be represented faithfully in
+   `FileList::CreatePluginItemList`. Release revalidates the panel's identity (the panels window is
+   current; the panel is visible, a virtual plugin file panel, with the recipe's handle and owner,
+   and the same `FCTL_GETPANELDIRECTORY` location — inner directory and host archive file — recorded
+   at plan time, because the handle is the plugin's own heap pointer, which an archive opened
+   during the drag can reuse) and the owner module on Far's thread, not the current cursor or
+   selection: `GetFilesW` receives the recipe's own item records, and the cursor moves whenever
+   the user drags across the panel.
+   A case-insensitive duplicate name cannot be represented faithfully in
    one temp directory and prevents the drag from starting. A rewritten `GetFilesInfo::DestPath`
    cancels the drop because OLE already advertises the original directory. Placeholder-backed
    drags offer copy and move, but not link: cleanup would otherwise leave a broken shortcut.
@@ -91,9 +97,22 @@ The three 1.3.0 capabilities, against which the layering below is judged, are:
    thread remains free. It must finish before `Drop` returns because the source acts on the returned
    effect immediately. Following [Handling Shell Data Transfer
    Scenarios, Handling Optimized Move Operations](https://learn.microsoft.com/windows/win32/shell/datascenarios#handling-optimized-move-operations),
-   a completed copy returns `DROPEFFECT_COPY`; a completed move returns `DROPEFFECT_NONE` and writes
+   a completed copy returns `DROPEFFECT_COPY`; a completed move is an optimized move: it writes
    `CFSTR_PERFORMEDDROPEFFECT = DROPEFFECT_NONE`, so the source does not delete files already moved
-   by the receiver. Failure or cancellation returns none without setting the performed effect.
+   by the receiver, and it also returns `DROPEFFECT_COPY` rather than the `DROPEFFECT_NONE` the
+   reference equally allows. Established by experiment (Windows 10, `DoDragDrop` and
+   `SHDoDragDrop` alike): when the target under the cursor returns none, ole32 treats the drop as
+   refused and falls back to its legacy `DragAcceptFiles` delivery along the window's owner chain —
+   the tool window is owned by the console, which accepts files — so conhost received
+   `WM_DROPFILES` and pasted the quoted path into the command line after every move; a `COPY`
+   return produces no fallback. For the same reason a drop Burlak took part in and then declined —
+   a `CF_HDROP` that cannot be read or fails the path bounds after a hover that promised an effect,
+   Cancel in the right-button menu, a refused identity refresh (its message is shown), a shell
+   operation that failed or was cancelled — also answers `COPY` with nothing done and no performed
+   effect (`declinedReceiveOutcome`): an Explorer source does nothing with it, a Burlak source keeps
+   its temp run for the sweep, and nothing is pasted. None is returned only where Burlak never took
+   part: no `CF_HDROP` in the data object, a point outside the item rows (hover already answered
+   none, so OLE delivers no `Drop`), and the states where the target is not entered.
    Successful work posts a by-value panel side for Far-thread update/redraw. A source under
    `%TEMP%\Burlak` is ordinary input: a same-volume move naturally becomes a rename, and retention
    plus the timer sweep handles anything left behind.
@@ -173,6 +192,7 @@ Interfaces core depends on (all pure virtual, all under `src/core/`, implemented
 `src/adapters/`):
 
 - `IPanels` — `panel(PanelSide)`, `selectedItems(PanelSide)`, `directory(PanelSide)`,
+  `pluginDirectory(PanelSide)` (the full `FCTL_GETPANELDIRECTORY` record: name and host file),
   `currentWindowIsPanels()`, `updateAndRedraw(PanelSide)`.
 - `IFarHost` — `postSynchro()`, `message(title, lines)`, `pluginModule(guid)` (module path and
   `GlobalInfo::Instance`), `extract(hPanel, items, module, destination)` (the `GetFilesW` call,
@@ -190,7 +210,7 @@ Interfaces core depends on (all pure virtual, all under `src/core/`, implemented
   layer has no adapter include or link dependency.
 - `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, `touch`,
   process-liveness probing, and a grace-period sweep of old own runs and old dead-owner runs at
-  startup, once a minute while the tool window is idle, and at exit. The adapter gathers the
+  startup, every fifteen seconds while the tool window is idle, and at exit. The adapter gathers the
   file-in-use fact; core decides.
 - `IWindowProperties` — set/read/remove the process id on a host window and report our process id.
 - `IDropMenu` — map the native Copy here / Move here / Cancel popup to a core menu choice; the
@@ -202,7 +222,11 @@ Core logic:
 
 - `Gesture` (exists today): the state machine over `MouseEvent`s, returning `Verdict {Pass, Hold,
   Replace(MouseEvent)}` and, through a callback or an out-value, the request to start a drag with
-  a button. Same behaviour as 1.2.0; the tests pin it.
+  a button. The drag starts at two cells sideways or one row vertically (about 16 px either way at
+  a common console font, above Explorer's 4 px drag rectangle), for both buttons: cells are half
+  as tall as they are wide, and 1.2.0's three cells on both axes let a right-button release within
+  48 px vertically become the click that opens Far's context menu. Otherwise as 1.2.0; the tests
+  pin it.
 - `Geometry`: cell ↔ pixel mapping, "which panel is this cell on", the item-row test that today
   lives in `InsidePanel`.
 - `DragPlan`: given the source panel, decides the source kind (real paths vs placeholders + the
@@ -217,7 +241,7 @@ Core logic:
 - `ReceiveSnapshot` and `ReceivePolicy`: eligible identity, overlay union, point effect and
   destination. The optimized-move outcome and menu-choice mapping are pure functions.
 - `shouldSweepRun`: decides from ownership, owner liveness, age and in-use facts; the one grace
-  constant is three minutes and the tool-window cadence is one minute.
+  constant is one minute and the tool-window cadence is fifteen seconds.
 - `Session`: the object that owns one drag from threshold to cleanup and sequences the calls to
   the interfaces above; the composition root creates it with the real adapters, the tests with
   fakes.
@@ -293,8 +317,8 @@ while the operation needs no Far API. The COM entry points contain allocation an
 exceptions. On success the tool stores only the by-value `PanelSide` and posts synchro for
 Far-thread update/redraw.
 
-The one-minute sweep timer also runs on the tool thread, but only in `Idle`; startup and exit call the
-same adapter from Far's thread. `Session::begin` never sweeps. The three-minute age makes an active
+The fifteen-second sweep timer also runs on the tool thread, but only in `Idle`; startup and exit call the
+same adapter from Far's thread. `Session::begin` never sweeps. The one-minute age makes an active
 drag ineligible, retention touches its run before returning to `Idle`, and the adapter's sharing probe
 protects a file already being read.
 

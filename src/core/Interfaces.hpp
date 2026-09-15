@@ -19,6 +19,7 @@ namespace burlak::core
         [[nodiscard]] virtual std::optional<PanelInfo> panel(PanelSide side) = 0;
         [[nodiscard]] virtual std::vector<Item> selectedItems(PanelSide side) = 0;
         [[nodiscard]] virtual std::optional<std::wstring> directory(PanelSide side) = 0;
+        [[nodiscard]] virtual std::optional<PanelDirectory> pluginDirectory(PanelSide side) = 0;
         [[nodiscard]] virtual bool currentWindowIsPanels() = 0;
         virtual void updateAndRedraw(PanelSide side) = 0;
     };
