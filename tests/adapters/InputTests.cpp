@@ -1,11 +1,13 @@
 #include "adapters/win/Input.hpp"
 
+#include "../Desktop.hpp"
 #include "core/Policies.hpp"
 
 #include <doctest/doctest.h>
 
 #include <windows.h>
 
+#include <chrono>
 #include <cstdio>
 #include <vector>
 
@@ -24,6 +26,8 @@ namespace burlak::adapters::win
         } clicks;
 
         std::vector<DWORD> injectedFlags;
+        std::vector<INPUT_RECORD> replayedRecords;
+        int replayWrites{};
 
         void WINAPI recordMouseEvent(DWORD flags, DWORD, DWORD, DWORD, ULONG_PTR)
         {
@@ -36,19 +40,38 @@ namespace burlak::adapters::win
             return TRUE;
         }
 
+        BOOL WINAPI tallConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO info)
+        {
+            *info = {};
+            info->dwSize.Y = 9001;
+            info->srWindow.Top = 20;
+            info->srWindow.Bottom = 69;
+            return TRUE;
+        }
+
+        BOOL WINAPI unavailableConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO)
+        {
+            return FALSE;
+        }
+
+        BOOL WINAPI degenerateConsoleInfo(HANDLE, PCONSOLE_SCREEN_BUFFER_INFO info)
+        {
+            *info = {};
+            return TRUE;
+        }
+
+        BOOL WINAPI captureReplay(HANDLE, const INPUT_RECORD *records, DWORD requested, LPDWORD written)
+        {
+            ++replayWrites;
+            replayedRecords.assign(records, records + requested);
+            *written = requested;
+            return TRUE;
+        }
+
         bool visibleWindowStation()
         {
-            USEROBJECTFLAGS flags{};
-            DWORD needed{};
-            POINT cursor{};
-            const bool visible = GetUserObjectInformationW(GetProcessWindowStation(), UOI_FLAGS, &flags, sizeof(flags),
-                                                           &needed) != FALSE &&
-                                 (flags.dwFlags & WSF_VISIBLE) != 0 && GetCursorPos(&cursor) != FALSE;
-            if (!visible) {
-                std::fputs("SKIP: injected-click integration requires a visible window station with cursor access\n",
-                           stderr);
-            }
-            return visible;
+            return burlak::tests::desktopAvailable(
+                "SKIP: injected-click integration requires a visible window station with cursor access\n");
         }
 
         class CursorGuard
@@ -128,19 +151,34 @@ namespace burlak::adapters::win
             HWND value_{};
         };
 
-        bool ownsClickPoint(HWND window, POINT requested)
+        [[nodiscard]] bool clicksComplete()
         {
-            POINT positioned{};
-            return SetCursorPos(requested.x, requested.y) != FALSE && GetCursorPos(&positioned) != FALSE &&
-                   WindowFromPoint(positioned) == window && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 &&
-                   (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0;
+            return clicks.leftDown > 0 && clicks.leftUp > 0 && clicks.rightDown > 0 && clicks.rightUp > 0;
         }
 
-        void pumpUntilFourClicks()
+        bool establishClickPoint(HWND window, POINT requested)
         {
-            for (int attempt = 0;
-                 attempt < 20 && (clicks.leftDown + clicks.leftUp + clicks.rightDown + clicks.rightUp) < 4; ++attempt) {
-                static_cast<void>(MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT));
+            if (SetCursorPos(requested.x, requested.y) == FALSE) {
+                return false;
+            }
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+            do {
+                POINT positioned{};
+                if (GetCursorPos(&positioned) != FALSE && positioned.x == requested.x && positioned.y == requested.y &&
+                    WindowFromPoint(positioned) == window && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 &&
+                    (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0) {
+                    return true;
+                }
+                static_cast<void>(MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT));
+            } while (std::chrono::steady_clock::now() < deadline);
+            return false;
+        }
+
+        void pumpUntilClicksComplete()
+        {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+            while (!clicksComplete() && std::chrono::steady_clock::now() < deadline) {
+                static_cast<void>(MsgWaitForMultipleObjects(0, nullptr, FALSE, 10, QS_ALLINPUT));
                 MSG message{};
                 while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                     static_cast<void>(TranslateMessage(&message));
@@ -153,6 +191,16 @@ namespace burlak::adapters::win
 
     TEST_SUITE("input adapter")
     {
+        TEST_CASE("BURLAK_NO_DESKTOP disables desktop integration through the shared predicate")
+        {
+            wchar_t previous[16]{};
+            const DWORD previousLength = GetEnvironmentVariableW(L"BURLAK_NO_DESKTOP", previous, 16);
+            REQUIRE(SetEnvironmentVariableW(L"BURLAK_NO_DESKTOP", L"1") != FALSE);
+            CHECK_FALSE(burlak::tests::desktopAvailable("unused\n"));
+            REQUIRE(SetEnvironmentVariableW(L"BURLAK_NO_DESKTOP",
+                                            previousLength > 0 && previousLength < 16 ? previous : nullptr) != FALSE);
+        }
+
         TEST_CASE("console replay writes mapped mouse records to the process console")
         {
             const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
@@ -165,9 +213,14 @@ namespace burlak::adapters::win
                 CreateFileW(L"CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                             OPEN_EXISTING, 0, nullptr);
             REQUIRE(consoleInput != INVALID_HANDLE_VALUE);
+            const HANDLE consoleOutput =
+                CreateFileW(L"CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_EXISTING, 0, nullptr);
+            REQUIRE(consoleOutput != INVALID_HANDLE_VALUE);
             FlushConsoleInputBuffer(consoleInput);
 
-            Input adapter{reinterpret_cast<core::NativeWindow>(consoleInput)};
+            Input adapter{reinterpret_cast<core::NativeWindow>(consoleInput),
+                          reinterpret_cast<core::NativeWindow>(consoleOutput), systemInputCalls()};
             const std::vector<core::MouseEvent> events{
                 {.at = {7, 8}, .left = true, .moved = true, .mods = {.shift = true}},
                 {.at = {9, 10}, .right = true, .wheel = true, .mods = {.control = true, .alt = true}}};
@@ -187,6 +240,7 @@ namespace burlak::adapters::win
             CHECK(records[1].Event.MouseEvent.dwEventFlags == MOUSE_WHEELED);
             CHECK((records[1].Event.MouseEvent.dwControlKeyState & LEFT_CTRL_PRESSED) != 0);
             CHECK((records[1].Event.MouseEvent.dwControlKeyState & LEFT_ALT_PRESSED) != 0);
+            CloseHandle(consoleOutput);
             CloseHandle(consoleInput);
         }
 
@@ -206,9 +260,62 @@ namespace burlak::adapters::win
             CloseHandle(file);
         }
 
+        TEST_CASE("console replay adds Far's window-mode row offset and preserves every other field")
+        {
+            auto calls = systemInputCalls();
+            calls.getConsoleScreenBufferInfo = tallConsoleInfo;
+            calls.writeConsoleInput = captureReplay;
+            Input input{1, 2, calls};
+            const std::vector<core::MouseEvent> events{{.at = {5, 5}, .left = true, .mods = {.shift = true}},
+                                                       {.at = {45, 6}, .mods = {.shift = true}}};
+            replayedRecords.clear();
+            replayWrites = 0;
+
+            CHECK(input.replay(events) == core::ReplayOutcome{true, 2, 2});
+            REQUIRE(replayedRecords.size() == 2);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwMousePosition.X == 5);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwMousePosition.Y == 8956);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwButtonState == FROM_LEFT_1ST_BUTTON_PRESSED);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwControlKeyState == SHIFT_PRESSED);
+            CHECK(replayedRecords[0].Event.MouseEvent.dwEventFlags == 0);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwMousePosition.X == 45);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwMousePosition.Y == 8957);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwButtonState == 0);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwControlKeyState == SHIFT_PRESSED);
+            CHECK(replayedRecords[1].Event.MouseEvent.dwEventFlags == 0);
+        }
+
+        TEST_CASE("console replay writes nothing when buffer geometry is unavailable")
+        {
+            auto calls = systemInputCalls();
+            calls.writeConsoleInput = captureReplay;
+            const std::vector<core::MouseEvent> events{{.at = {5, 5}, .left = true}};
+            replayedRecords.clear();
+            replayWrites = 0;
+
+            SUBCASE("the CSBI call failed")
+            {
+                calls.getConsoleScreenBufferInfo = unavailableConsoleInfo;
+            }
+            SUBCASE("the CSBI described a degenerate buffer")
+            {
+                calls.getConsoleScreenBufferInfo = degenerateConsoleInfo;
+            }
+
+            Input input{1, 2, calls};
+            const auto outcome = input.replay(events);
+            CHECK(outcome == core::ReplayOutcome{false, 1, 0});
+            CHECK(core::replayOutcome(outcome) == std::unexpected(core::Error::Unavailable));
+            CHECK(replayWrites == 0);
+            CHECK(replayedRecords.empty());
+        }
+
         TEST_CASE("a partial console replay is rejected by core")
         {
-            InputCalls calls{recordMouseEvent, partialWrite};
+            auto calls = systemInputCalls();
+            calls.mouseEvent = recordMouseEvent;
+            calls.getConsoleScreenBufferInfo = tallConsoleInfo;
+            calls.writeConsoleInput = partialWrite;
             Input input{1, calls};
             const std::vector<core::MouseEvent> events{{}, {}};
             const auto replay = input.replay(events);
@@ -225,7 +332,7 @@ namespace burlak::adapters::win
                 return;
             }
             WindowGuard window{cursor.position()};
-            if (window.get() == nullptr || !ownsClickPoint(window.get(), cursor.position())) {
+            if (window.get() == nullptr || !establishClickPoint(window.get(), cursor.position())) {
                 std::fputs("SKIP: injected-click integration lacks an owned cursor point with both buttons up\n",
                            stderr);
                 return;
@@ -237,7 +344,7 @@ namespace burlak::adapters::win
             adapter.release(core::Button::Left);
             adapter.press(core::Button::Right);
             adapter.release(core::Button::Right);
-            pumpUntilFourClicks();
+            pumpUntilClicksComplete();
 
             CHECK(clicks.leftDown == 1);
             CHECK(clicks.leftUp == 1);

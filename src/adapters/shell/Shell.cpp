@@ -4,6 +4,8 @@
 
 #include <shlobj.h>
 
+#include <array>
+#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -22,6 +24,18 @@ namespace burlak::adapters::shell
         };
 
         using UniquePidl = std::unique_ptr<ITEMIDLIST, PidlFreer>;
+
+        struct GlobalFreer
+        {
+            decltype(&GlobalFree) release;
+
+            void operator()(void *memory) const noexcept
+            {
+                static_cast<void>(release(memory));
+            }
+        };
+
+        using UniqueGlobal = std::unique_ptr<void, GlobalFreer>;
 
         class ShellDragData final : public core::IShell::DragData
         {
@@ -43,6 +57,58 @@ namespace burlak::adapters::shell
             return array.BindToHandler(nullptr, BHID_DataObject, IID_PPV_ARGS(data));
         }
 
+        HRESULT setData(IDataObject &data, FORMATETC &format, STGMEDIUM &medium, BOOL release)
+        {
+            return data.SetData(&format, &medium, release);
+        }
+
+        [[nodiscard]] std::expected<void, core::Error> setDropEffect(IDataObject &data, core::Effect effect,
+                                                                     const wchar_t *formatName, const ShellCalls &api)
+        {
+            const auto clipboardFormat = api.registerClipboardFormat(formatName);
+            if (clipboardFormat == 0) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            UniqueGlobal memory{api.globalAlloc(GMEM_MOVEABLE, sizeof(DWORD)), GlobalFreer{api.globalFree}};
+            if (!memory) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            const auto value = static_cast<DWORD *>(api.globalLock(memory.get()));
+            if (value == nullptr) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            constexpr std::array<DWORD, 4> nativeEffects{DROPEFFECT_NONE, DROPEFFECT_COPY, DROPEFFECT_MOVE,
+                                                         DROPEFFECT_LINK};
+            *value = nativeEffects.at(static_cast<std::size_t>(effect));
+            static_cast<void>(api.globalUnlock(memory.get()));
+
+            FORMATETC format{static_cast<CLIPFORMAT>(clipboardFormat), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            STGMEDIUM medium{};
+            medium.tymed = TYMED_HGLOBAL;
+            medium.hGlobal = memory.get();
+            if (FAILED(api.setData(data, format, medium, TRUE))) {
+                return std::unexpected(core::Error::Unavailable);
+            }
+            static_cast<void>(memory.release());
+            return {};
+        }
+
+        class MediumGuard final
+        {
+          public:
+            explicit MediumGuard(STGMEDIUM &medium) : medium_{medium}
+            {
+            }
+
+            ~MediumGuard()
+            {
+                ReleaseStgMedium(&medium_);
+            }
+
+          private:
+            STGMEDIUM &medium_;
+        };
+
         HRESULT createOperation(IFileOperation **operation)
         {
             return CoCreateInstance(CLSID_FileOperation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(operation));
@@ -51,6 +117,16 @@ namespace burlak::adapters::shell
         HRESULT createItem(PCWSTR path, IShellItem **item)
         {
             return SHCreateItemFromParsingName(path, nullptr, IID_PPV_ARGS(item));
+        }
+
+        HRESULT setOwner(IFileOperation &operation, HWND owner)
+        {
+            return operation.SetOwnerWindow(owner);
+        }
+
+        HRESULT setFlags(IFileOperation &operation, DWORD flags)
+        {
+            return operation.SetOperationFlags(flags);
         }
 
         HRESULT copyItem(IFileOperation &operation, IShellItem &source, IShellItem &destination)
@@ -76,8 +152,16 @@ namespace burlak::adapters::shell
         const ShellCalls calls{SHParseDisplayName,
                                SHCreateShellItemArrayFromIDLists,
                                bindDataObject,
+                               RegisterClipboardFormatW,
+                               GlobalAlloc,
+                               GlobalLock,
+                               GlobalUnlock,
+                               GlobalFree,
+                               setData,
                                SHDoDragDrop,
                                createOperation,
+                               setOwner,
+                               setFlags,
                                createItem,
                                copyItem,
                                moveItem,
@@ -86,12 +170,26 @@ namespace burlak::adapters::shell
 
     } // namespace
 
-    std::expected<DataObject, core::Error> makeDataObject(std::span<const std::wstring> paths)
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths)
     {
-        return makeDataObject(paths, calls);
+        return makeDataObject(paths, std::nullopt, calls);
     }
 
-    std::expected<DataObject, core::Error> makeDataObject(std::span<const std::wstring> paths, const ShellCalls &api)
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  std::optional<core::Effect> preferredEffect)
+    {
+        return makeDataObject(paths, preferredEffect, calls);
+    }
+
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  const ShellCalls &api)
+    {
+        return makeDataObject(paths, std::nullopt, api);
+    }
+
+    std::expected<PreparedDataObject, core::Error> makeDataObject(std::span<const std::wstring> paths,
+                                                                  std::optional<core::Effect> preferredEffect,
+                                                                  const ShellCalls &api)
     {
         std::vector<UniquePidl> ownedPidls;
         std::vector<PCIDLIST_ABSOLUTE> pidls;
@@ -116,20 +214,94 @@ namespace burlak::adapters::shell
         if (FAILED(api.bindDataObject(*array.Get(), data.GetAddressOf()))) {
             return std::unexpected(core::Error::Unavailable);
         }
-        return data;
+        if (preferredEffect && !setDropEffect(*data.Get(), *preferredEffect, CFSTR_PREFERREDDROPEFFECT, api)) {
+            return std::unexpected(core::Error::Unavailable);
+        }
+        return PreparedDataObject{.data = std::move(data), .parsedPaths = pidls.size()};
     }
 
-    core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, const ShellCalls &api)
+    core::DragLoopOutcome runDrag(HWND owner, IDataObject &data, IDropSource &source, bool allowLink,
+                                  const ShellCalls &api)
     {
         DWORD effect{};
-        const HRESULT result =
-            api.doDragDrop(owner, &data, &source, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &effect);
+        const DWORD allowed = DROPEFFECT_COPY | DROPEFFECT_MOVE | (allowLink ? DROPEFFECT_LINK : 0);
+        const HRESULT result = api.doDragDrop(owner, &data, &source, allowed, &effect);
         return {.status = result, .effect = effect};
+    }
+
+    bool offersFileDrop(IDataObject &data)
+    {
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        return SUCCEEDED(data.QueryGetData(&format));
+    }
+
+    std::expected<std::vector<std::wstring>, core::Error> fileDropPaths(IDataObject &data, std::size_t maximumPaths,
+                                                                        DragQueryFileCall query)
+    {
+        FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+        STGMEDIUM medium{};
+        if (FAILED(data.GetData(&format, &medium))) {
+            return std::unexpected(core::Error::NoSelection);
+        }
+        const MediumGuard guard{medium};
+        if (medium.tymed != TYMED_HGLOBAL || medium.hGlobal == nullptr) {
+            return std::unexpected(core::Error::NoSelection);
+        }
+        const auto drop = static_cast<HDROP>(medium.hGlobal);
+        const auto count = query(drop, 0xFFFFFFFFU, nullptr, 0);
+        if (count == 0 || count > maximumPaths) {
+            return std::unexpected(core::Error::NoSelection);
+        }
+        std::vector<std::wstring> paths;
+        paths.reserve(count);
+        std::size_t totalBytes{};
+        for (UINT index = 0; index < count; ++index) {
+            const auto length = query(drop, index, nullptr, 0);
+            const auto units = static_cast<std::size_t>(length) + 1U;
+            if (length == 0 || length > maximumDropPathCodeUnits ||
+                units > (maximumDropBytes - totalBytes) / sizeof(wchar_t)) {
+                return std::unexpected(core::Error::NoSelection);
+            }
+            totalBytes += units * sizeof(wchar_t);
+            std::vector<wchar_t> buffer(static_cast<std::size_t>(length) + 1U);
+            if (query(drop, index, buffer.data(), static_cast<UINT>(buffer.size())) != length) {
+                return std::unexpected(core::Error::NoSelection);
+            }
+            std::wstring path{buffer.data(), length};
+            if (!std::filesystem::path{path}.is_absolute()) {
+                return std::unexpected(core::Error::NoSelection);
+            }
+            paths.push_back(std::move(path));
+        }
+        return paths;
+    }
+
+    std::expected<void, core::Error> setPerformedEffect(IDataObject &data, core::Effect effect)
+    {
+        return setDropEffect(data, effect, CFSTR_PERFORMEDDROPEFFECT, calls);
     }
 
     const ShellCalls &systemShellCalls()
     {
         return calls;
+    }
+
+    bool DropData::offersFileDrop(const std::uintptr_t data) const
+    {
+        return data != 0 && adapters::shell::offersFileDrop(*reinterpret_cast<IDataObject *>(data));
+    }
+
+    std::expected<std::vector<std::wstring>, core::Error> DropData::fileDropPaths(const std::uintptr_t data) const
+    {
+        return data != 0
+                   ? adapters::shell::fileDropPaths(*reinterpret_cast<IDataObject *>(data))
+                   : std::expected<std::vector<std::wstring>, core::Error>{std::unexpected(core::Error::NoSelection)};
+    }
+
+    std::expected<void, core::Error> DropData::setPerformedEffect(const std::uintptr_t data, core::Effect effect)
+    {
+        return data != 0 ? adapters::shell::setPerformedEffect(*reinterpret_cast<IDataObject *>(data), effect)
+                         : std::expected<void, core::Error>{std::unexpected(core::Error::Unavailable)};
     }
 
     Shell::Shell() : calls_{calls}
@@ -140,32 +312,38 @@ namespace burlak::adapters::shell
     {
     }
 
-    std::expected<std::unique_ptr<core::IShell::DragData>, core::Error> Shell::makeDataObject(
-        std::span<const std::wstring> paths)
+    std::expected<core::IShell::PreparedDrag, core::Error> Shell::makeDataObject(
+        std::span<const std::wstring> paths, std::optional<core::Effect> preferredEffect)
     {
-        return shell::makeDataObject(paths, calls_).transform([](DataObject prepared) {
-            return std::make_unique<ShellDragData>(std::move(prepared));
+        return shell::makeDataObject(paths, preferredEffect, calls_).transform([](PreparedDataObject prepared) {
+            return PreparedDrag{.data = std::make_unique<ShellDragData>(std::move(prepared.data)),
+                                .parsedPaths = prepared.parsedPaths};
         });
     }
 
-    core::DragLoopOutcome Shell::runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source)
+    core::DragLoopOutcome Shell::runDrag(core::NativeWindow owner, DragData &data, std::uintptr_t source,
+                                         bool allowLink)
     {
         auto &nativeData = *reinterpret_cast<IDataObject *>(data.nativeHandle());
         auto &dropSource = *reinterpret_cast<IDropSource *>(source);
-        return shell::runDrag(reinterpret_cast<HWND>(owner), nativeData, dropSource, calls_);
+        return shell::runDrag(reinterpret_cast<HWND>(owner), nativeData, dropSource, allowLink, calls_);
     }
 
     std::expected<void, core::Error> Shell::copy(std::span<const std::wstring> paths, std::wstring_view destination,
-                                                 core::Effect effect)
+                                                 core::Effect effect, core::NativeWindow owner)
     {
-        if (effect == core::Effect::None) {
+        if (effect != core::Effect::Copy && effect != core::Effect::Move) {
             return std::unexpected(core::Error::ForeignCallFailed);
         }
         Microsoft::WRL::ComPtr<IFileOperation> operation;
         if (FAILED(calls_.createOperation(operation.GetAddressOf()))) {
             return std::unexpected(core::Error::Unavailable);
         }
-        static_cast<void>(operation->SetOperationFlags(FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI));
+        constexpr DWORD flags = FOF_ALLOWUNDO | FOFX_SHOWELEVATIONPROMPT;
+        if (FAILED(calls_.setOwner(*operation.Get(), reinterpret_cast<HWND>(owner))) ||
+            FAILED(calls_.setFlags(*operation.Get(), flags))) {
+            return std::unexpected(core::Error::Unavailable);
+        }
 
         Microsoft::WRL::ComPtr<IShellItem> destinationItem;
         const std::wstring destinationText{destination};

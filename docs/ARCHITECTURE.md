@@ -1,6 +1,6 @@
 # Burlak — architecture
 
-Status: v1 design, 2026-09-13. Owner: orchestrator (Claude). Implementers: Codex agents.
+Status: v1 design, 2026-09-15. Owner: orchestrator (Claude). Implementers: Codex agents.
 Reviewers: Codex review runs. The rules that constrain this design live in `AGENTS.md`; if the two
 disagree, stop and report. Interface shapes below are canonical in intent, not in every
 signature: keep the names and the responsibilities, adjust parameter lists when the code shows a
@@ -10,9 +10,10 @@ better cut, and say so in the report.
 
 A Far Manager 3 plugin, one DLL per architecture (x64, x86, arm64), that turns a mouse gesture on
 a panel item into an OLE drag-and-drop of the selected files into any Windows drop target.
-Today (1.2.0) it does this from panels with real file names, with the left or the right button.
+Version 1.3.0 does this from panels with real file names and from plugin panels, with the left or
+the right button, and also makes Far a drop target over panels backed by real directories.
 
-Three features are next, and the layering below is judged against them:
+The three 1.3.0 capabilities, against which the layering below is judged, are:
 
 1. **Drag from plugin panels** (Arclite, Observer, NetBox, ...). The panel has no paths on disk.
    At the threshold the plugin creates zero-byte placeholder files with the item names in a temp
@@ -23,28 +24,131 @@ Three features are next, and the layering below is judged against them:
    `PCTL_FINDPLUGIN` + `PCTL_GETPLUGININFORMATION` give its module and `GlobalInfo::Instance`),
    exactly as Far itself does for plugin-to-plugin copy (`FileList::PluginGetFiles`, `OPM_SILENT`
    into a temp directory), then answers "drop". The call is wrapped in SEH so a crashing plugin
-   aborts the drag with a message instead of taking Burlak down. Temp files are removed at the
-   next start and at exit, and opportunistically after the drag (targets read them after the
-   drop, some asynchronously).
+   aborts the drag with a message instead of taking Burlak down. A completed ordinary OLE drop
+   refreshes the run timestamp and retains extracted files for one minute so asynchronous
+   targets can read them. A fifteen-second tool-window timer plus startup and shutdown sweeps remove
+   old own runs and old runs whose owner process is dead. A sweep first opens every regular file
+   with read access and no sharing; one sharing violation marks the whole run in use and preserves
+   it until a later sweep. The original `FCTL_GETSELECTEDPANELITEM` buffers stay alive in the
+   plan and are passed back as complete `PluginPanelItem` records, matching
+   `FileList::CreatePluginItemList`. Release revalidates the panel's identity (the panels window is
+   current; the panel is visible, a virtual plugin file panel, with the recipe's handle and owner,
+   and the same `FCTL_GETPANELDIRECTORY` location — inner directory and host archive file — recorded
+   at plan time, because the handle is the plugin's own heap pointer, which an archive opened
+   during the drag can reuse) and the owner module on Far's thread, not the current cursor or
+   selection: `GetFilesW` receives the recipe's own item records, and the cursor moves whenever
+   the user drags across the panel.
+   A case-insensitive duplicate name cannot be represented faithfully in
+   one temp directory and prevents the drag from starting. A rewritten `GetFilesInfo::DestPath`
+   cancels the drop because OLE already advertises the original directory. Placeholder-backed
+   drags offer copy and move, but not link: cleanup would otherwise leave a broken shortcut.
 2. **Drop into the other panel of the same Far.** The tool window that covers the terminal during
    a drag registers an `IDropTarget`. Over the panel that is not the source it offers
    copy (move with Shift); elsewhere nothing. On drop it replays Far's own panel-to-panel mouse
    drag through `WriteConsoleInputW`: a left press at the cell the gesture started on, a release
    at the drop cell. Far's native `KEY_DRAGCOPY`/`KEY_DRAGMOVE` path does the copy, including
    plugin panels on either side. Burlak copies nothing itself here.
-3. **Drop into another Far window.** A drag broadcasts "Burlak is dragging"; every other Burlak
-   answers with the window of its terminal (`GetConsoleWindow()` under conhost; under Windows
-   Terminal `GetWindow(GetConsoleWindow(), GW_OWNER)`, verified on WT 1.24) and the time it last
-   had console focus (several Fars in one WT window share the owner; the most recently focused
-   pane is the visible one). At release, if the window under the cursor belongs to a peer, the
-   source cancels the OLE drop (so the terminal does not paste the path into the command line)
-   and hands the peer the paths, the screen point and the effect over `WM_COPYDATA`. The peer
-   maps the point to a panel and copies with `IFileOperation` into that panel's directory, then
-   `FCTL_UPDATEPANEL`/`FCTL_REDRAWPANEL`. Right-button menus are shown by the source (it holds
-   the foreground); the chosen effect travels with the message.
+3. **Far as a drop target.** `RegisterDragDrop` cannot register the terminal window because another
+   process owns it. Instead, the same alpha-1 tool popup used for source drags becomes a temporary
+   OLE target over the eligible panel pixels while an external drag is over this Far. A 50 ms
+   tool-thread poll records the point and root window on the physical left/right-button down edge,
+   then asks pure `ExternalDragPolicy` whether the held drag moved from outside our host and tool
+   window onto our host. The point's root must be the host or console, so an unrelated window
+   overlapping the host wins. A drag-selection from another application can satisfy the physical
+   test, but its capture keeps OLE from entering the popup; button-up hides it harmlessly.
 
-None of these needs hooks, injected DLLs or a drop target on the terminal's own window (which
-belongs to another process and already has one).
+   Each set-focus `FOCUS_EVENT` marks the host window with a registered Burlak window property
+   containing this process id. Of several Fars sharing a Windows Terminal host, only the last
+   focused process accepts the candidate. An absent property is accepted for conhost and for a
+   property write refused by UIPI; a property naming a process that is no longer alive is likewise
+   treated as absent. The next focus-in overwrites that stale value. `ExitFARW` removes the property
+   only when it still contains this process id.
+
+   A candidate posts Far synchro. Far's thread returns a pointer-free `ReceiveSnapshot`: whether the
+   panels window is current, both panels' visibility/type/real-name flags, rectangles and
+   directories, the host, and cell geometry at the sampled point. The tool thread covers the union
+   of visible real-name file-panel rectangles, directly above the host in z-order, without mouse
+   capture. Dialogs, editor/viewer, command line, key bar, menus, and plugin panels remain uncovered,
+   so the terminal keeps its existing path-paste behaviour there. Far's own panel hit testing also
+   admits only item rows (`far/filelist.cpp`, `FileList::ProcessMouse`).
+
+   `IDropTarget::DragEnter` accepts only `CF_HDROP`; receive and source are distinct states of one
+   tool-window state machine. `ReceivePolicy` maps an item pixel to an eligible panel directory and
+   intersects copy or Shift-move with the effect mask supplied by the source at `DragEnter` (a
+   copy-only source therefore remains copy-only with Shift). The right-drop menu disables choices
+   outside that mask; `TrackPopupMenu` accepts only an owner window of the calling thread, so the
+   menu is owned by the tool window itself, never by the host that conhost or Windows Terminal
+   owns (a foreign owner fails at once with `ERROR_INVALID_PARAMETER`, which would cancel every
+   right-button drop). At drop time the foreground belongs to the drag source, so a bare
+   `SetForegroundWindow` on the overlay is refused and the popup would ignore an outside click or
+   Escape while the source sits blocked in `DoDragDrop`; the adapter therefore attaches the tool
+   thread's input to the foreground thread's around `SetForegroundWindow` + `TrackPopupMenu`,
+   detaches afterwards, and posts `WM_NULL` to the owner (KB135788), still showing the menu if the
+   foreground call is refused. `Drop` reads at most 4096 absolute paths, refuses any path longer than 32767
+   code units, and bounds the aggregate path buffers to 1 MiB before allocation. Immediately before
+   `IFileOperation`, the tool thread posts a second bounded synchro request; Far's thread rebuilds
+   the snapshot and the drop is cancelled with one message unless `ReceivePolicy::sameIdentity`
+   still matches for the drop point: the destination panel's identity (visible, file panel, real
+   names, rectangle, handle, owner) and directory, the host, the cell geometry and the panels
+   window. The destination's cursor and selection and the whole other panel may change freely, so
+   a background refresh of the panel not receiving the drop does not cancel it. The tool thread
+   then calls `IFileOperation` synchronously with the host as owner,
+   so shell progress, conflicts and elevation prompts belong to the receiving Far while Far's
+   thread remains free. It must finish before `Drop` returns because the source acts on the returned
+   effect immediately. Following [Handling Shell Data Transfer
+   Scenarios, Handling Optimized Move Operations](https://learn.microsoft.com/windows/win32/shell/datascenarios#handling-optimized-move-operations),
+   a completed copy returns `DROPEFFECT_COPY`; a completed move is an optimized move: it writes
+   `CFSTR_PERFORMEDDROPEFFECT = DROPEFFECT_NONE`, so the source does not delete files already moved
+   by the receiver, and it also returns `DROPEFFECT_COPY` rather than the `DROPEFFECT_NONE` the
+   reference equally allows. Established by experiment (Windows 10, `DoDragDrop` and
+   `SHDoDragDrop` alike): when the target under the cursor returns none, ole32 treats the drop as
+   refused and falls back to its legacy `DragAcceptFiles` delivery along the window's owner chain —
+   the tool window is owned by the console, which accepts files — so conhost received
+   `WM_DROPFILES` and pasted the quoted path into the command line after every move; a `COPY`
+   return produces no fallback. For the same reason a drop Burlak took part in and then declined —
+   a `CF_HDROP` that cannot be read or fails the path bounds after a hover that promised an effect,
+   Cancel in the right-button menu, a refused identity refresh (its message is shown), a shell
+   operation that failed or was cancelled — also answers `COPY` with nothing done and no performed
+   effect (`declinedReceiveOutcome`): an Explorer source does nothing with it, a Burlak source keeps
+   its temp run for the sweep, and nothing is pasted. None is returned only where Burlak never took
+   part: no `CF_HDROP` in the data object, a point outside the item rows (hover already answered
+   none, so OLE delivers no `Drop`), and the states where the target is not entered.
+   Successful work posts a by-value panel side for Far-thread update/redraw. A source under
+   `%TEMP%\Burlak` is ordinary input: a same-volume move naturally becomes a rename, and retention
+   plus the timer sweep handles anything left behind.
+
+   Receive mode is explicit: `ReceiveArmed` means the overlay is visible but OLE has not entered,
+   `ReceiveEntered` begins at `DragEnter`, and `ReceiveDropping` covers the whole synchronous `Drop`.
+   Button-up hides only an armed overlay. `DragLeave` returns Entered to Armed (including source-side
+   Escape cancellation), while button-up in Entered waits for the source's possibly slow extraction
+   and the later `Drop`. As a safety net for a source that crashes after releasing the button and
+   never sends `Drop` or `DragLeave`, two minutes in that condition return the window to idle
+   (`receiveEnteredTimeout`): a plugin extracting a large archive inside `QueryContinueDrag` can
+   legitimately take longer than ten seconds, and the price of the wait is that the alpha-1 layered
+   overlay, which is hit-tested, swallows every mouse click on Far's panels for up to two minutes
+   after a source dies (the keyboard still reaches Far). While the first drag lingers in Entered a
+   second drag's `DragEnter` is refused and the target forgets the first drag's entry, file data,
+   right button and effect mask, so that second drag's `DragOver` and `Drop` are answered none and
+   cannot take the Dropping transition. Only one OLE drag exists per desktop, so any `DragLeave`
+   in receive mode belongs to the only live drag and always reaches the lifecycle: a lingering
+   receive therefore ends on the next `DragLeave` from either drag (the poll then hides the armed
+   overlay on the released button) rather than waiting for the ceiling. The right-drop menu pumps
+   COM, so the mask a drop was entered with is copied before `TrackPopupMenu` and applied to the
+   choice afterwards. Poll and sweep timers do nothing in Dropping, preventing
+   re-entry while a popup menu or `IFileOperation` pumps messages. `Drop` always returns to idle.
+   OLE does not re-hit-test after `DRAGDROP_S_DROP`, so a `DragOver` or `Drop` can still reach the
+   overlay after the window returned to idle (timeout, exception, hidden overlay): the same-Far
+   replay path is taken only while the window is in `SourceDragging` (`IReceiveLifecycle::sourceMode`),
+   every other state answers none, and `Session` drops its hover context the moment a source drag
+   ends so no stale selection can be replayed; a new gesture also discards a replay still queued by
+   the previous drag. Source arming and `Session::begin` refuse every receive state, and receive
+   detection is disabled throughout a source drag. A source release over any foreign window follows
+   ordinary OLE `Drop` (or `ExtractThenDrop` for a plugin-panel plan). A Far-to-Far drag consequently
+   uses the same standard OLE path as Explorer and requires Burlak in both Fars.
+
+None of these needs hooks or injected DLLs. Dropping into plugin panels is not yet supported, and
+Windows UIPI blocks a non-elevated source from dragging into an elevated Far just as it blocks other
+elevated drop targets.
 
 ## 1. Layers and the dependency rule
 
@@ -55,8 +159,9 @@ burlak/
     far/          PluginStartupInfo (panels, windows, synchro, plugins control, messages),
                   the call into another plugin's GetFilesW (with its SEH guard)
     win/          user32 / kernel32: cursor, buttons, windows, console geometry and input,
-                  input injection, temp files, focus, broadcast / WM_COPYDATA transport
-    shell/        shell32 / ole32: data object from paths, the drag loop, IFileOperation
+                  input injection, temp files, receiver property and the right-drop menu
+    shell/        shell32 / ole32: data objects, CF_HDROP, the drag loop, IFileOperation and
+                  performed-drop-effect reporting
   src/drag/       the tool window and its thread: window class, message loop, DragSource
                   (IDropSource), DropTarget (IDropTarget). Win32/COM-facing by nature, but every
                   decision is asked from core.
@@ -87,38 +192,56 @@ Interfaces core depends on (all pure virtual, all under `src/core/`, implemented
 `src/adapters/`):
 
 - `IPanels` — `panel(PanelSide)`, `selectedItems(PanelSide)`, `directory(PanelSide)`,
+  `pluginDirectory(PanelSide)` (the full `FCTL_GETPANELDIRECTORY` record: name and host file),
   `currentWindowIsPanels()`, `updateAndRedraw(PanelSide)`.
 - `IFarHost` — `postSynchro()`, `message(title, lines)`, `pluginModule(guid)` (module path and
   `GlobalInfo::Instance`), `extract(hPanel, items, module, destination)` (the `GetFilesW` call,
-  SEH-guarded, returns `std::expected<void, Error>`).
-- `IScreen` — `cursor()`, `buttonDown(Button)`, `hostWindow()` (rect + handle, the terminal
-  window under the cursor or owning the console), `cellGeometry()` (pixel size of a cell and the
-  origin of cell (0,0), for point↔cell mapping).
+  SEH-guarded, returns the plugin's effective destination).
+- `IScreen` — `cursor()`, `buttonDown(Button)`, root `windowAt(Point)`, console and host handles,
+  `hostWindow[At]()` (rect + handle, the terminal window under the cursor or owning the console),
+  and `cellGeometry[At]()` (pixel size of a cell and the origin of cell (0,0), for point↔cell
+  mapping).
 - `IInput` — `release(Button)`, `press(Button)` (mouse_event forwarders), `replay(std::span<const
   MouseEvent>)` (WriteConsoleInputW).
-- `IShell` — `makeDataObject(paths)`, `runDrag(...)` (SHDoDragDrop with our IDropSource), `copy
-  (paths, destination, Effect)` (IFileOperation).
-- `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, `sweep
-  (older runs)`.
-- `IPeers` — `announce()`, `peers()` (window, last-focus time, process), `send(peer, Drop)`; the
-  transport is the adapter's business.
+- `IShell` — `makeDataObject(paths)`, `runDrag(...)` (`SHDoDragDrop` with our `IDropSource`), and
+  `copy(paths, destination, Effect, owner)` (`IFileOperation`).
+- `IDropData` — the injected native-data-object bridge: test `CF_HDROP`, read its bounded path list,
+  and publish `CFSTR_PERFORMEDDROPEFFECT`. Its implementation belongs to `adapters/shell`; the drag
+  layer has no adapter include or link dependency.
+- `IFiles` — temp directory for this run, `placeholder(name, directory)`, `removeTree`, `touch`,
+  process-liveness probing, and a grace-period sweep of old own runs and old dead-owner runs at
+  startup, every fifteen seconds while the tool window is idle, and at exit. The adapter gathers the
+  file-in-use fact; core decides.
+- `IWindowProperties` — set/read/remove the process id on a host window and report our process id.
+- `IDropMenu` — map the native Copy here / Move here / Cancel popup to a core menu choice; the
+  drag layer hands it the tool window as owner (the only window of the tool thread), and the
+  adapter attaches that thread's input to the foreground thread's for the call so the popup can
+  be dismissed by an outside click or Escape.
 
 Core logic:
 
 - `Gesture` (exists today): the state machine over `MouseEvent`s, returning `Verdict {Pass, Hold,
   Replace(MouseEvent)}` and, through a callback or an out-value, the request to start a drag with
-  a button. Same behaviour as 1.2.0; the tests pin it.
+  a button. The drag starts at two cells sideways or one row vertically (about 16 px either way at
+  a common console font, above Explorer's 4 px drag rectangle), for both buttons: cells are half
+  as tall as they are wide, and 1.2.0's three cells on both axes let a right-button release within
+  48 px vertically become the click that opens Far's context menu. Otherwise as 1.2.0; the tests
+  pin it.
 - `Geometry`: cell ↔ pixel mapping, "which panel is this cell on", the item-row test that today
   lives in `InsidePanel`.
 - `DragPlan`: given the source panel, decides the source kind (real paths vs placeholders + the
   extraction recipe) and builds the path list; today's `SelectedPaths` plus the TmpPanel case
   (an absolute `FileName` is taken as is).
-- `ReleasePolicy`: given the point of release, the last feedback effect, the peer list and the
-  own host window, decides one of `DropHere`, `Cancel`, `HandToPeer(peer, effect)`,
-  `ExtractThenDrop` (feature 1) — the single place `DragSource::QueryContinueDrag` consults.
+- `ReleasePolicy`: given the button state, escape state, last feedback effect, extraction need and
+  whether the point is over our own tool window, decides `Continue`, `Drop`, `Cancel`, or
+  `ExtractThenDrop` — the single place `DragSource::QueryContinueDrag` consults.
 - `DropPolicy`: for the own `IDropTarget`: effect for a point (feature 2) and the replay records.
-- `PeerRegistry` and the wire format of the peer protocol (feature 3), as plain structs and
-  encode/decode functions.
+- `ExternalDragPolicy`: the pure receiver-candidate decision over sampled button/window/property
+  facts.
+- `ReceiveSnapshot` and `ReceivePolicy`: eligible identity, overlay union, point effect and
+  destination. The optimized-move outcome and menu-choice mapping are pure functions.
+- `shouldSweepRun`: decides from ownership, owner liveness, age and in-use facts; the one grace
+  constant is one minute and the tool-window cadence is fifteen seconds.
 - `Session`: the object that owns one drag from threshold to cleanup and sequences the calls to
   the interfaces above; the composition root creates it with the real adapters, the tests with
   fakes.
@@ -134,12 +257,23 @@ fine for hitting a panel).
 
 ### drag
 
-`ToolWindow` (the class, the thread, the message loop, the layered 1-alpha popup), `DragSource`
-(`IDropSource`: `QueryContinueDrag` asks `ReleasePolicy`; `GiveFeedback` records the last effect),
-`DropTarget` (`IDropTarget` registered on the tool window: asks `DropPolicy`). Messages between
-Far's thread and the tool thread stay explicit (`WM_PREPARE_DRAG`, `WM_START_DRAG`,
-`WM_ABORT_DRAG`, the arm timer) and are the only cross-thread traffic; Far's API is called on
-Far's thread only, which the tool thread reaches through `IFarHost::postSynchro`.
+`ToolWindow` (the class, thread, message loop, layered 1-alpha popup, external-drag and sweep
+timers), `DragSource` (`IDropSource`: `QueryContinueDrag` asks `ReleasePolicy`; `GiveFeedback`
+records the last effect), and `DropTarget` (`IDropTarget`: dispatches between same-Far replay and
+external receive mode). One state machine owns `Idle`, `SourcePrepared`, `SourceArmed`,
+`SourceDragging`, `ReceivePending`, `ReceiveArmed`, `ReceiveEntered`, `ReceiveDropping`, and
+`ReceiveRejected`; only `Idle` admits a new source session or timer sweep. Messages between Far's
+thread and the tool thread stay explicit
+(`WM_PREPARE_DRAG`, `WM_START_DRAG`, `WM_ABORT_DRAG`, `WM_RECEIVE_SNAPSHOT`, and timers) and are
+the only cross-thread traffic. Every private `WM_USER`
+message carries zero parameters: the Far-thread caller first stores its by-value request in a
+mutex-protected slot owned by the tool-window state, and the tool thread validates both parameters
+before consuming that slot. A nonzero parameter or an unsolicited message with no queued request
+is inert, so another same-integrity process cannot consume a pending request or make the responder
+interpret an un-marshalled pointer. Native data-object work is injected through `IDropData`, keeping
+the drag library dependent on core only. Far's API is called on Far's thread only, which the tool thread
+reaches through `IFarHost::postSynchro`. The receive copy is the deliberate exception to waiting
+for Far: it needs no Far API and stays synchronous on the tool thread inside `IDropTarget::Drop`.
 
 ### plugin
 
@@ -152,13 +286,48 @@ process lifetime. `version.h` stays the single source of the version.
 
 ## 2. Threads
 
-Two threads, as today. Far's main thread runs the exports, the gesture, every Far API call and
-(feature 1) the extraction. The tool thread owns the tool window, `OleInitialize`, the drag loop
-and the COM objects. Rules: a Far API call from the tool thread is a bug (the guard test cannot
-see it, the reviewer must); the tool thread asks for main-thread work with `postSynchro` and waits
-on an event with a timeout; the main thread asks the tool thread for work with `SendMessage` /
-`PostMessage` to the tool window. `Session` state that both threads read is guarded by a mutex or
-handed over by value in the messages; document which.
+There are two threads. Far's main thread runs the exports, gesture, every Far API call, plugin-panel
+extraction, receive snapshot construction and panel redraw. The tool thread owns the popup,
+`OleInitialize`, both timers, the OLE drag loop and COM objects. A Far API call from the tool thread
+is a bug (the guard test cannot see it, so review must).
+
+For plugin-panel extraction the tool thread posts synchro and waits while pumping COM; the wait lasts
+as long as the owning plugin's `GetFilesW`. A Far-thread scope guard publishes failure if an allowed
+exception reaches the export firewall, otherwise the main thread stores the result and signals. The
+same mutex protects the extraction request, retained native item storage, same-Far pending drop,
+receive snapshot and refresh point/value, receive identity, and pending redraw side.
+
+For a same-Far drag, the prepare message copies an immutable panel/geometry snapshot to the tool
+thread for hover feedback. On `Drop`, that thread stores a by-value
+`PendingDrop { point, cell, effect }`, posts synchro and returns to OLE. Far's handler re-reads both
+panels, directories, source selection, current window, host and cell geometry, then replays only if
+the full identity still matches. Shell data-object preparation is all-or-nothing. A stale identity
+or incomplete console-input write is reported; a one-record partial write is followed by a
+buttonless release so Far's panel-drag state is not left armed.
+
+For an external drag, the 50 ms poll and all `IDropTarget` methods run on the tool thread. Once core
+accepts a candidate, the tool stores only the sampled `Point` and posts synchro. Far's thread builds
+the complete by-value `ReceiveSnapshot`; the composition moves it into the guarded tool-window slot,
+and a zero-parameter private message consumes it. Hover reads only that immutable snapshot. Inside
+`ReceiveDropping`, `Drop` asks Far's thread for a fresh snapshot and waits at most ten seconds while
+pumping COM/window calls; an identity mismatch or timeout cancels before any filesystem operation.
+It then reads bounded `CF_HDROP` data through `IDropData` and runs `IFileOperation` synchronously on
+the tool thread: the source consumes the returned and performed effects as soon as `Drop` returns,
+while the operation needs no Far API. The COM entry points contain allocation and invariant
+exceptions. On success the tool stores only the by-value `PanelSide` and posts synchro for
+Far-thread update/redraw.
+
+The fifteen-second sweep timer also runs on the tool thread, but only in `Idle`; startup and exit call the
+same adapter from Far's thread. `Session::begin` never sweeps. The one-minute age makes an active
+drag ineligible, retention touches its run before returning to `Idle`, and the adapter's sharing probe
+protects a file already being read.
+
+Before teardown posts `WM_QUIT` and joins the tool thread, the main thread signals any extraction
+wait with failure. The join has no timeout and pumps COM/window calls because a target apartment can
+still be involved after `Drop` returns. The worker creates its message queue, initializes OLE,
+creates/registers the window and starts both timers before signalling readiness. If the bounded
+startup wait expires, the main thread sets a stop flag before the unbounded join; the worker observes
+that flag even if an earlier `WM_QUIT` could not be posted.
 
 ## 3. Testing
 
@@ -174,16 +343,16 @@ doctest, one executable per layer group plus e2e:
   `ReadConsoleInputW` on the test's own console, the `GetFilesW` call against a stub plugin
   module built for the test (a tiny DLL exporting `GetFilesW` that writes files, and one that
   crashes, to exercise the SEH path).
-- `tests/drag/`: the tool window and thread for real (create, show over a test rect, arm timer,
-  the messages), `DropTarget` driven by calling its methods with a data object built from temp
-  files, `DragSource` with a fake policy.
+- `tests/drag/`: the tool window and thread for real (create, show over a test rect, source arm,
+  external-drag and sweep timers, guarded messages), `DropTarget` driven in source and receive
+  modes with a data object built from temp files, and `DragSource` with a fake policy.
 - `tests/e2e/`: `LoadLibrary` of the built `Burlak.dll`, the seven exports called through a
-  `PluginStartupInfo` whose function pointers are test stubs; plus one real drag: park the cursor
-  over a test window that registers an `IDropTarget` (`SetCursorPos`), call `SHDoDragDrop` with
-  no button held — OLE's first `QueryContinueDrag` sees no button and drops at once — and assert
-  the target received the paths. The same trick covers `IInput::press/release`: with the cursor
-  parked over the test's own window, an injected click lands on it and nothing else. Restore
-  the cursor afterwards.
+  `PluginStartupInfo` whose function pointers are test stubs; real OLE drags cover a Burlak source
+  into a test target and a shell data object into Burlak's temporary receive overlay, asserting the
+  destination file and returned effect. The same cursor-owned technique covers input injection.
+  Restore the cursor afterwards. `BURLAK_NO_DESKTOP=1` skips these desktop-owning integration
+  checks while injected boundaries keep production coverage complete; a runner on which OLE never
+  enters after the initial desktop checks produces the established visible warning.
 - `tests/guard/`: the source scan for the dependency rule and the ownership rules.
 
 Coverage: `scripts/coverage.ps1` builds the `coverage` preset (clang-cl, `-fprofile-instr-generate

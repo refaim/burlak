@@ -81,8 +81,39 @@ jobs:
       - name: Build coverage
         run: cmake --build --preset coverage
 
+      - name: Enable crash dumps
+        shell: pwsh
+        run: |
+          # A fast-fail (0xC0000409) leaves no message behind; Windows Error Reporting writes a full dump of the
+          # dying test process here, and the folder is uploaded when the job fails.
+          $dumps = Join-Path $env:RUNNER_TEMP 'test-dumps'
+          New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+          $reporting = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
+          $localDumps = Join-Path $reporting 'LocalDumps'
+          New-Item -Path $localDumps -Force | Out-Null
+          New-ItemProperty -Path $reporting -Name DontShowUI -PropertyType DWord -Value 1 -Force | Out-Null
+          New-ItemProperty -Path $localDumps -Name DumpFolder -PropertyType ExpandString -Value $dumps -Force | Out-Null
+          New-ItemProperty -Path $localDumps -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+          New-ItemProperty -Path $localDumps -Name DumpCount -PropertyType DWord -Value 10 -Force | Out-Null
+          "TEST_DUMPS=$dumps" >> $env:GITHUB_ENV
+
       - name: Test
         run: ctest --preset coverage --output-on-failure
+
+      - name: Rerun failed tests under cdb
+        # Prints !analyze -v and every thread's stack for each executable ctest recorded as failed; the Test step
+        # above keeps its own verdict.
+        if: failure()
+        timeout-minutes: 20
+        shell: pwsh
+        run: ./scripts/debug-failed-tests.ps1 -BuildDir build/coverage
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: test-dumps
+          path: ${{ env.TEST_DUMPS }}
+          if-no-files-found: ignore
 
       - name: Enforce coverage
         shell: pwsh

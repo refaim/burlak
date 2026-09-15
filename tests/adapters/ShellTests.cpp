@@ -13,10 +13,47 @@ namespace burlak::adapters::shell
     namespace
     {
 
+        class DirectoryGuard
+        {
+          public:
+            explicit DirectoryGuard(std::filesystem::path path) : path_{std::move(path)}
+            {
+                std::error_code ignored;
+                std::filesystem::remove_all(path_, ignored);
+            }
+
+            ~DirectoryGuard()
+            {
+                std::error_code ignored;
+                std::filesystem::remove_all(path_, ignored);
+            }
+
+            DirectoryGuard(const DirectoryGuard &) = delete;
+            DirectoryGuard &operator=(const DirectoryGuard &) = delete;
+
+            [[nodiscard]] const std::filesystem::path &path() const
+            {
+                return path_;
+            }
+
+          private:
+            std::filesystem::path path_;
+        };
+
         HRESULT WINAPI parseNull(PCWSTR, IBindCtx *, PIDLIST_ABSOLUTE *parsed, SFGAOF, SFGAOF *)
         {
             *parsed = nullptr;
             return S_OK;
+        }
+
+        HRESULT WINAPI parseExceptMissing(PCWSTR path, IBindCtx *context, PIDLIST_ABSOLUTE *parsed, SFGAOF attributes,
+                                          SFGAOF *found)
+        {
+            if (std::wstring_view{path}.find(L"missing") != std::wstring_view::npos) {
+                *parsed = nullptr;
+                return E_FAIL;
+            }
+            return SHParseDisplayName(path, context, parsed, attributes, found);
         }
 
         HRESULT WINAPI failCreateArray(UINT, PCIDLIST_ABSOLUTE_ARRAY, IShellItemArray **)
@@ -29,11 +66,81 @@ namespace burlak::adapters::shell
             return E_FAIL;
         }
 
+        UINT WINAPI failClipboardFormat(LPCWSTR)
+        {
+            return 0;
+        }
+
+        HGLOBAL WINAPI failGlobalAllocation(UINT, SIZE_T)
+        {
+            return nullptr;
+        }
+
+        LPVOID WINAPI failGlobalLock(HGLOBAL)
+        {
+            return nullptr;
+        }
+
+        HRESULT failSetData(IDataObject &, FORMATETC &, STGMEDIUM &, BOOL)
+        {
+            return E_FAIL;
+        }
+
+        enum class DropQueryMode : std::uint8_t
+        {
+            Empty,
+            TooMany,
+            EmptyPath,
+            ShortWrite,
+            Relative,
+            LongPath,
+            OversizedTotal
+        } dropQueryMode{};
+
+        UINT WINAPI fakeDropQuery(HDROP, UINT index, LPWSTR path, UINT)
+        {
+            if (index == 0xFFFFFFFFU) {
+                if (dropQueryMode == DropQueryMode::Empty) {
+                    return 0;
+                }
+                if (dropQueryMode == DropQueryMode::TooMany) {
+                    return 4097U;
+                }
+                return dropQueryMode == DropQueryMode::OversizedTotal ? 17U : 1U;
+            }
+            if (path == nullptr) {
+                if (dropQueryMode == DropQueryMode::EmptyPath) {
+                    return 0U;
+                }
+                if (dropQueryMode == DropQueryMode::LongPath) {
+                    return 32768U;
+                }
+                return dropQueryMode == DropQueryMode::OversizedTotal ? 32767U : 12U;
+            }
+            if (dropQueryMode == DropQueryMode::ShortWrite) {
+                return 11;
+            }
+            if (dropQueryMode == DropQueryMode::LongPath || dropQueryMode == DropQueryMode::OversizedTotal) {
+                const UINT length = dropQueryMode == DropQueryMode::LongPath ? 32768U : 32767U;
+                std::fill_n(path, length, L'a');
+                path[0] = L'C';
+                path[1] = L':';
+                path[2] = L'\\';
+                path[length] = L'\0';
+                return length;
+            }
+            constexpr wchar_t relative[] = L"relative.txt";
+            std::copy(std::begin(relative), std::end(relative), path);
+            return 12;
+        }
+
         HRESULT dragResult{DRAGDROP_S_DROP};
         DWORD draggedEffect{DROPEFFECT_COPY};
+        DWORD allowedEffects{};
 
-        HRESULT WINAPI fakeDrag(HWND, IDataObject *, IDropSource *, DWORD, DWORD *effect)
+        HRESULT WINAPI fakeDrag(HWND, IDataObject *, IDropSource *, DWORD effects, DWORD *effect)
         {
+            allowedEffects = effects;
             *effect = draggedEffect;
             return dragResult;
         }
@@ -46,6 +153,31 @@ namespace burlak::adapters::shell
         HRESULT failQueue(IFileOperation &, IShellItem &, IShellItem &)
         {
             return E_FAIL;
+        }
+
+        HRESULT failOwner(IFileOperation &, HWND)
+        {
+            return E_FAIL;
+        }
+
+        HRESULT failFlags(IFileOperation &, DWORD)
+        {
+            return E_FAIL;
+        }
+
+        HWND recordedOwner{};
+        DWORD recordedFlags{};
+
+        HRESULT recordOwner(IFileOperation &, HWND owner)
+        {
+            recordedOwner = owner;
+            return S_OK;
+        }
+
+        HRESULT recordFlags(IFileOperation &, DWORD flags)
+        {
+            recordedFlags = flags;
+            return S_OK;
         }
 
         HRESULT passQueue(IFileOperation &, IShellItem &, IShellItem &)
@@ -71,6 +203,12 @@ namespace burlak::adapters::shell
         HRESULT reportAborted(IFileOperation &, BOOL *aborted)
         {
             *aborted = TRUE;
+            return S_OK;
+        }
+
+        HRESULT reportComplete(IFileOperation &, BOOL *aborted)
+        {
+            *aborted = FALSE;
             return S_OK;
         }
 
@@ -109,44 +247,118 @@ namespace burlak::adapters::shell
             const auto root = std::filesystem::canonical(std::filesystem::temp_directory_path()) / L"burlak-shell-data";
             std::filesystem::create_directories(root);
             const auto file = root / L"one.txt";
+            const auto secondFile = root / L"two.txt";
             {
                 std::ofstream stream{file};
+                std::ofstream second{secondFile};
             }
-            const std::vector<std::wstring> paths{file.wstring()};
+            const std::vector<std::wstring> paths{file.wstring(), secondFile.wstring()};
 
             auto data = makeDataObject(paths);
             REQUIRE(data.has_value());
+            DropData bridge;
+            const auto nativeData = reinterpret_cast<std::uintptr_t>(data->data.Get());
+            CHECK(bridge.offersFileDrop(nativeData));
+            CHECK_FALSE(bridge.offersFileDrop(0));
+            const auto bridged = bridge.fileDropPaths(nativeData);
+            REQUIRE(bridged.has_value());
+            CHECK(bridged->size() == paths.size());
+            CHECK(bridge.fileDropPaths(0) == std::unexpected(core::Error::NoSelection));
+            CHECK(bridge.setPerformedEffect(0, core::Effect::None) == std::unexpected(core::Error::Unavailable));
+            CHECK(offersFileDrop(*data->data.Get()));
+            const auto received = fileDropPaths(*data->data.Get());
+            REQUIRE(received.has_value());
+            CHECK(received->size() == 2);
+            CHECK(std::filesystem::canonical(received->front()) == std::filesystem::canonical(file));
+            CHECK(std::filesystem::canonical(received->back()) == std::filesystem::canonical(secondFile));
+            CHECK(maximumDropPaths == 4096);
+            CHECK(maximumDropPathCodeUnits == 32767);
+            CHECK(maximumDropBytes == 1024 * 1024);
+            CHECK(fileDropPaths(*data->data.Get(), 1) == std::unexpected(core::Error::NoSelection));
+            for (const auto mode : {DropQueryMode::Empty, DropQueryMode::TooMany, DropQueryMode::EmptyPath,
+                                    DropQueryMode::ShortWrite, DropQueryMode::Relative}) {
+                dropQueryMode = mode;
+                CHECK(fileDropPaths(*data->data.Get(), maximumDropPaths, fakeDropQuery) ==
+                      std::unexpected(core::Error::NoSelection));
+            }
+            for (const auto mode : {DropQueryMode::LongPath, DropQueryMode::OversizedTotal}) {
+                dropQueryMode = mode;
+                CHECK(fileDropPaths(*data->data.Get(), maximumDropPaths, fakeDropQuery) ==
+                      std::unexpected(core::Error::NoSelection));
+            }
+            CHECK(data->parsedPaths == paths.size());
             FORMATETC format{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
             STGMEDIUM medium{};
-            REQUIRE(SUCCEEDED((*data)->GetData(&format, &medium)));
+            REQUIRE(SUCCEEDED(data->data->GetData(&format, &medium)));
             const auto drop = static_cast<HDROP>(GlobalLock(medium.hGlobal));
             REQUIRE(drop != nullptr);
             wchar_t path[MAX_PATH]{};
             CHECK(DragQueryFileW(drop, 0, path, MAX_PATH) > 0);
             CHECK(std::filesystem::canonical(std::filesystem::path{path}) == std::filesystem::canonical(file));
 
+            CHECK(bridge.setPerformedEffect(nativeData, core::Effect::None).has_value());
+            const auto performedFormat = RegisterClipboardFormatW(CFSTR_PERFORMEDDROPEFFECT);
+            REQUIRE(performedFormat != 0);
+            FORMATETC performed{static_cast<CLIPFORMAT>(performedFormat), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            STGMEDIUM performedMedium{};
+            REQUIRE(SUCCEEDED(data->data->GetData(&performed, &performedMedium)));
+            const auto performedValue = static_cast<const DWORD *>(GlobalLock(performedMedium.hGlobal));
+            REQUIRE(performedValue != nullptr);
+            CHECK(*performedValue == DROPEFFECT_NONE);
+            GlobalUnlock(performedMedium.hGlobal);
+            ReleaseStgMedium(&performedMedium);
+
+            const auto preferredFormat = RegisterClipboardFormatW(CFSTR_PREFERREDDROPEFFECT);
+            REQUIRE(preferredFormat != 0);
+            FORMATETC preferred{static_cast<CLIPFORMAT>(preferredFormat), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            const auto realQuery = data->data->QueryGetData(&preferred);
+            STGMEDIUM realPreferredMedium{};
+            const auto realGet = data->data->GetData(&preferred, &realPreferredMedium);
+            if (SUCCEEDED(realGet)) {
+                const auto value = static_cast<const DWORD *>(GlobalLock(realPreferredMedium.hGlobal));
+                if (value != nullptr) {
+                    GlobalUnlock(realPreferredMedium.hGlobal);
+                }
+                ReleaseStgMedium(&realPreferredMedium);
+            }
+            CHECK(realQuery != S_OK);
+            CHECK(FAILED(realGet));
+
+            auto placeholders = makeDataObject(paths, core::Effect::Copy);
+            REQUIRE(placeholders.has_value());
+            STGMEDIUM preferredMedium{};
+            REQUIRE(SUCCEEDED(placeholders->data->GetData(&preferred, &preferredMedium)));
+            const auto preferredValue = static_cast<const DWORD *>(GlobalLock(preferredMedium.hGlobal));
+            REQUIRE(preferredValue != nullptr);
+            CHECK(*preferredValue == DROPEFFECT_COPY);
+            GlobalUnlock(preferredMedium.hGlobal);
+            ReleaseStgMedium(&preferredMedium);
+
             TestDropSource source;
             auto calls = systemShellCalls();
             calls.doDragDrop = fakeDrag;
             dragResult = DRAGDROP_S_DROP;
             draggedEffect = DROPEFFECT_MOVE;
-            CHECK(runDrag(nullptr, *data.value().Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, true, calls) ==
                   core::DragLoopOutcome{DRAGDROP_S_DROP, DROPEFFECT_MOVE});
+            CHECK(allowedEffects == (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK));
             dragResult = DRAGDROP_S_CANCEL;
-            CHECK(runDrag(nullptr, *data.value().Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, false, calls) ==
                   core::DragLoopOutcome{DRAGDROP_S_CANCEL, DROPEFFECT_MOVE});
+            CHECK(allowedEffects == (DROPEFFECT_COPY | DROPEFFECT_MOVE));
             dragResult = E_FAIL;
-            CHECK(runDrag(nullptr, *data.value().Get(), source, calls) ==
+            CHECK(runDrag(nullptr, *data->data.Get(), source, true, calls) ==
                   core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
 
             Shell shell{calls};
             auto opaque = shell.makeDataObject(paths);
             REQUIRE(opaque.has_value());
+            CHECK(opaque->parsedPaths == paths.size());
             dragResult = DRAGDROP_S_DROP;
-            CHECK(shell.runDrag(0, **opaque, reinterpret_cast<std::uintptr_t>(&source)) ==
+            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source), true) ==
                   core::DragLoopOutcome{DRAGDROP_S_DROP, DROPEFFECT_MOVE});
             dragResult = E_FAIL;
-            CHECK(shell.runDrag(0, **opaque, reinterpret_cast<std::uintptr_t>(&source)) ==
+            CHECK(shell.runDrag(0, *opaque->data, reinterpret_cast<std::uintptr_t>(&source), false) ==
                   core::DragLoopOutcome{E_FAIL, DROPEFFECT_MOVE});
             GlobalUnlock(medium.hGlobal);
             ReleaseStgMedium(&medium);
@@ -186,6 +398,39 @@ namespace burlak::adapters::shell
             calls = systemShellCalls();
             calls.bindDataObject = failBind;
             CHECK(makeDataObject(paths, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.registerClipboardFormat = failClipboardFormat;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.globalAlloc = failGlobalAllocation;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.globalLock = failGlobalLock;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.setData = failSetData;
+            CHECK(makeDataObject(paths, core::Effect::Copy, calls) == std::unexpected(core::Error::Unavailable));
+
+            std::filesystem::remove_all(root);
+            OleUninitialize();
+        }
+
+        TEST_CASE("data-object construction reports exactly how many paths were advertised")
+        {
+            REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
+            const auto root = std::filesystem::temp_directory_path() / L"burlak-shell-partial";
+            std::filesystem::create_directories(root);
+            const auto file = root / L"one.txt";
+            {
+                std::ofstream stream{file};
+            }
+            const std::vector<std::wstring> paths{file.wstring(), L"missing"};
+            auto calls = systemShellCalls();
+            calls.parseDisplayName = parseExceptMissing;
+
+            const auto data = makeDataObject(paths, calls);
+            REQUIRE(data.has_value());
+            CHECK(data->parsedPaths == 1);
 
             std::filesystem::remove_all(root);
             OleUninitialize();
@@ -194,9 +439,11 @@ namespace burlak::adapters::shell
         TEST_CASE("IFileOperation copies a real file between temporary directories")
         {
             REQUIRE(SUCCEEDED(OleInitialize(nullptr)));
-            const auto root = std::filesystem::temp_directory_path() / L"burlak-shell-copy";
-            const auto source = root / L"source";
-            const auto destination = root / L"destination";
+            DirectoryGuard root{std::filesystem::temp_directory_path() /
+                                (L"burlak-shell-copy-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                 std::to_wstring(GetTickCount64()))};
+            const auto source = root.path() / L"source";
+            const auto destination = root.path() / L"destination";
             std::filesystem::create_directories(source);
             std::filesystem::create_directories(destination);
             const auto file = source / L"copied.txt";
@@ -206,9 +453,11 @@ namespace burlak::adapters::shell
             const std::vector<std::wstring> paths{file.wstring()};
 
             Shell shell;
-            CHECK(shell.copy(paths, destination.wstring(), core::Effect::None) ==
+            CHECK(shell.copy(paths, destination.wstring(), core::Effect::None, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
-            CHECK(shell.copy(paths, destination.wstring(), core::Effect::Copy).has_value());
+            CHECK(shell.copy(paths, destination.wstring(), core::Effect::Link, 0) ==
+                  std::unexpected(core::Error::ForeignCallFailed));
+            CHECK(shell.copy(paths, destination.wstring(), core::Effect::Copy, 0).has_value());
             CHECK(std::filesystem::exists(destination / file.filename()));
 
             const auto moved = source / L"moved.txt";
@@ -216,17 +465,16 @@ namespace burlak::adapters::shell
                 std::ofstream stream{moved};
             }
             const std::vector<std::wstring> movedPaths{moved.wstring()};
-            CHECK(shell.copy(movedPaths, destination.wstring(), core::Effect::Move).has_value());
+            CHECK(shell.copy(movedPaths, destination.wstring(), core::Effect::Move, 0).has_value());
             CHECK(std::filesystem::exists(destination / moved.filename()));
             CHECK_FALSE(std::filesystem::exists(moved));
 
-            CHECK(shell.copy(paths, L"Z:\\missing-destination", core::Effect::Copy) ==
+            CHECK(shell.copy(paths, L"Z:\\missing-destination", core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::DirectoryUnavailable));
             const std::vector<std::wstring> missing{L"Z:\\missing-source\\file.txt"};
-            CHECK(shell.copy(missing, destination.wstring(), core::Effect::Copy) ==
+            CHECK(shell.copy(missing, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
-            std::filesystem::remove_all(root);
             OleUninitialize();
         }
 
@@ -246,32 +494,54 @@ namespace burlak::adapters::shell
 
             auto calls = systemShellCalls();
             calls.createOperation = failCreateOperation;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::Unavailable));
 
             calls = systemShellCalls();
+            calls.setOwner = failOwner;
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
+                  std::unexpected(core::Error::Unavailable));
+            calls = systemShellCalls();
+            calls.setFlags = failFlags;
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
+                  std::unexpected(core::Error::Unavailable));
+
+            calls = systemShellCalls();
+            calls.setOwner = recordOwner;
+            calls.setFlags = recordFlags;
+            calls.copyItem = passQueue;
+            calls.perform = passPerform;
+            calls.getAborted = reportComplete;
+            recordedOwner = nullptr;
+            recordedFlags = 0;
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 123).has_value());
+            CHECK(recordedOwner == reinterpret_cast<HWND>(123));
+            CHECK((recordedFlags & FOF_ALLOWUNDO) != 0);
+            CHECK((recordedFlags & FOFX_SHOWELEVATIONPROMPT) != 0);
+
+            calls = systemShellCalls();
             calls.copyItem = failQueue;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
             calls = systemShellCalls();
             calls.moveItem = failQueue;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Move) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Move, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             calls = systemShellCalls();
             calls.copyItem = passQueue;
             calls.perform = failPerform;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             calls = systemShellCalls();
             calls.copyItem = passQueue;
             calls.perform = passPerform;
             calls.getAborted = failAborted;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
             calls.getAborted = reportAborted;
-            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy) ==
+            CHECK(Shell{calls}.copy(paths, destination.wstring(), core::Effect::Copy, 0) ==
                   std::unexpected(core::Error::ForeignCallFailed));
 
             std::filesystem::remove_all(root);

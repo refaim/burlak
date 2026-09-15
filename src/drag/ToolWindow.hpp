@@ -4,6 +4,7 @@
 
 #include <windows.h>
 
+#include <chrono>
 #include <memory>
 
 namespace burlak::drag
@@ -13,19 +14,35 @@ namespace burlak::drag
     {
         decltype(&CreateThread) createThread;
         decltype(&Sleep) sleep;
+        decltype(&CreateEventW) createEvent;
         decltype(&CreateWindowExW) createWindow;
+        decltype(&SendMessageW) sendMessage;
         decltype(&IsWindowVisible) isWindowVisible;
+        decltype(&SetWindowPos) setWindowPos;
+        decltype(&ShowWindow) showWindow;
+        decltype(&SetCapture) setCapture;
+        decltype(&ReleaseCapture) releaseCapture;
+        decltype(&SetTimer) setTimer;
+        decltype(&KillTimer) killTimer;
+        decltype(&GetWindow) getWindow;
+        decltype(&CoWaitForMultipleHandles) coWait;
+        std::chrono::steady_clock::time_point (*now)();
     };
 
     class ToolWindow final : public core::IDragTool
     {
       public:
-        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell);
-        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, const ToolWindowCalls &calls);
+        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropData &dropData,
+                   core::IDropSession &dropSession, core::IExtraction &extraction, core::IFiles &files,
+                   core::IWindowProperties &properties, core::IDropMenu &menu);
+        ToolWindow(core::IScreen &screen, core::IInput &input, core::IShell &shell, core::IDropData &dropData,
+                   core::IDropSession &dropSession, core::IExtraction &extraction, core::IFiles &files,
+                   core::IWindowProperties &properties, core::IDropMenu &menu, const ToolWindowCalls &calls);
         ~ToolWindow();
 
         [[nodiscard]] bool start() override;
-        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button) override;
+        [[nodiscard]] bool prepare(std::span<const std::wstring> paths, core::Button button, bool needsExtraction,
+                                   core::DropContext context) override;
         [[nodiscard]] bool showAndArm() override;
         void abort() override;
         [[nodiscard]] bool active() const override;
@@ -33,6 +50,14 @@ namespace burlak::drag
 
         [[nodiscard]] core::NativeWindow nativeWindow() const;
         [[nodiscard]] bool hasData() const;
+        void drop(core::Point point, bool shift);
+        [[nodiscard]] std::uint32_t dragEnter(std::uintptr_t dataObject, std::uint32_t keyState, core::Point point,
+                                              std::uint32_t allowedEffects);
+        void dragLeave();
+        [[nodiscard]] std::uint32_t drop(std::uintptr_t dataObject, std::uint32_t keyState, core::Point point,
+                                         std::uint32_t allowedEffects);
+        void receiveSnapshot(core::ReceiveSnapshot snapshot);
+        void completeReceiveRefresh(bool matches);
 
       private:
         class State;
@@ -40,6 +65,8 @@ namespace burlak::drag
     };
 
     [[nodiscard]] std::uintptr_t armTimerId();
+    [[nodiscard]] std::uintptr_t externalDragPollTimerId();
+    [[nodiscard]] std::uintptr_t extractionSweepTimerId();
     [[nodiscard]] const ToolWindowCalls &systemToolWindowCalls();
 
 } // namespace burlak::drag

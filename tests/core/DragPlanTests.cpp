@@ -15,10 +15,13 @@ namespace burlak::core
             panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
             panels.directories[0] = L"C:\\work";
             panels.items[0] = {{.name = L"one.txt"}, {.name = L".."}, {.name = L"."}, {.name = L"two.bin"}};
+            tests::Host host;
+            tests::Files files;
 
-            const auto paths = DragPlan{panels}.paths();
-            REQUIRE(paths.has_value());
-            CHECK(*paths == std::vector<std::wstring>{L"C:\\work\\one.txt", L"C:\\work\\two.bin"});
+            const auto plan = DragPlan{panels, host, files}.build();
+            REQUIRE(plan.has_value());
+            CHECK(plan->paths == std::vector<std::wstring>{L"C:\\work\\one.txt", L"C:\\work\\two.bin"});
+            CHECK_FALSE(plan->extraction.has_value());
         }
 
         TEST_CASE("an existing trailing slash is not doubled")
@@ -27,27 +30,258 @@ namespace burlak::core
             panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
             panels.directories[0] = L"C:\\work\\";
             panels.items[0] = {{.name = L"one.txt"}};
-            CHECK(*DragPlan{panels}.paths() == std::vector<std::wstring>{L"C:\\work\\one.txt"});
+            tests::Host host;
+            tests::Files files;
+            CHECK(DragPlan{panels, host, files}.build()->paths == std::vector<std::wstring>{L"C:\\work\\one.txt"});
         }
 
         TEST_CASE("missing panel, virtual names, directory, and usable items are expected failures")
         {
             tests::Panels panels;
-            CHECK(DragPlan{panels}.paths().error() == Error::PanelUnavailable);
+            tests::Host host;
+            tests::Files files;
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::PanelUnavailable);
 
             panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
             panels.panels[0]->realNames = false;
-            CHECK(DragPlan{panels}.paths().error() == Error::NoRealNames);
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::NoRealNames);
 
             panels.panels[0]->realNames = true;
-            CHECK(DragPlan{panels}.paths().error() == Error::DirectoryUnavailable);
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::DirectoryUnavailable);
 
             panels.directories[0] = L"C:\\work";
             panels.items[0] = {{.name = L"."}, {.name = L".."}, {.name = L""}};
-            CHECK(DragPlan{panels}.paths().error() == Error::NoSelection);
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::NoSelection);
 
             panels.directories[0] = L"";
-            CHECK(DragPlan{panels}.paths().error() == Error::DirectoryUnavailable);
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::DirectoryUnavailable);
+        }
+
+        TEST_CASE("plugin panels create placeholders and retain a faithful extraction recipe")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->handle = 71;
+            panels.panels[0]->owner[0] = std::byte{9};
+            panels.items[0] = {
+                {.name = L"one.txt", .size = 19, .attributes = 2, .selected = true, .userData = {.value = 23}},
+                {.name = L"folder", .attributes = 16, .directory = true, .selected = true}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            const auto plan = DragPlan{panels, host, files}.build();
+            REQUIRE(plan.has_value());
+            CHECK(plan->paths ==
+                  std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1\\one.txt", L"C:\\Temp\\Burlak\\7-1\\folder"});
+            REQUIRE(plan->extraction.has_value());
+            CHECK(plan->extraction->panel == 71);
+            CHECK(plan->extraction->items == panels.items[0]);
+            CHECK(plan->extraction->module.path == L"Archive.dll");
+            CHECK(plan->extraction->module.instance == 42);
+            CHECK(plan->extraction->directory == L"C:\\Temp\\Burlak\\7-1");
+            // The location (inner directory and host archive) identifies the archive at release, where the handle is
+            // a reusable heap pointer.
+            CHECK(plan->extraction->location == panels.locations[0]);
+            CHECK(files.placeholders ==
+                  std::vector<std::pair<std::wstring, bool>>{{L"one.txt", false}, {L"folder", true}});
+            CHECK(host.requestedOwner == panels.panels[0]->owner);
+        }
+
+        TEST_CASE("absolute plugin item names are advertised as-is without extraction")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->plugin = true;
+            panels.items[0] = {{.name = L"C:\\Temp\\one.txt"}, {.name = L"\\\\server\\share\\two.txt"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            tests::Files files;
+
+            SUBCASE("a virtual TmpPanel")
+            {
+                panels.panels[0]->realNames = false;
+            }
+            SUBCASE("a real-names plugin panel")
+            {
+                panels.panels[0]->realNames = true;
+            }
+
+            const auto plan = DragPlan{panels, host, files}.build();
+            REQUIRE(plan.has_value());
+            CHECK(plan->paths == std::vector<std::wstring>{L"C:\\Temp\\one.txt", L"\\\\server\\share\\two.txt"});
+            CHECK_FALSE(plan->extraction.has_value());
+            CHECK_FALSE(host.requestedOwner.has_value());
+            CHECK(files.placeholders.empty());
+        }
+
+        TEST_CASE("a virtual plugin selection cannot mix absolute and extractable names")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.items[0] = {{.name = L"C:\\Temp\\one.txt"}, {.name = L"two.txt"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            CHECK(DragPlan{panels, host, files}.build() == std::unexpected(Error::Unavailable));
+            CHECK_FALSE(host.requestedOwner.has_value());
+            CHECK(files.placeholders.empty());
+        }
+
+        TEST_CASE("a real-names plugin panel preserves absolute items while joining relative ones")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->plugin = true;
+            panels.directories[0] = L"C:\\panel";
+            panels.items[0] = {{.name = L"C:\\Temp\\one.txt"}, {.name = L"two.txt"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            tests::Files files;
+
+            const auto plan = DragPlan{panels, host, files}.build();
+            REQUIRE(plan.has_value());
+            CHECK(plan->paths == std::vector<std::wstring>{L"C:\\Temp\\one.txt", L"C:\\panel\\two.txt"});
+            CHECK_FALSE(plan->extraction.has_value());
+        }
+
+        TEST_CASE("plugin plans fail without a module and clean a partially built placeholder run")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {{.name = L"one.txt"}, {.name = L"two.txt"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            tests::Files files;
+
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::Unavailable);
+            CHECK(files.placeholders.empty());
+
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            // Without a location identity the release could not prove it still faces the same archive: no run is even
+            // created.
+            panels.locations[0].reset();
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::DirectoryUnavailable);
+            CHECK(files.placeholders.empty());
+            CHECK(files.removed.empty());
+            panels.locations[0] = PanelDirectory{.name = L"", .file = L"C:\\archives\\host.zip"};
+            files.directory = std::unexpected(Error::Unavailable);
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::Unavailable);
+
+            files.directory = L"C:\\Temp\\Burlak\\7-1";
+            files.rejectedName = L"two.txt";
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::Unavailable);
+            CHECK(files.removed == std::vector<std::wstring>{L"C:\\Temp\\Burlak\\7-1"});
+
+            panels.items[0] = {{.name = L"."}, {.name = L".."}, {.name = L""}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::NoSelection);
+        }
+
+        TEST_CASE("plugin plans reject an incomplete selected-item snapshot")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->selectedItems = 2;
+            panels.items[0] = {{.name = L"one.txt"}};
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            CHECK(DragPlan{panels, host, files}.build() == std::unexpected(Error::Unavailable));
+            CHECK_FALSE(host.requestedOwner.has_value());
+            CHECK(files.placeholders.empty());
+        }
+
+        TEST_CASE("plugin plans reject case-insensitive duplicate placeholder names before creating a run")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            panels.items[0] = {{.name = L"Report.txt"}, {.name = L"REPORT.TXT"}};
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            CHECK(DragPlan{panels, host, files}.build().error() == Error::Unavailable);
+            CHECK(files.placeholders.empty());
+            CHECK(files.removed.empty());
+            REQUIRE(host.messages.size() == 1);
+            REQUIRE(host.messages[0].size() == 1);
+            CHECK(host.messages[0][0].find(L"Report.txt") != std::wstring::npos);
+        }
+
+        TEST_CASE("large plugin selections use logarithmic case-insensitive duplicate lookup")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            constexpr std::size_t itemCount = 20'000;
+            panels.items[0].reserve(itemCount);
+            for (std::size_t index = 0; index < itemCount; ++index) {
+                panels.items[0].push_back({.name = L"item-" + std::to_wstring(index)});
+            }
+            panels.panels[0]->selectedItems = panels.items[0].size();
+            tests::Host host;
+            host.module = PluginModule{.path = L"Archive.dll", .instance = 42};
+            tests::Files files;
+
+            const auto plan = DragPlan{panels, host, files}.build();
+            REQUIRE(plan.has_value());
+            CHECK(plan->paths.size() == itemCount);
+            CHECK(files.nameComparisons < 1'000'000);
+        }
+
+        TEST_CASE("item identity compares every stable field but not its native buffer address")
+        {
+            const Item original{.identity = {std::byte{1}},
+                                .native = {std::byte{2}},
+                                .name = L"one.txt",
+                                .size = 3,
+                                .attributes = 4,
+                                .directory = true,
+                                .selected = true,
+                                .userData = {.value = 5}};
+            auto changed = original;
+            changed.native = {std::byte{9}};
+            CHECK(changed == original);
+            changed.identity = {std::byte{9}};
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.name = L"two.txt";
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.size = 6;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.attributes = 7;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.directory = false;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.selected = false;
+            CHECK_FALSE(changed == original);
+            changed = original;
+            changed.userData.value = 8;
+            CHECK_FALSE(changed == original);
         }
     }
 

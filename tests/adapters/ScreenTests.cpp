@@ -1,5 +1,7 @@
 #include "adapters/win/Screen.hpp"
 
+#include "../Desktop.hpp"
+
 #include <doctest/doctest.h>
 
 #include <windows.h>
@@ -18,6 +20,8 @@ namespace burlak::adapters::win
             SHORT rightKey{};
             HWND console{reinterpret_cast<HWND>(1)};
             HWND foreground{reinterpret_cast<HWND>(2)};
+            HWND pointWindow{reinterpret_cast<HWND>(4)};
+            HWND rootWindow{reinterpret_cast<HWND>(5)};
             bool rectSucceeds{true};
             bool visible{true};
             HWND hiddenWindow{};
@@ -53,9 +57,21 @@ namespace burlak::adapters::win
             return fakeState.console;
         }
 
-        HWND WINAPI fakeGetForegroundWindow()
+        HWND WINAPI fakeGetWindow(HWND, UINT command)
         {
+            CHECK(command == GW_OWNER);
             return fakeState.foreground;
+        }
+
+        HWND WINAPI fakeWindowFromPoint(POINT)
+        {
+            return fakeState.pointWindow;
+        }
+
+        HWND WINAPI fakeGetAncestor(HWND, UINT flag)
+        {
+            CHECK(flag == GA_ROOT);
+            return fakeState.rootWindow;
         }
 
         BOOL WINAPI fakeGetWindowRect(HWND, LPRECT rect)
@@ -104,10 +120,13 @@ namespace burlak::adapters::win
             return fakeState.bufferSucceeds ? TRUE : FALSE;
         }
 
-        const ScreenCalls fakeCalls{fakeGetCursorPos,          fakeGetAsyncKeyState, fakeGetConsoleWindow,
-                                    fakeGetForegroundWindow,   fakeGetWindowRect,    fakeGetClientRect,
-                                    fakeIsWindowVisible,       fakeGetWindowLong,    fakeGetStdHandle,
-                                    fakeGetCurrentConsoleFont, fakeClientToScreen,   fakeGetConsoleScreenBufferInfo};
+        const ScreenCalls fakeCalls{fakeGetCursorPos,     fakeGetAsyncKeyState,
+                                    fakeGetConsoleWindow, fakeGetWindow,
+                                    fakeWindowFromPoint,  fakeGetAncestor,
+                                    fakeGetWindowRect,    fakeGetClientRect,
+                                    fakeIsWindowVisible,  fakeGetWindowLong,
+                                    fakeGetStdHandle,     fakeGetCurrentConsoleFont,
+                                    fakeClientToScreen,   fakeGetConsoleScreenBufferInfo};
 
         void resetFakeScreen()
         {
@@ -134,7 +153,9 @@ namespace burlak::adapters::win
 
     TEST_SUITE("screen adapter")
     {
-        TEST_CASE("a visible window covering the point is returned with its geometry and topmost state")
+        TEST_CASE("a visible window covering the point is returned with its geometry and topmost state" *
+                  doctest::skip(!burlak::tests::desktopAvailable(
+                      "SKIP: screen integration requires a visible window station with cursor access\n")))
         {
             const HWND window = testWindow();
             REQUIRE(window != nullptr);
@@ -152,7 +173,9 @@ namespace burlak::adapters::win
             DestroyWindow(window);
         }
 
-        TEST_CASE("the foreground candidate is used when the console candidate does not cover the cursor")
+        TEST_CASE("the console owner is used when the console candidate does not cover the cursor" *
+                  doctest::skip(!burlak::tests::desktopAvailable(
+                      "SKIP: screen integration requires a visible window station with cursor access\n")))
         {
             const HWND window = testWindow();
             REQUIRE(window != nullptr);
@@ -171,16 +194,21 @@ namespace burlak::adapters::win
             const auto geometry = screen.cellGeometry();
             const bool expectedGeometry = geometry.has_value() || geometry.error() == core::Error::Unavailable;
             CHECK(expectedGeometry);
-            if (before) {
-                static_cast<void>(SetCursorPos(before->x, before->y));
-            }
+            static_cast<void>(before);
         }
 
         TEST_CASE("the injected adapter maps screen queries without relying on the desktop")
         {
+            CHECK_FALSE(hostWindowAt({0, 0}, 0, 0).has_value());
             resetFakeScreen();
             Screen screen{fakeCalls};
             CHECK(screen.cursor() == std::optional{core::Point{50, 50}});
+            CHECK(screen.windowAt({50, 50}) == reinterpret_cast<core::NativeWindow>(fakeState.rootWindow));
+            CHECK(screen.consoleWindow() == reinterpret_cast<core::NativeWindow>(fakeState.console));
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.console));
+            fakeState.pointWindow = nullptr;
+            CHECK(screen.windowAt({50, 50}) == 0);
+            fakeState.pointWindow = reinterpret_cast<HWND>(4);
             CHECK_FALSE(screen.buttonDown(core::Button::Left));
             fakeState.rightKey = static_cast<SHORT>(0x8000);
             CHECK(screen.buttonDown(core::Button::Right));
@@ -190,23 +218,41 @@ namespace burlak::adapters::win
             REQUIRE(host.has_value());
             CHECK(host->handle == reinterpret_cast<core::NativeWindow>(fakeState.console));
             CHECK(host->topmost);
+            const auto pointHost = screen.hostWindowAt({50, 50});
+            REQUIRE(pointHost.has_value());
+            CHECK(pointHost->handle == host->handle);
+            CHECK(pointHost->rect == host->rect);
+            CHECK(pointHost->topmost == host->topmost);
 
             fakeState.rectSucceeds = false;
             CHECK_FALSE(screen.hostWindow().has_value());
             fakeState.rectSucceeds = true;
             fakeState.visible = false;
             CHECK_FALSE(screen.hostWindow().has_value());
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.visible = true;
+            fakeState.rectSucceeds = false;
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.rectSucceeds = true;
+            fakeState.rect.right = fakeState.rect.left;
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.rect = {0, 0, 100, 0};
+            CHECK(screen.hostWindowHandle() == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            fakeState.rect = {0, 0, 100, 100};
             fakeState.visible = true;
             fakeState.cursor = {200, 200};
             CHECK_FALSE(screen.hostWindow().has_value());
 
             fakeState.cursor = {50, 50};
             fakeState.console = nullptr;
-            CHECK(screen.hostWindow()->handle == reinterpret_cast<core::NativeWindow>(fakeState.foreground));
+            CHECK(screen.consoleWindow() == 0);
+            CHECK(screen.hostWindowHandle() == 0);
+            CHECK_FALSE(screen.hostWindow().has_value());
 
             fakeState.cursorSucceeds = false;
             CHECK_FALSE(screen.cursor().has_value());
             CHECK_FALSE(screen.hostWindow().has_value());
+            CHECK_FALSE(screen.hostWindowAt({50, 50}).has_value());
         }
 
         TEST_CASE("font metrics are preferred and the buffer geometry is a checked fallback")
@@ -214,6 +260,7 @@ namespace burlak::adapters::win
             resetFakeScreen();
             Screen screen{fakeCalls};
             CHECK(screen.cellGeometry() == core::CellGeometry{{7, 9}, 10, 20});
+            CHECK(screen.cellGeometryAt({50, 50}) == core::CellGeometry{{7, 9}, 10, 20});
             CHECK(fakeState.clientToScreenWindow == fakeState.console);
 
             resetFakeScreen();
@@ -260,6 +307,10 @@ namespace burlak::adapters::win
 
             resetFakeScreen();
             fakeState.clientToScreenSucceeds = false;
+            CHECK(screen.cellGeometry() == std::unexpected(core::Error::Unavailable));
+
+            resetFakeScreen();
+            fakeState.cursorSucceeds = false;
             CHECK(screen.cellGeometry() == std::unexpected(core::Error::Unavailable));
         }
     }

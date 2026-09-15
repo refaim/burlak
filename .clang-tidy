@@ -4,6 +4,7 @@
 # performance-no-int-to-ptr: Win32 and Far expose opaque handles as pointers while core stores non-owning handles as integers.
 # bugprone-forward-declaration-namespace: the SDK's global Shell type is unrelated to our shell adapter namespace.
 # bugprone-easily-swappable-parameters: foreign ABI callbacks and geometry values have contract-fixed adjacent fields.
+# clang-analyzer-optin.core.EnumCastOutOfRange: MSVC's filesystem uses valid bitmask enum combinations that this checker rejects.
 Checks: >
   -*,
   clang-analyzer-*,
@@ -12,7 +13,8 @@ Checks: >
   portability-*,
   -bugprone-easily-swappable-parameters,
   -performance-no-int-to-ptr,
-  -bugprone-forward-declaration-namespace
+  -bugprone-forward-declaration-namespace,
+  -clang-analyzer-optin.core.EnumCastOutOfRange
 WarningsAsErrors: '*'
 HeaderFilterRegex: '.*[\\/](src|tests)[\\/].*'
 SystemHeaders: false

@@ -5,6 +5,17 @@ browser upload box, Explorer, a chat window.
 
 Hold the left mouse button on a panel item, move a few cells, drop it wherever you like.
 Ordinary clicks keep working as before.
+Drop onto Far's other panel to copy there; hold Shift to move instead, including to or from plugin panels.
+Burlak also accepts drops from Explorer, other programs, and another Far onto panels backed by
+real directories; it copies by default and moves with Shift, with the shell's progress shown in
+the receiving Far. Both Fars need Burlak for a Far-to-Far drop. If several Fars share one Windows
+Terminal window, the drop goes to the tab that most recently had focus.
+Files and selections can also be dragged out of archive, FTP/SFTP, and other plugin panels;
+after release they are extracted as copies for the target, so these plugin-panel drags do not offer shortcuts.
+Files dragged out of a plugin panel are extracted into `%TEMP%\Burlak` and removed about a minute
+later, giving the receiving program time to read them.
+A drop into a plugin panel (such as an archive or FTP) is not supported yet and the terminal
+pastes the path as before; Windows also blocks a drop from a non-elevated program into elevated Far.
 
 Drag with the right button instead and it is up to the target what happens on the drop:
 Explorer offers its copy / move / shortcut menu, Telegram just takes the files. A right click

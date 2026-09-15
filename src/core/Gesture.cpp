@@ -2,6 +2,7 @@
 
 #include "core/Geometry.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace burlak::core
@@ -10,11 +11,24 @@ namespace burlak::core
     namespace
     {
 
-        constexpr int dragThresholdCells = 3;
+        // A drag starts at two cells sideways or one row down (about 16 px either way with a common console
+        // font), for both buttons. Cells are half as tall as they are wide, so three cells on both axes meant 24 px
+        // sideways but 48 px vertically; a right-button release inside that box is a click, and Far opens its context
+        // menu on it. Both distances stay well above Explorer's 4 px drag rectangle.
+        constexpr int dragThresholdColumns = 2;
+        constexpr int dragThresholdRows = 1;
 
         [[nodiscard]] bool held(Button button, const MouseEvent &event)
         {
             return button == Button::Left ? event.left : event.right;
+        }
+
+        [[nodiscard]] bool usableSource(const PanelInfo &panel)
+        {
+            const bool ownedPlugin =
+                panel.plugin && !panel.realNames &&
+                std::ranges::any_of(panel.owner, [](std::byte value) { return value != std::byte{}; });
+            return panel.filePanel && (panel.realNames || ownedPlugin);
         }
 
     } // namespace
@@ -63,7 +77,7 @@ namespace burlak::core
 
         const int dx = std::abs(event.at.x - press_.at.x);
         const int dy = std::abs(event.at.y - press_.at.y);
-        if (dx < dragThresholdCells && dy < dragThresholdCells) {
+        if (dx < dragThresholdColumns && dy < dragThresholdRows) {
             return {.action = VerdictAction::Hold, .replacement = {}};
         }
 
@@ -90,13 +104,13 @@ namespace burlak::core
         return {.action = VerdictAction::Replace, .replacement = replacement};
     }
 
-    std::optional<Button> Gesture::synchro()
+    std::optional<DragStart> Gesture::synchro()
     {
         if (phase_ != Phase::Starting) {
             return std::nullopt;
         }
         phase_ = Phase::Spent;
-        return button_;
+        return DragStart{button_, press_.at};
     }
 
     void Gesture::reset()
@@ -127,7 +141,8 @@ namespace burlak::core
         }
         const auto active = panels_.panel(PanelSide::Active);
         const auto passive = panels_.panel(PanelSide::Passive);
-        return (active && isItemCell(*active, cell)) || (passive && isItemCell(*passive, cell));
+        return (active && usableSource(*active) && isItemCell(*active, cell)) ||
+               (passive && usableSource(*passive) && isItemCell(*passive, cell));
     }
 
 } // namespace burlak::core

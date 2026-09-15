@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/Interfaces.hpp"
 #include "core/Policies.hpp"
 
 #include <shobjidl.h>
@@ -11,7 +12,8 @@ namespace burlak::drag
     class DragSource final : public IDropSource
     {
       public:
-        DragSource(core::IReleasePolicy &policy, core::Button button);
+        DragSource(core::IReleasePolicy &policy, core::IScreen &screen, core::IExtraction &extraction,
+                   core::Button button, core::NativeWindow ownWindow, bool needsExtraction);
 
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID interfaceId, void **object) override;
         ULONG STDMETHODCALLTYPE AddRef() override;
@@ -20,12 +22,18 @@ namespace burlak::drag
         HRESULT STDMETHODCALLTYPE GiveFeedback(DWORD effect) override;
 
         [[nodiscard]] core::Effect lastEffect() const;
+        [[nodiscard]] bool extractionRan() const;
 
       private:
         core::IReleasePolicy &policy_;
+        core::IScreen &screen_;
+        core::IExtraction &extraction_;
         core::Button button_;
+        core::NativeWindow ownWindow_{};
+        bool needsExtraction_{};
         ULONG references_{1};
         core::Effect lastEffect_{core::Effect::None};
+        bool extractionRan_{};
     };
 
 } // namespace burlak::drag

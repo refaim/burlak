@@ -2,7 +2,11 @@
 
 #include "adapters/far/PluginCall.hpp"
 
+#include <array>
+#include <bit>
 #include <cstring>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 namespace burlak::adapters::far_api
@@ -18,6 +22,65 @@ namespace burlak::adapters::far_api
             // Far defines active and passive panels as intentional non-null pseudo-HANDLE constants.
             // cppcheck-suppress intToPointerCast
             return side == core::PanelSide::Active ? PANEL_ACTIVE : PANEL_PASSIVE;
+        }
+
+        template <typename Value> void appendValue(std::vector<std::byte> &identity, const Value &value)
+        {
+            const auto bytes = std::bit_cast<std::array<std::byte, sizeof(Value)>>(value);
+            identity.insert(identity.end(), bytes.begin(), bytes.end());
+        }
+
+        void appendText(std::vector<std::byte> &identity, std::optional<std::wstring_view> text)
+        {
+            appendValue(identity, text.has_value());
+            if (!text) {
+                return;
+            }
+            appendValue(identity, text->size());
+            for (const auto character : *text) {
+                appendValue(identity, character);
+            }
+        }
+
+        [[nodiscard]] std::vector<std::byte> identityOf(const PluginPanelItem &item)
+        {
+            std::vector<std::byte> identity;
+            appendValue(identity, item.CreationTime.dwLowDateTime);
+            appendValue(identity, item.CreationTime.dwHighDateTime);
+            appendValue(identity, item.LastAccessTime.dwLowDateTime);
+            appendValue(identity, item.LastAccessTime.dwHighDateTime);
+            appendValue(identity, item.LastWriteTime.dwLowDateTime);
+            appendValue(identity, item.LastWriteTime.dwHighDateTime);
+            appendValue(identity, item.ChangeTime.dwLowDateTime);
+            appendValue(identity, item.ChangeTime.dwHighDateTime);
+            appendValue(identity, item.FileSize);
+            appendValue(identity, item.AllocationSize);
+            appendText(identity,
+                       item.FileName == nullptr ? std::nullopt : std::optional{std::wstring_view{item.FileName}});
+            appendText(identity, item.AlternateFileName == nullptr
+                                     ? std::nullopt
+                                     : std::optional{std::wstring_view{item.AlternateFileName}});
+            appendText(identity,
+                       item.Description == nullptr ? std::nullopt : std::optional{std::wstring_view{item.Description}});
+            appendText(identity, item.Owner == nullptr ? std::nullopt : std::optional{std::wstring_view{item.Owner}});
+            appendValue(identity, item.CustomColumnData != nullptr);
+            appendValue(identity, item.CustomColumnNumber);
+            if (item.CustomColumnData != nullptr) {
+                for (std::size_t index = 0; index < item.CustomColumnNumber; ++index) {
+                    appendText(identity, item.CustomColumnData[index] == nullptr
+                                             ? std::nullopt
+                                             : std::optional{std::wstring_view{item.CustomColumnData[index]}});
+                }
+            }
+            appendValue(identity, item.Flags);
+            appendValue(identity, reinterpret_cast<std::uintptr_t>(item.UserData.Data));
+            appendValue(identity, item.UserData.FreeData);
+            appendValue(identity, item.FileAttributes);
+            appendValue(identity, item.NumberOfLinks);
+            appendValue(identity, item.CRC32);
+            appendValue(identity, item.Reserved[0]);
+            appendValue(identity, item.Reserved[1]);
+            return identity;
         }
 
     } // namespace
@@ -43,10 +106,15 @@ namespace burlak::adapters::far_api
             .visible = (info.Flags & PFLAGS_VISIBLE) != 0,
             .realNames = (info.Flags & PFLAGS_REALNAMES) != 0,
             .plugin = (info.Flags & PFLAGS_PLUGIN) != 0,
+            .filePanel = info.PanelType == PTYPE_FILEPANEL,
             .rect = {info.PanelRect.left, info.PanelRect.top, info.PanelRect.right, info.PanelRect.bottom},
             .handle = reinterpret_cast<core::PanelHandle>(info.PluginHandle),
             .owner = owner,
-            .selectedItems = info.SelectedItemsNumber};
+            .selectedItems = info.SelectedItemsNumber,
+            // MoveToMouse interprets a replayed row relative to these two indices (Far source:
+            // far/filelist.cpp, FileList::PluginGetPanelInfo and FileList::MoveToMouse).
+            .currentItem = info.CurrentItem,
+            .topItem = info.TopPanelItem};
     }
 
     std::vector<core::Item> FarPanels::selectedItems(core::PanelSide side)
@@ -72,15 +140,28 @@ namespace burlak::adapters::far_api
                 continue;
             }
             const auto &item = *request.Item;
-            items.push_back({.name = item.FileName == nullptr ? L"" : item.FileName,
-                             .size = item.FileSize,
-                             .directory = (item.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0,
-                             .userData = {.value = reinterpret_cast<std::uintptr_t>(item.UserData.Data)}});
+            core::Item mapped{.identity = identityOf(item),
+                              .name = item.FileName == nullptr ? L"" : item.FileName,
+                              .size = item.FileSize,
+                              .attributes = item.FileAttributes,
+                              .directory = (item.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0,
+                              .selected = (item.Flags & PPIF_SELECTED) != 0,
+                              .userData = {.value = reinterpret_cast<std::uintptr_t>(item.UserData.Data)}};
+            // CreatePluginItemList forwards Far's complete PluginPanelItem records, including their pointer-backed
+            // fields, so the buffer returned by FCTL_GETSELECTEDPANELITEM must stay intact until GetFilesW
+            // (Far source: far/filelist.cpp, FileList::CreatePluginItemList).
+            mapped.native = std::move(buffer);
+            items.push_back(std::move(mapped));
         }
         return items;
     }
 
     std::optional<std::wstring> FarPanels::directory(core::PanelSide side)
+    {
+        return pluginDirectory(side).transform([](const core::PanelDirectory &location) { return location.name; });
+    }
+
+    std::optional<core::PanelDirectory> FarPanels::pluginDirectory(core::PanelSide side)
     {
         if (info_.PanelControl == nullptr) {
             return std::nullopt;
@@ -96,7 +177,9 @@ namespace burlak::adapters::far_api
             directory.Name == nullptr) {
             return std::nullopt;
         }
-        return std::wstring{directory.Name};
+        // File is the host file a plugin panel was opened from and stays null for a plain directory panel.
+        return core::PanelDirectory{.name = directory.Name,
+                                    .file = directory.File == nullptr ? std::wstring{} : std::wstring{directory.File}};
     }
 
     bool FarPanels::currentWindowIsPanels()
@@ -170,12 +253,15 @@ namespace burlak::adapters::far_api
             information.ModuleName == nullptr || information.GInfo == nullptr) {
             return std::nullopt;
         }
-        return core::PluginModule{.path = information.ModuleName,
+        core::PluginModule module{.path = information.ModuleName,
                                   .instance = reinterpret_cast<core::PluginInstance>(information.GInfo->Instance)};
+        return hasGetFilesExport(module) ? std::optional{std::move(module)} : std::nullopt;
     }
 
-    std::expected<void, core::Error> FarHost::extract(core::PanelHandle panel, std::span<const core::Item> items,
-                                                      const core::PluginModule &module, std::wstring_view destination)
+    std::expected<std::wstring, core::Error> FarHost::extract(core::PanelHandle panel,
+                                                              std::span<const core::Item> items,
+                                                              const core::PluginModule &module,
+                                                              std::wstring_view destination)
     {
         return callPluginGetFiles(panel, items, module, destination);
     }

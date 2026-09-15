@@ -7,9 +7,10 @@ namespace burlak::core
 
     TEST_SUITE("geometry")
     {
-        TEST_CASE("only the item rows strictly inside a visible real-name panel arm a gesture")
+        TEST_CASE("only item rows strictly inside a visible panel are accepted")
         {
-            const PanelInfo panel{.visible = true, .realNames = true, .plugin = false, .rect = {0, 0, 39, 24}};
+            const PanelInfo panel{
+                .visible = true, .realNames = true, .plugin = false, .filePanel = true, .rect = {0, 0, 39, 24}};
 
             CHECK(isItemCell(panel, {1, 2}));
             CHECK(isItemCell(panel, {38, 21}));
@@ -24,7 +25,8 @@ namespace burlak::core
 
             auto virtualNames = panel;
             virtualNames.realNames = false;
-            CHECK_FALSE(isItemCell(virtualNames, {1, 2}));
+            virtualNames.plugin = true;
+            CHECK(isItemCell(virtualNames, {1, 2}));
         }
 
         TEST_CASE("cell and pixel geometry round trips")

@@ -20,17 +20,43 @@ namespace burlak::core
 
             auto press = mouse({5, 5}, true, false);
             CHECK(gesture.feed(press).action == VerdictAction::Pass);
-            auto shortMove = mouse({7, 7}, true, false, true);
+            // One cell sideways is still a click; two cells sideways (16 px at an 8 px font) start the drag.
+            auto shortMove = mouse({6, 5}, true, false, true);
             CHECK(gesture.feed(shortMove).action == VerdictAction::Hold);
-            auto threshold = mouse({8, 5}, true, false, true);
+            auto threshold = mouse({7, 5}, true, false, true);
             const auto verdict = gesture.feed(threshold);
             CHECK(verdict.action == VerdictAction::Replace);
             auto release = mouse({5, 5}, false, false);
             release.rewrite = MouseEvent::Rewrite::ButtonlessRelease;
             CHECK(verdict.replacement == release);
             CHECK(host.synchros == 1);
-            CHECK(gesture.synchro() == Button::Left);
+            CHECK(gesture.synchro() == DragStart{Button::Left, {5, 5}});
             CHECK_FALSE(gesture.synchro().has_value());
+        }
+
+        TEST_CASE("one row of vertical travel starts the drag for either button")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            tests::Host host;
+            Gesture gesture{panels, host};
+
+            // A row is about 16 px, well past Explorer's 4 px drag rectangle, so the release cannot become a click
+            // that opens Far's context menu.
+            auto press = mouse({5, 5}, true, false);
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            auto diagonal = mouse({6, 6}, true, false, true);
+            CHECK(gesture.feed(diagonal).action == VerdictAction::Replace);
+            CHECK(gesture.synchro() == DragStart{Button::Left, {5, 5}});
+
+            gesture.reset();
+            auto rightPress = mouse({5, 5}, false, true);
+            CHECK(gesture.feed(rightPress).action == VerdictAction::Hold);
+            auto stillAClick = mouse({6, 5}, false, true, true);
+            CHECK(gesture.feed(stillAClick).action == VerdictAction::Hold);
+            auto downOneRow = mouse({5, 6}, false, true, true);
+            CHECK(gesture.feed(downOneRow).action == VerdictAction::Replace);
+            CHECK(gesture.synchro() == DragStart{Button::Right, {5, 5}});
         }
 
         TEST_CASE("right click replays its press and right drag primes Far with a left-held move")
@@ -54,7 +80,7 @@ namespace burlak::core
             auto leftMove = mouse({5, 5}, true, false, true);
             leftMove.rewrite = MouseEvent::Rewrite::LeftHeldMove;
             CHECK(drag.replacement == leftMove);
-            CHECK(gesture.synchro() == Button::Right);
+            CHECK(gesture.synchro() == DragStart{Button::Right, {5, 5}});
         }
 
         TEST_CASE("right double click stays held and a second left press rearms at its new cell")
@@ -77,7 +103,7 @@ namespace burlak::core
             CHECK(gesture.feed(threshold).replacement->at == Cell{6, 6});
         }
 
-        TEST_CASE("both panels count but non-panel windows and virtual panels pass through")
+        TEST_CASE("both panels count but non-panel windows and unsupported virtual panels pass through")
         {
             tests::Panels panels;
             panels.panels[1] = tests::visiblePanel({40, 0, 79, 24});
@@ -97,6 +123,46 @@ namespace burlak::core
             panels.panelsWindow = true;
             panels.panels[1]->realNames = false;
             CHECK(gesture.feed(active).action == VerdictAction::Pass);
+
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[1].reset();
+            auto virtualActive = mouse({5, 5}, true, false);
+            CHECK(gesture.feed(virtualActive).action == VerdictAction::Pass);
+
+            panels.panels[0].reset();
+            panels.panels[1] = tests::visiblePanel({40, 0, 79, 24});
+            auto passiveFrame = mouse({40, 5}, true, false);
+            CHECK(gesture.feed(passiveFrame).action == VerdictAction::Pass);
+        }
+
+        TEST_CASE("a plugin file panel without real names arms only when it has an owner")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            panels.panels[0]->realNames = false;
+            panels.panels[0]->plugin = true;
+            panels.panels[0]->owner[0] = std::byte{1};
+            tests::Host host;
+            Gesture gesture{panels, host};
+
+            const auto press = mouse({5, 5}, true, false);
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Replace);
+
+            gesture.reset();
+            panels.panels[0]->owner = {};
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Pass);
+
+            panels.panels[0]->realNames = true;
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Replace);
+
+            gesture.reset();
+            panels.panels[0]->filePanel = false;
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(mouse({8, 5}, true, false, true)).action == VerdictAction::Pass);
         }
 
         TEST_CASE("edge rows do not arm and idle moves and releases pass")
@@ -150,6 +216,20 @@ namespace burlak::core
             CHECK(gesture.feed(event, true).action == VerdictAction::Pass);
             auto freshRight = mouse({5, 5}, false, true);
             CHECK(gesture.feed(freshRight).action == VerdictAction::Hold);
+        }
+
+        TEST_CASE("Far's replayed press arms and its release disarms without being swallowed")
+        {
+            tests::Panels panels;
+            panels.panels[0] = tests::visiblePanel({0, 0, 39, 24});
+            tests::Host host;
+            Gesture gesture{panels, host};
+
+            const auto press = mouse({5, 5}, true, false);
+            const auto release = mouse({45, 5}, false, false);
+            CHECK(gesture.feed(press).action == VerdictAction::Pass);
+            CHECK(gesture.feed(release).action == VerdictAction::Pass);
+            CHECK_FALSE(gesture.synchro().has_value());
         }
     }
 

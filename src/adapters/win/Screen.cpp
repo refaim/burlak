@@ -10,10 +10,13 @@ namespace burlak::adapters::win
     namespace
     {
 
-        const ScreenCalls systemCalls{GetCursorPos,          GetAsyncKeyState,  GetConsoleWindow,
-                                      GetForegroundWindow,   GetWindowRect,     GetClientRect,
-                                      IsWindowVisible,       GetWindowLongPtrW, GetStdHandle,
-                                      GetCurrentConsoleFont, ClientToScreen,    GetConsoleScreenBufferInfo};
+        const ScreenCalls systemCalls{GetCursorPos,     GetAsyncKeyState,
+                                      GetConsoleWindow, GetWindow,
+                                      WindowFromPoint,  GetAncestor,
+                                      GetWindowRect,    GetClientRect,
+                                      IsWindowVisible,  GetWindowLongPtrW,
+                                      GetStdHandle,     GetCurrentConsoleFont,
+                                      ClientToScreen,   GetConsoleScreenBufferInfo};
 
         [[nodiscard]] std::optional<core::HostWindow> coveringWindow(core::NativeWindow native, core::Point point,
                                                                      const ScreenCalls &calls)
@@ -57,23 +60,60 @@ namespace burlak::adapters::win
         return (calls_.getAsyncKeyState(virtualKeys.at(static_cast<std::size_t>(button))) & 0x8000) != 0;
     }
 
+    core::NativeWindow Screen::windowAt(core::Point point)
+    {
+        const auto window = calls_.windowFromPoint(POINT{point.x, point.y});
+        return reinterpret_cast<core::NativeWindow>(window == nullptr ? nullptr : calls_.getAncestor(window, GA_ROOT));
+    }
+
+    core::NativeWindow Screen::consoleWindow()
+    {
+        return reinterpret_cast<core::NativeWindow>(calls_.getConsoleWindow());
+    }
+
+    core::NativeWindow Screen::hostWindowHandle()
+    {
+        const auto console = calls_.getConsoleWindow();
+        RECT rect{};
+        if (console != nullptr && calls_.isWindowVisible(console) != FALSE && calls_.getWindowRect(console, &rect) &&
+            rect.right > rect.left && rect.bottom > rect.top) {
+            return reinterpret_cast<core::NativeWindow>(console);
+        }
+        return reinterpret_cast<core::NativeWindow>(console == nullptr ? nullptr : calls_.getWindow(console, GW_OWNER));
+    }
+
     std::optional<core::HostWindow> Screen::hostWindow()
     {
         const auto point = cursor();
         if (!point) {
             return std::nullopt;
         }
-        return hostWindowAt(*point, reinterpret_cast<core::NativeWindow>(calls_.getConsoleWindow()),
-                            reinterpret_cast<core::NativeWindow>(calls_.getForegroundWindow()), calls_);
+        return hostWindowAt(*point);
+    }
+
+    std::optional<core::HostWindow> Screen::hostWindowAt(core::Point point)
+    {
+        const auto console = calls_.getConsoleWindow();
+        const auto owner = console == nullptr ? nullptr : calls_.getWindow(console, GW_OWNER);
+        return win::hostWindowAt(point, reinterpret_cast<core::NativeWindow>(console),
+                                 reinterpret_cast<core::NativeWindow>(owner), calls_);
     }
 
     std::expected<core::CellGeometry, core::Error> Screen::cellGeometry()
     {
+        const auto point = cursor();
+        return point ? cellGeometryAt(*point) : std::unexpected(core::Error::Unavailable);
+    }
+
+    std::expected<core::CellGeometry, core::Error> Screen::cellGeometryAt(core::Point point)
+    {
         const auto output = calls_.getStdHandle(STD_OUTPUT_HANDLE);
-        const auto host = hostWindow();
+        const auto host = hostWindowAt(point);
         const auto console = calls_.getConsoleWindow();
         CONSOLE_FONT_INFO font{};
         POINT fontOrigin{};
+        // This is Far's own pixel-to-cell basis: console::fix_wheel_coordinates uses ScreenToClient on the
+        // console window and CONSOLE_FONT_INFO::dwFontSize (Far source: far/console.cpp).
         if (output != INVALID_HANDLE_VALUE && host && host->handle == reinterpret_cast<core::NativeWindow>(console) &&
             calls_.getCurrentConsoleFont(output, FALSE, &font) && font.dwFontSize.X > 0 && font.dwFontSize.Y > 0 &&
             calls_.clientToScreen(console, &fontOrigin)) {
@@ -109,18 +149,18 @@ namespace burlak::adapters::win
     }
 
     std::optional<core::HostWindow> hostWindowAt(core::Point point, core::NativeWindow console,
-                                                 core::NativeWindow foreground)
+                                                 core::NativeWindow owner)
     {
-        return hostWindowAt(point, console, foreground, systemCalls);
+        return hostWindowAt(point, console, owner, systemCalls);
     }
 
     std::optional<core::HostWindow> hostWindowAt(core::Point point, core::NativeWindow console,
-                                                 core::NativeWindow foreground, const ScreenCalls &calls)
+                                                 core::NativeWindow owner, const ScreenCalls &calls)
     {
         if (const auto covered = coveringWindow(console, point, calls)) {
             return covered;
         }
-        return coveringWindow(foreground, point, calls);
+        return coveringWindow(owner, point, calls);
     }
 
 } // namespace burlak::adapters::win

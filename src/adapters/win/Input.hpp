@@ -10,6 +10,7 @@ namespace burlak::adapters::win
     struct InputCalls
     {
         void(WINAPI *mouseEvent)(DWORD flags, DWORD x, DWORD y, DWORD data, ULONG_PTR extraInfo);
+        decltype(&GetConsoleScreenBufferInfo) getConsoleScreenBufferInfo;
         decltype(&WriteConsoleInputW) writeConsoleInput;
     };
 
@@ -19,6 +20,7 @@ namespace burlak::adapters::win
         Input();
         explicit Input(core::NativeWindow input);
         Input(core::NativeWindow input, const InputCalls &calls);
+        Input(core::NativeWindow input, core::NativeWindow output, const InputCalls &calls);
 
         void release(core::Button button) override;
         void press(core::Button button) override;
@@ -26,6 +28,7 @@ namespace burlak::adapters::win
 
       private:
         core::NativeWindow input_{};
+        core::NativeWindow output_{};
         const InputCalls &calls_;
     };
 
